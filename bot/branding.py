@@ -25,6 +25,7 @@ DESCRIPTION = (
     "👋 TTA Yordamchi — Claude sun'iy intellekti asosidagi shaxsiy yordamchi.\n\n"
     "💬 Savollarga javob beradi, matn yozadi va tarjima qiladi\n"
     "📎 Rasm, PDF, Word va Excel fayllarni o'qiydi\n"
+    "📄 Word, Excel, PowerPoint va PDF fayllar yaratadi\n"
     "🔎 Yangi ma'lumotni internetdan topadi\n"
     "🧠 Fable 5.1, Opus 5.5, Sonnet 5.5 va Haiku 5.5 modellari\n\n"
     "🔒 Bot parol bilan ishlaydi: «Start» ni bosing va parolni yuboring."

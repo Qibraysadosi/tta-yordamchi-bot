@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import logging
 from pathlib import Path
 
@@ -23,6 +24,13 @@ from .updater import UpdateManager
 log = logging.getLogger("bot")
 
 APP_DIR = Path(__file__).resolve().parent.parent  # /app: bot/, prompts/, VERSION, launcher.py
+
+# Fayl yaratish vositalari uchun kutubxonalar (modul nomi → pip paketi); yo'qligi botni to'xtatmaydi
+OPTIONAL_LIBRARIES = {"fpdf": "fpdf2", "pptx": "python-pptx", "pypdf": "pypdf", "matplotlib": "matplotlib"}
+
+
+def missing_libraries() -> list[str]:
+    return [package for module, package in OPTIONAL_LIBRARIES.items() if importlib.util.find_spec(module) is None]
 
 
 def build_dispatcher(ctx: AppContext) -> Dispatcher:
@@ -80,10 +88,17 @@ async def announce_update(bot: Bot, ctx: AppContext) -> None:
     if notice is None:
         return
     log.info("Yangilanish natijasi: %s", notice.text.splitlines()[0])
+    text = notice.text
+    missing = missing_libraries()
+    if missing:
+        text += (
+            f"\n\n⚠️ Kutubxonalar o'rnatilmadi: {', '.join(missing)} — fayl yaratish (PDF, taqdimot, grafik) "
+            "ishlamaydi. Serverda: docker compose up -d --build"
+        )
     targets = [notice.chat_id] if notice.chat_id else sorted(ctx.settings.owner_ids)
     for chat_id in targets:
         with contextlib.suppress(TelegramAPIError):
-            await bot.send_message(chat_id=chat_id, text=notice.text)
+            await bot.send_message(chat_id=chat_id, text=text)
 
 
 def start_backup_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
@@ -133,6 +148,8 @@ async def run() -> bool:
             ", ".join(str(i) for i in sorted(settings.owner_ids)),
         )
         await announce_update(bot, ctx)
+        if missing_libraries():
+            log.warning("Kutubxonalar yo'q: %s (pip install -r requirements.txt)", ", ".join(missing_libraries()))
         try:
             await branding.apply_profile(bot, db)  # tavsif va profil rasmi (faqat o'zgarganda)
         except Exception:  # noqa: BLE001 — ko'rinish botning ishlashiga xalaqit bermasin

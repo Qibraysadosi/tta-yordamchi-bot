@@ -36,6 +36,7 @@ class LiveMessage:
         self.started = time.monotonic()
         self.start_usage: Any = None
         self.completed_cost = 0.0
+        self.tool_status = False  # vosita (fayl yaratish) holati matn ostida ko'rsatilmoqda
         self._shown: str | None = None
         self._ticker: asyncio.Task | None = None
 
@@ -65,8 +66,14 @@ class LiveMessage:
     async def on_search(self, query: str | None) -> None:
         self.status = f"🔎 Qidirilmoqda: «{query}»" if query else "🔎 Internetdan qidirilmoqda…"
 
+    async def on_tool(self, status: str) -> None:
+        # Fayl tayyorlanayotgani matndan keyin alohida qatorda ko'rsatiladi (matn yo'q bo'lsa — holat o'rnida)
+        self.status = status
+        self.tool_status = True
+
     async def on_text(self, text: str) -> None:
         self.text = text
+        self.tool_status = False
 
     async def on_iteration_done(self, cost: float) -> None:
         self.completed_cost += cost
@@ -86,7 +93,8 @@ class LiveMessage:
 
     def _render(self) -> str:
         if self.text.strip():
-            return preview(self.text) + " ▌"
+            tail = f"\n\n{self.status}" if self.tool_status else " ▌"
+            return preview(self.text) + tail
         return f"{self.status} {int(time.monotonic() - self.started)} s"
 
     async def _tick(self) -> None:

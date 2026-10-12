@@ -4,6 +4,8 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 
 ## Imkoniyatlar
 
+- **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
+- **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
 - **Ish rejimlari:** `/rejim` — rasmiy xat (TKHTA nomidan), Instagram post, Meta reklama, tarjimon, dasturchi
 - **Javob ostidagi tugmalar:** 🔄 qayta, ✂️ qisqartirish, 🌐 tarjima (uz/ru/en), 📄 Word fayl, 🔡 kirill yozuvi
@@ -39,7 +41,18 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 | `/xarajat` | Sarf hisoboti; har javob ostidagi narxni yoqish/o'chirish |
 | `/yordam` | Yordam |
 
-Faylni izohsiz yuborsangiz, bot uni keyingi savolingiz bilan birga ko'rib chiqadi.
+Faylni izohsiz yuborsangiz, bot uni keyingi savolingiz bilan birga ko'rib chiqadi. Yuborilgan fayllar 2 soat davomida fayl amallari (PDF, tarjima, solishtirish) uchun eslab turiladi.
+
+**Fayl yaratish — misollar:**
+
+- «Shu ma'lumotlar asosida Excel jadval tuz» · «Hisobotni Word qilib ber» · «5 slaydlik taqdimot tayyorla» · «PDF qilib yubor»
+- «Oylar bo'yicha sotuv grafigini chiz» (Excel fayl yuborib)
+- Skaner rasmini yuborib: «Word hujjat qilib ber»
+- Word fayl yuborib: «rus tiliga tarjima qil, formatini saqla»
+- Ikki PDF yuborib: «ikkalasini birlashtir» · «2–5 sahifalarini alohida PDF qil» · «har sahifani alohida fayl qil»
+- Ikki hujjat yuborib: «farqlarini ko'rsat»
+
+Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi. Word tarjimasi abzats uslubi, jadval va rasmlarni saqlaydi; abzats ichidagi aralash formatlash (bitta so'z qalin) birinchi so'z uslubiga tenglashadi.
 
 **Faqat egasi uchun** (menyuda ham faqat sizga ko'rinadi):
 
@@ -83,7 +96,7 @@ Xavfsizlik:
 - Yangi versiya ishga tushmasa, eski versiya **avtomatik** tiklanadi va sizga xato matni yuboriladi — shu matnni Claude'ga yuboring.
 - `/qaytarish` — oxirgi yangilanishni bekor qiladi (ketma-ket bosilsa, yanada oldingi versiyaga qaytadi).
 - Arxivdan `bot/`, `prompts/`, `requirements.txt`, `VERSION` (va `install*.sh`, `docker-compose.yml`, `README.md`) olinadi; `.env`, baza, `Dockerfile` va `launcher.py` ga tegilmaydi.
-- `requirements.txt` o'zgargan bo'lsa, yangi kutubxonalar avtomatik o'rnatiladi.
+- `requirements.txt` o'zgargan bo'lsa, yangi kutubxonalar avtomatik o'rnatiladi (v1.4.0 da PDF, PowerPoint va grafik kutubxonalari qo'shilgan — birinchi ishga tushish 1–3 daqiqa cho'zilishi mumkin).
 
 Keyingi safar yangi funksiya so'raganingizda, avval botdan `/kod` bilan joriy kodni oling va uni Claude'ga yuboring.
 

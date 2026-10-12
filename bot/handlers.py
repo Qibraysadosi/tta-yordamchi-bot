@@ -28,7 +28,7 @@ from aiogram.types import (
     User,
 )
 
-from . import branding, export, links, media, scheduler, translit
+from . import branding, export, links, media, scheduler, tools, translit
 from .access import MIN_PASSWORD_LENGTH, AttemptLimiter, hash_password, verify_password
 from .claude import ClaudeError, ClaudeService, TurnResult
 from .config import Settings
@@ -38,6 +38,7 @@ from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
 from .tgformat import format_answer
+from .tools import RawFile, RawStore, ToolContext
 from .updater import StagedUpdate, UpdateError, UpdateManager
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,9 @@ HELP_TEXT = (
     "Izohsiz yuborsangiz, keyingi savolingiz bilan birga ko'rib chiqaman.\n\n"
     "↩️ <b>Iqtibos</b> — biror xabarga «Ответить» qilib yozsangiz, o'sha matnni ham hisobga olaman.\n\n"
     "🔗 <b>Havola yuboring</b> — maqola yoki PDF havolasini yuborsangiz, uni o'qib chiqaman.\n\n"
+    "📄 <b>Fayl yaratish</b> — «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF» desangiz, "
+    "faylni yasab yuboraman. Skaner rasmini Word'ga, Word faylni formatini saqlab tarjimaga, "
+    "PDF'larni birlashtirish/bo'lishga, ikki hujjatni solishtirishga ham so'rang.\n\n"
     "🔘 <b>Javob ostidagi tugmalar</b> — qayta yozish, qisqartirish, tarjima, Word fayl, kirill yozuvi.\n\n"
     "<b>Buyruqlar</b>\n"
     "🏠 /start — bosh menyu\n"
@@ -144,6 +148,7 @@ WELCOME_TEXT = (
     "Men — <b>TTA Yordamchi</b>, Claude asosidagi shaxsiy AI yordamchingiz.\n\n"
     "✍️ Savol bering, matn yozdiring, tarjima qildiring\n"
     "📎 Rasm, PDF, Word, Excel yuboring — tahlil qilaman\n"
+    "📄 Word, Excel, PowerPoint, PDF fayllar yasab beraman\n"
     "🔎 Yangi ma'lumotni internetdan topaman\n\n"
     "⚙️ <b>Hozir:</b> {settings}\n\n"
     "Boshlash uchun shunchaki savolingizni yozing 👇"
@@ -202,6 +207,7 @@ class AppContext:
     locks: dict[int, asyncio.Lock] = field(default_factory=dict)
     active: dict[int, asyncio.Task] = field(default_factory=dict)
     pending: dict[int, tuple[float, list[dict]]] = field(default_factory=dict)
+    raw: RawStore = field(default_factory=RawStore)  # yuborilgan fayllarning asl nusxasi (vositalar uchun)
     updater: UpdateManager | None = None
     limiter: AttemptLimiter = field(default_factory=AttemptLimiter)
     prompted: set[int] = field(default_factory=set)  # parol so'ralgan (birinchi xabari kelgan) begonalar
@@ -1294,13 +1300,15 @@ async def _download(bot: Bot, file_id: str) -> bytes:
     return buffer.getvalue()
 
 
-async def read_attachment(bot: Bot, message: Message, max_edge: int) -> list[dict]:
+async def read_attachment(bot: Bot, message: Message, max_edge: int) -> tuple[list[dict], list[RawFile]]:
+    """Xabardagi rasm/faylni Claude bloklariga aylantiradi; asl baytlar vositalar (PDF, tarjima) uchun qaytadi."""
     if message.photo:
         data = await _download(bot, message.photo[-1].file_id)
-        return [await asyncio.to_thread(media.image_block, data, max_edge)]
+        block = await asyncio.to_thread(media.image_block, data, max_edge)
+        return [block], [RawFile(f"rasm-{message.message_id}.jpg", "image", data)]
     document = message.document
     if document is None:
-        return []
+        return [], []
     name = document.file_name or "fayl"
     if document.file_size and document.file_size > MAX_DOWNLOAD:
         raise media.MediaError(f"«{name}» juda katta — Telegram botlari faqat 20 MB gacha faylni yuklab oladi.")
@@ -1310,7 +1318,7 @@ async def read_attachment(bot: Bot, message: Message, max_edge: int) -> list[dic
             f"«{name}» turidagi faylni o'qiy olmayman. Rasm, PDF, Word (.docx), Excel (.xlsx) yoki matn fayl yuboring."
         )
     data = await _download(bot, document.file_id)
-    return [await asyncio.to_thread(media.build_block, kind, data, name, max_edge)]
+    return [await asyncio.to_thread(media.build_block, kind, data, name, max_edge)], [RawFile(name, kind, data)]
 
 
 async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
@@ -1325,10 +1333,13 @@ async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
         group = sorted(collected, key=lambda m: m.message_id)
     uid = message.from_user.id
     blocks: list[dict] = []
+    raws: list[RawFile] = []
     errors: list[str] = []
     for item in group:
         try:
-            blocks.extend(await read_attachment(bot, item, ctx.settings.image_max_edge))
+            item_blocks, item_raws = await read_attachment(bot, item, ctx.settings.image_max_edge)
+            blocks.extend(item_blocks)
+            raws.extend(item_raws)
         except media.MediaError as exc:
             errors.append(f"⚠️ {exc}")
         except TelegramAPIError as exc:
@@ -1338,6 +1349,7 @@ async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
         await message.answer("\n".join(errors))
     if not blocks:
         return
+    ctx.raw.add(uid, raws)
     caption = "\n".join(item.caption for item in group if item.caption).strip()
     if not caption:
         count = ctx.add_pending(uid, blocks)
@@ -1403,6 +1415,8 @@ def _stop_notes(result: TurnResult, long_context: int) -> list[str]:
         notes.append("ℹ️ Qidiruv juda uzoq davom etib to'xtatildi — javob to'liq bo'lmasligi mumkin.")
     elif result.stop_reason == "model_context_window_exceeded":
         notes.append("📚 Model kontekst chegarasiga yetdi — /new bosing.")
+    elif result.stop_reason == "tool_use":
+        notes.append("ℹ️ Bir javobda fayl amallari chegarasiga yetildi — davomini alohida so'rang.")
     if result.prompt_tokens >= long_context:
         notes.append(
             f"📚 Suhbat konteksti ≈{result.prompt_tokens // 1000}k token — har javob qimmatlashmoqda. "
@@ -1413,17 +1427,19 @@ def _stop_notes(result: TurnResult, long_context: int) -> list[str]:
 
 async def _footer(
     ctx: AppContext, uid: int, s: UserSettings, model: str, effort: str | None, result: TurnResult,
-    shown_model: str | None = None,
+    shown_model: str | None = None, tool_ctx: ToolContext | None = None,
 ) -> str:
     parts = [shown_model or label(model)]
     if effort:
         parts.append(f"effort {effort}")
     if result.searches:
         parts.append(f"🔎 {result.searches}")
+    if tool_ctx is not None and tool_ctx.sent:
+        parts.append(f"📎 {len(tool_ctx.sent)}")
     if s.show_cost:
         now = ctx.now()
         today, _ = await ctx.db.spend(uid, now.replace(hour=0, minute=0, second=0, microsecond=0))
-        parts.append(f"💰 ${result.cost:.3f}")
+        parts.append(f"💰 ${result.cost + (tool_ctx.cost if tool_ctx is not None else 0.0):.3f}")
         parts.append(f"bugun ${today:.2f}")
         budget = ctx.settings.monthly_budget
         if budget > 0:
@@ -1445,13 +1461,19 @@ async def _generate(
     effort: str | None,
     web_search: bool,
     notes: list[str],
+    tool_ctx: ToolContext | None = None,
 ) -> TurnResult:
+    async def runner(name: str, args: dict) -> str:
+        return await tools.run(tool_ctx, name, args)
+
     async def attempt(search: bool) -> TurnResult:
         live.completed_cost = 0.0
         live.start_usage = None
         task = asyncio.create_task(
             ctx.claude.run_turn(
-                model=model, system=system, messages=messages, effort=effort, web_search=search, listener=live
+                model=model, system=system, messages=messages, effort=effort, web_search=search, listener=live,
+                tools=tools.specs() if tool_ctx is not None else None,
+                tool_runner=runner if tool_ctx is not None else None,
             )
         )
         ctx.active[uid] = task
@@ -1577,13 +1599,21 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
 
     messages = [{"role": m.role, "content": m.content} for m in history]
     messages.append({"role": "user", "content": user_blocks})
-    system = ctx.prompt.build(extra=load_mode_prompt(ctx.settings.modes_dir, s.mode))
+    system = ctx.prompt.build(extra=load_mode_prompt(ctx.settings.modes_dir, s.mode) + "\n\n" + tools.TOOLS_GUIDE)
 
     live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
+
+    async def log_tool_usage(tool_model: str, numbers: dict, cost: float) -> None:
+        await ctx.db.log_usage(uid, tool_model, numbers, cost)
+
+    tool_ctx = ToolContext(
+        bot=bot, chat_id=chat_id, reply_to=reply_to, uid=uid, files=ctx.raw.recent(uid), model=model,
+        claude=ctx.claude, live=live, log_usage=log_tool_usage,
+    )
     try:
         result = await _generate(
             ctx, uid, live, model=model, system=system, messages=messages,
-            effort=effort, web_search=s.web_search, notes=notes,
+            effort=effort, web_search=s.web_search, notes=notes, tool_ctx=tool_ctx,
         )
         fallback = ctx.settings.fallback_model
         if result.refused and fallback and fallback != model:
@@ -1593,9 +1623,10 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
                 f"⚠️ {label(refused_model)} bu so'rovni rad etdi{category}. {label(model)} bilan qayta urinilmoqda…",
                 label(model),
             )
+            tool_ctx.model = model
             result = await _generate(
                 ctx, uid, live, model=model, system=system, messages=messages,
-                effort=effort, web_search=s.web_search, notes=notes,
+                effort=effort, web_search=s.web_search, notes=notes, tool_ctx=tool_ctx,
             )
             if not result.refused:
                 await ctx.db.update_settings(uid, model_override=model)
@@ -1607,10 +1638,13 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
             await live.fail(refusal_message(result))
             return
 
-        answer_id = await ctx.db.add_turn(uid, s.conv_id, user_blocks, result.text or "(bo'sh javob)")
+        text = result.text
+        if not text.strip() and tool_ctx.sent:
+            text = "📎 Fayl yuborildi: " + ", ".join(tool_ctx.sent)
+        answer_id = await ctx.db.add_turn(uid, s.conv_id, user_blocks, text or "(bo'sh javob)")
         notes.extend(_stop_notes(result, ctx.settings.long_context_tokens))
-        footer = await _footer(ctx, uid, s, model, effort, result, shown_model)
-        await live.finish(format_answer(result.text, result.sources, notes, footer), answer_keyboard(answer_id))
+        footer = await _footer(ctx, uid, s, model, effort, result, shown_model, tool_ctx)
+        await live.finish(format_answer(text, result.sources, notes, footer), answer_keyboard(answer_id))
         await check_budget(ctx, bot)
     except Cancelled:
         partial = live.text.strip()

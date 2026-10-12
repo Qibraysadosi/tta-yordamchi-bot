@@ -1,10 +1,12 @@
 """Claude API bilan ishlash: oqimli javob, internet qidiruvi, pause_turn, rad etish va narx hisobi."""
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 import anthropic
 
@@ -14,6 +16,10 @@ log = logging.getLogger(__name__)
 
 # Uzoq qidiruvda API javobni "pause_turn" bilan to'xtatib turadi — shuncha marta davom ettiramiz
 MAX_CONTINUATIONS = 4
+# Bitta javob ichida vositalar (fayl yaratish va h.k.) ko'pi bilan shuncha marta chaqiriladi
+MAX_TOOL_ROUNDS = 6
+
+ToolRunner = Callable[[str, dict], Awaitable[str]]
 
 
 class StreamListener(Protocol):
@@ -21,6 +27,7 @@ class StreamListener(Protocol):
     async def on_thinking(self) -> None: ...
     async def on_search(self, query: str | None) -> None: ...
     async def on_text(self, text: str) -> None: ...
+    async def on_tool(self, status: str) -> None: ...
     async def on_iteration_done(self, cost: float) -> None: ...
 
 
@@ -35,6 +42,7 @@ class TurnResult:
     prompt_tokens: int = 0
     refusal_category: str | None = None
     refusal_explanation: str | None = None
+    tool_calls: int = 0
 
     @property
     def refused(self) -> bool:
@@ -160,7 +168,14 @@ class ClaudeService:
         }
 
     def build_params(
-        self, *, model: str, system: str, messages: list[dict], effort: str | None, web_search: bool
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[dict],
+        effort: str | None,
+        web_search: bool,
+        tools: list[dict] | None = None,
     ) -> dict[str, Any]:
         cache_control: dict[str, str] = {"type": "ephemeral"}
         if self.cache_ttl == "1h":
@@ -175,15 +190,19 @@ class ClaudeService:
         }
         if effort:
             params["output_config"] = {"effort": effort}
+        all_tools: list[dict] = []
         if web_search:
-            params["tools"] = [
+            all_tools.append(
                 {
                     "type": self.web_search_tool,
                     "name": "web_search",
                     "max_uses": self.web_search_max_uses,
                     "user_location": dict(self.user_location),
                 }
-            ]
+            )
+        all_tools.extend(tools or [])
+        if all_tools:
+            params["tools"] = all_tools
         return params
 
     async def run_turn(
@@ -195,8 +214,12 @@ class ClaudeService:
         effort: str | None,
         web_search: bool,
         listener: StreamListener,
+        tools: list[dict] | None = None,
+        tool_runner: ToolRunner | None = None,
     ) -> TurnResult:
-        assistant_blocks: list[Any] = []
+        assistant_blocks: list[Any] = []  # javobning barcha bloklari (matn tarixga shu yerdan olinadi)
+        pending_blocks: list[Any] = []  # pause_turn: to'xtagan javobni o'zgarishsiz qaytarib, davom ettiramiz
+        extra: list[dict] = []  # vositalar: assistant(tool_use) + user(tool_result) juftlari
         numbers: Counter[str] = Counter()
         cost = 0.0
         sources: dict[str, str] = {}
@@ -204,13 +227,15 @@ class ClaudeService:
         last_type: str | None = None
         prompt_tokens = 0
         final = None
+        tool_calls = 0
+        tool_rounds = 0
 
-        for _ in range(MAX_CONTINUATIONS + 1):
-            convo = list(messages)
-            if assistant_blocks:  # pause_turn: to'xtagan javobni o'zgarishsiz qaytarib, davom ettiramiz
-                convo.append({"role": "assistant", "content": list(assistant_blocks)})
+        for _ in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
+            convo = list(messages) + extra
+            if pending_blocks:
+                convo.append({"role": "assistant", "content": list(pending_blocks)})
             params = self.build_params(
-                model=model, system=system, messages=convo, effort=effort, web_search=web_search
+                model=model, system=system, messages=convo, effort=effort, web_search=web_search, tools=tools
             )
             try:
                 async with self.client.messages.stream(**params) as stream:
@@ -251,8 +276,33 @@ class ClaudeService:
             await listener.on_iteration_done(step_cost)
             collect_sources(final.content, sources)
             assistant_blocks.extend(final.content)
-            if final.stop_reason != "pause_turn":
-                break
+            if final.stop_reason == "pause_turn":
+                pending_blocks.extend(final.content)
+                continue
+            if final.stop_reason == "tool_use" and tool_runner is not None and tool_rounds < MAX_TOOL_ROUNDS:
+                tool_rounds += 1
+                results = []
+                for block in final.content:
+                    if _attr(block, "type") != "tool_use":
+                        continue
+                    tool_calls += 1
+                    try:
+                        output = await tool_runner(block.name, dict(block.input or {}))
+                        results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+                    except Exception as exc:  # noqa: BLE001 — xato Claude'ga qaytadi, u foydalanuvchiga tushuntiradi
+                        log.warning("Vosita xatosi (%s): %s", block.name, exc)
+                        results.append(
+                            {"type": "tool_result", "tool_use_id": block.id, "content": f"Xato: {exc}", "is_error": True}
+                        )
+                extra += pending_blocks and [{"role": "assistant", "content": list(pending_blocks)}] or []
+                extra.append({"role": "assistant", "content": list(final.content)})
+                extra.append({"role": "user", "content": results})
+                pending_blocks = []
+                if display and not display.endswith("\n"):
+                    display += "\n\n"
+                    last_type = None
+                continue
+            break
 
         details = getattr(final, "stop_details", None)
         refused = final.stop_reason == "refusal"
@@ -267,6 +317,7 @@ class ClaudeService:
             prompt_tokens=prompt_tokens,
             refusal_category=_attr(details, "category") if details else None,
             refusal_explanation=_attr(details, "explanation") if details else None,
+            tool_calls=tool_calls,
         )
 
     async def classify(self, model: str, text: str, has_files: bool) -> tuple[str, dict[str, int], float]:
@@ -295,6 +346,42 @@ class ClaudeService:
             return "medium", {}, 0.0
         level = next((name for name in ("simple", "medium", "complex") if name in answer), "medium")
         return level, numbers, cost_usd(model, numbers)
+
+    async def translate_items(
+        self, model: str, target: str, glossary: str | None, items: list[str]
+    ) -> tuple[list[str], dict[str, int], float]:
+        """Hujjat bo'laklarini (abzatslar) JSON massiv ko'rinishida tarjima qiladi — tartib va soni saqlanadi."""
+        system = (
+            "Sen professional hujjat tarjimonisan. Foydalanuvchi JSON massivda matn bo'laklarini beradi. "
+            f"Har bir bo'lakni {target} tiliga tarjima qil va FAQAT shu uzunlikdagi JSON massiv (satrlar) qaytar — "
+            "izohsiz, kod blokisiz. Bo'laklar tartibi va soni o'zgarmasin. Sanalar, raqamlar, ismlar, kodlar va "
+            "URL'larni saqla; rasmiy uslub va atamalar izchilligini saqla; faqat raqam yoki belgi bo'lgan "
+            "bo'lakni o'zgarishsiz qaytar."
+        )
+        if glossary and glossary.strip():
+            system += f"\n\nQo'shimcha ko'rsatmalar va lug'at:\n{glossary.strip()[:4000]}"
+        payload = json.dumps(items, ensure_ascii=False)
+        try:
+            response = await self.client.messages.create(
+                model=model, max_tokens=16000, system=system, messages=[{"role": "user", "content": payload}]
+            )
+        except anthropic.APIStatusError as exc:
+            raise translate_error(exc, False) from exc
+        except anthropic.APITimeoutError as exc:
+            raise ClaudeError("⏱ Tarjima vaqti tugadi. Qayta urinib ko'ring.") from exc
+        except anthropic.APIConnectionError as exc:
+            raise ClaudeError("🌐 Anthropic serveriga ulanib bo'lmadi.") from exc
+        text = blocks_to_text(response.content).strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+        start, end = text.find("["), text.rfind("]")
+        try:
+            parsed = json.loads(text[start : end + 1]) if start >= 0 and end > start else None
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, list):
+            raise ClaudeError("Tarjima javobi JSON massiv emas — qayta urinib ko'ring.")
+        numbers = usage_numbers(response.usage, self.cache_ttl)
+        return [str(x) if x is not None else "" for x in parsed], numbers, cost_usd(model, numbers)
 
     def estimate_partial(self, model: str, start_usage: Any, partial_text: str) -> tuple[dict[str, int], float]:
         """Javob to'xtatilganda taxminiy narx: kirish aniq, chiqish matn uzunligidan taxminan."""

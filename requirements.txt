@@ -1,0 +1,7 @@
+anthropic==1.13.0
+aiogram==3.31.0
+aiosqlite==0.22.1
+pillow==12.3.0
+python-docx==1.2.0
+openpyxl==3.1.5
+tzdata

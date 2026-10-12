@@ -1,0 +1,16 @@
+services:
+  claude-bot:
+    build: .
+    container_name: claude-telegram-bot
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    volumes:
+      # Kod, prompts va data/ (baza, zaxiralar) serverdagi shu papkada turadi:
+      # /yangilash yangi kodni shu yerga yozadi, konteyner qayta yig'ilsa ham hammasi saqlanadi
+      - ./:/app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

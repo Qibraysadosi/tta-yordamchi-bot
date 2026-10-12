@@ -1,0 +1,126 @@
+"""Botni yig'ish va ishga tushirish."""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from pathlib import Path
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramUnauthorizedError
+from aiogram.types import BotCommandScopeChat, User
+
+from . import branding
+from .claude import ClaudeService
+from .config import ConfigError, Settings, load_settings
+from .db import Database
+from .handlers import COMMANDS, OWNER_COMMANDS, AccessMiddleware, AppContext, build_router
+from .models import label
+from .prompt import PromptLoader
+from .updater import UpdateManager
+
+log = logging.getLogger("bot")
+
+APP_DIR = Path(__file__).resolve().parent.parent  # /app: bot/, prompts/, VERSION, launcher.py
+
+
+def build_dispatcher(ctx: AppContext) -> Dispatcher:
+    dp = Dispatcher(ctx=ctx)
+    access = AccessMiddleware()
+    dp.message.outer_middleware(access)
+    dp.callback_query.outer_middleware(access)
+    dp.include_router(build_router())
+    ctx.dispatcher = dp
+    return dp
+
+
+def build_claude(settings: Settings) -> ClaudeService:
+    return ClaudeService(
+        api_key=settings.anthropic_api_key,
+        max_tokens=settings.max_tokens,
+        web_search_tool=settings.web_search_tool,
+        web_search_max_uses=settings.web_search_max_uses,
+        cache_ttl=settings.cache_ttl,
+        search_city=settings.search_city,
+        search_country=settings.search_country,
+        timezone=settings.timezone,
+    )
+
+
+async def connect(bot: Bot, owner_ids: frozenset[int] = frozenset(), attempts: int = 6) -> User:
+    """Telegram'ga ulanish: tarmoq vaqtincha uzilgan bo'lsa, bir necha marta qayta urinadi."""
+    me: User | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            await bot.set_my_commands(COMMANDS)
+            me = await bot.get_me()
+            break
+        except TelegramUnauthorizedError as exc:
+            raise ConfigError("TELEGRAM_BOT_TOKEN noto'g'ri — @BotFather'dan olingan tokenni tekshiring") from exc
+        except TelegramNetworkError as exc:
+            if attempt == attempts:
+                raise
+            log.warning("Telegram'ga ulanib bo'lmadi (%s/%s): %s", attempt, attempts, exc)
+            await asyncio.sleep(5 * attempt)
+    if me is None:
+        raise RuntimeError("unreachable")
+    for owner_id in sorted(owner_ids):
+        # Admin buyruqlari faqat egasining menyusida ko'rinadi
+        with contextlib.suppress(TelegramAPIError):
+            await bot.set_my_commands(OWNER_COMMANDS, scope=BotCommandScopeChat(chat_id=owner_id))
+    return me
+
+
+async def announce_update(bot: Bot, ctx: AppContext) -> None:
+    """Yangilanish yoki avtomatik tiklash natijasini egasiga yozadi."""
+    if ctx.updater is None:
+        return
+    notice = ctx.updater.finalize()
+    if notice is None:
+        return
+    log.info("Yangilanish natijasi: %s", notice.text.splitlines()[0])
+    targets = [notice.chat_id] if notice.chat_id else sorted(ctx.settings.owner_ids)
+    for chat_id in targets:
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_message(chat_id=chat_id, text=notice.text)
+
+
+async def run() -> bool:
+    """Botni ishlatadi. True — qayta ishga tushirish so'ralgan (yangilanish o'rnatildi)."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    settings = load_settings()
+    db = await Database.open(settings.db_path)
+    claude = build_claude(settings)
+    ctx = AppContext(
+        settings=settings,
+        db=db,
+        claude=claude,
+        prompt=PromptLoader(settings.system_prompt_path, settings.timezone),
+        updater=UpdateManager(app_dir=APP_DIR, data_dir=settings.db_path.resolve().parent),
+    )
+    bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
+    dp = build_dispatcher(ctx)
+    try:
+        me = await connect(bot, settings.owner_ids)
+        log.info(
+            "Bot ishga tushdi: @%s · v%s · standart model: %s · egalari: %s",
+            me.username,
+            ctx.updater.version,
+            label(settings.default_model),
+            ", ".join(str(i) for i in sorted(settings.owner_ids)),
+        )
+        await announce_update(bot, ctx)
+        try:
+            await branding.apply_profile(bot, db)  # tavsif va profil rasmi (faqat o'zgarganda)
+        except Exception:  # noqa: BLE001 — ko'rinish botning ishlashiga xalaqit bermasin
+            log.exception("Bot profilini o'rnatishda xato")
+        await dp.start_polling(bot)
+    finally:
+        await db.close()
+        await bot.session.close()
+        with contextlib.suppress(Exception):
+            await claude.client.close()
+    return ctx.restart_requested

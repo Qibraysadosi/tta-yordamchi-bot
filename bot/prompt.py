@@ -33,7 +33,8 @@ class PromptLoader:
             self._mtime = mtime
         return self._cache
 
-    def build(self, now: datetime | None = None) -> str:
+    def build(self, now: datetime | None = None, extra: str = "") -> str:
         # Faqat sana (vaqt emas) — kun davomida ko'rsatma o'zgarmaydi va kesh ishlayveradi
         moment = now or datetime.now(self.tz)
-        return self._read().replace("{sana}", uz_date(moment)).strip()
+        text = self._read().replace("{sana}", uz_date(moment)).strip()
+        return f"{text}\n\n{extra.strip()}" if extra.strip() else text

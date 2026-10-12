@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.types import BotCommandScopeChat, User
 
-from . import branding
+from . import branding, scheduler
 from .claude import ClaudeService
 from .config import ConfigError, Settings, load_settings
 from .db import Database
@@ -86,6 +86,26 @@ async def announce_update(bot: Bot, ctx: AppContext) -> None:
             await bot.send_message(chat_id=chat_id, text=notice.text)
 
 
+def start_backup_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
+    """Kunlik zaxira: belgilangan vaqtda egasiga bot.db nusxasi; o'tkazib yuborilgan bo'lsa — hozir."""
+    at = ctx.settings.backup_time
+    if not at:
+        return None
+    owners = sorted(ctx.settings.owner_ids)
+
+    async def run_backup(reason: str = "Kunlik zaxira") -> None:
+        await scheduler.send_backup(bot, ctx.db, ctx.settings.db_path, owners, ctx.settings.timezone, reason=reason)
+
+    async def catch_up() -> None:
+        if await scheduler.missed_backup(ctx.db, ctx.settings.timezone, at):
+            await run_backup("Kunlik zaxira (kechikkan)")
+
+    asyncio.create_task(catch_up(), name="backup:catch-up")
+    job = scheduler.DailyJob("backup", at, ctx.settings.timezone, run_backup)
+    job.start()
+    return job
+
+
 async def run() -> bool:
     """Botni ishlatadi. True — qayta ishga tushirish so'ralgan (yangilanish o'rnatildi)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -117,7 +137,12 @@ async def run() -> bool:
             await branding.apply_profile(bot, db)  # tavsif va profil rasmi (faqat o'zgarganda)
         except Exception:  # noqa: BLE001 — ko'rinish botning ishlashiga xalaqit bermasin
             log.exception("Bot profilini o'rnatishda xato")
-        await dp.start_polling(bot)
+        job = start_backup_job(bot, ctx)
+        try:
+            await dp.start_polling(bot)
+        finally:
+            if job is not None:
+                await job.stop()
     finally:
         await db.close()
         await bot.session.close()

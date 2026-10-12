@@ -269,6 +269,33 @@ class ClaudeService:
             refusal_explanation=_attr(details, "explanation") if details else None,
         )
 
+    async def classify(self, model: str, text: str, has_files: bool) -> tuple[str, dict[str, int], float]:
+        """Avto-model uchun savol murakkabligi: simple / medium / complex (arzon model bilan, bir necha token)."""
+        snippet = " ".join(text.split())[:1500] or "(matnsiz)"
+        note = "Xabarga fayl yoki rasm biriktirilgan.\n" if has_files else ""
+        prompt = (
+            "Quyidagi foydalanuvchi so'rovini murakkablik bo'yicha tasnifla. Faqat bitta so'z bilan javob ber:\n"
+            "simple — salomlashish, qisqa faktik savol, oddiy tarjima yoki qayta yozish, 1-2 jumlalik javob yetarli;\n"
+            "medium — tushuntirish, matn yozish (post, xat, ro'yxat), fayl mazmuni bo'yicha savol, o'rtacha kod;\n"
+            "complex — chuqur tahlil, ko'p bosqichli mantiq, hujjat tuzish, murakkab kod yoki hisob-kitob, tadqiqot.\n\n"
+            f"{note}So'rov:\n{snippet}"
+        )
+        try:
+            response = await self.client.messages.create(
+                model=model, max_tokens=5, messages=[{"role": "user", "content": prompt}]
+            )
+        except (anthropic.APIError, anthropic.APIConnectionError) as exc:
+            log.warning("Tasniflash ishlamadi, o'rta model tanlanadi: %s", exc)
+            return "medium", {}, 0.0
+        try:
+            answer = blocks_to_text(response.content).strip().lower()
+            numbers = usage_numbers(response.usage, self.cache_ttl)
+        except (AttributeError, TypeError) as exc:
+            log.warning("Tasniflash javobi tushunarsiz, o'rta model tanlanadi: %s", exc)
+            return "medium", {}, 0.0
+        level = next((name for name in ("simple", "medium", "complex") if name in answer), "medium")
+        return level, numbers, cost_usd(model, numbers)
+
     def estimate_partial(self, model: str, start_usage: Any, partial_text: str) -> tuple[dict[str, int], float]:
         """Javob to'xtatilganda taxminiy narx: kirish aniq, chiqish matn uzunligidan taxminan."""
         numbers = usage_numbers(start_usage, self.cache_ttl) if start_usage is not None else {}

@@ -1,7 +1,8 @@
 services:
   claude-bot:
     build: .
-    container_name: claude-telegram-bot
+    # Sinov nusxasi uchun .env ichida CONTAINER_NAME=claude-telegram-bot-test deb yoziladi
+    container_name: ${CONTAINER_NAME:-claude-telegram-bot}
     restart: unless-stopped
     init: true
     env_file: .env

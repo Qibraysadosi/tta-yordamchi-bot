@@ -28,13 +28,14 @@ from aiogram.types import (
     User,
 )
 
-from . import branding, media
+from . import branding, export, links, media, scheduler, translit
 from .access import MIN_PASSWORD_LENGTH, AttemptLimiter, hash_password, verify_password
 from .claude import ClaudeError, ClaudeService, TurnResult
 from .config import Settings
-from .db import Database, UserSettings
+from .db import Conversation, Database, UserSettings
 from .live import LiveMessage
-from .models import MODELS, SELECTABLE_MODELS, label
+from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
+from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
 from .tgformat import format_answer
 from .updater import StagedUpdate, UpdateError, UpdateManager
@@ -49,11 +50,16 @@ COMMANDS = [
     BotCommand(command="new", description="🆕 Yangi suhbat"),
     BotCommand(command="model", description="🤖 Modelni tanlash"),
     BotCommand(command="effort", description="🧠 Fikrlash darajasi"),
+    BotCommand(command="rejim", description="🎯 Ish rejimi: xat, post, reklama, tarjima"),
+    BotCommand(command="tarix", description="🗂 Suhbatlar tarixi"),
+    BotCommand(command="shablon", description="📌 Tayyor so'rovlar (shablonlar)"),
     BotCommand(command="qidiruv", description="🔎 Internet qidiruvi: yoqish/o'chirish"),
     BotCommand(command="xarajat", description="💰 Xarajat hisoboti"),
+    BotCommand(command="kirill", description="🔡 Lotin → kirill (matn yoki javobga reply)"),
     BotCommand(command="yordam", description="📖 Yordam"),
 ]
 OWNER_COMMANDS = COMMANDS + [
+    BotCommand(command="zaxira", description="💾 Bazaning zaxira nusxasini hozir olish"),
     BotCommand(command="yangilash", description="📦 Botni yangilash (.zip)"),
     BotCommand(command="versiya", description="🏷 Versiya va zaxiralar"),
     BotCommand(command="qaytarish", description="↩️ Oldingi versiyaga qaytish"),
@@ -88,13 +94,19 @@ HELP_TEXT = (
     "📎 <b>Fayl yuboring</b> — rasm, PDF, Word (.docx), Excel (.xlsx) yoki matn fayl. "
     "Izohsiz yuborsangiz, keyingi savolingiz bilan birga ko'rib chiqaman.\n\n"
     "↩️ <b>Iqtibos</b> — biror xabarga «Ответить» qilib yozsangiz, o'sha matnni ham hisobga olaman.\n\n"
+    "🔗 <b>Havola yuboring</b> — maqola yoki PDF havolasini yuborsangiz, uni o'qib chiqaman.\n\n"
+    "🔘 <b>Javob ostidagi tugmalar</b> — qayta yozish, qisqartirish, tarjima, Word fayl, kirill yozuvi.\n\n"
     "<b>Buyruqlar</b>\n"
     "🏠 /start — bosh menyu\n"
     "🆕 /new — yangi suhbat (kontekst tozalanadi, javoblar arzonlashadi)\n"
-    "🤖 /model — model: Fable, Opus, Sonnet, Haiku\n"
+    "🤖 /model — model: ✨ Avto, Fable, Opus, Sonnet, Haiku\n"
+    "🎯 /rejim — ish rejimi: rasmiy xat, Instagram post, Meta reklama, tarjimon, dasturchi\n"
+    "🗂 /tarix — eski suhbatlar, qidiruv va davom ettirish\n"
+    "📌 /shablon — tez-tez ishlatiladigan so'rovlar\n"
     "🧠 /effort — fikrlash darajasi\n"
     "🔎 /qidiruv — internet qidiruvini yoqish/o'chirish\n"
-    "💰 /xarajat — sarf hisoboti"
+    "💰 /xarajat — sarf hisoboti\n"
+    "🔡 /kirill, /lotin — yozuvni o'girish"
 )
 
 ADMIN_HELP = (
@@ -104,8 +116,28 @@ ADMIN_HELP = (
     "↩️ /qaytarish — oldingi versiyaga qaytish\n"
     "🔐 /parol — kirish parolini o'rnatish yoki o'zgartirish\n"
     "👥 /foydalanuvchilar — parol bilan kirganlar, chiqarib yuborish\n"
+    "💾 /zaxira — bazaning zaxira nusxasini hozir olish (har kuni avtomatik ham keladi)\n"
     "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz"
 )
+
+MODE_TEXT = (
+    "🎯 <b>Ish rejimi</b>\n\n"
+    "Rejim botga qanday javob berishni aytadi va /new bosilganda ham saqlanadi.\n\n"
+    + "\n".join(f"{m.emoji} <b>{m.label}</b> — {m.hint}" for m in MODES.values())
+)
+
+TEMPLATE_HELP = (
+    "📌 <b>Shablonlar</b> — tez-tez yuboriladigan so'rovlar.\n\n"
+    "Qo'shish: <code>/shablon qo'sh Nomi</code> va keyingi qatorda matn, masalan:\n"
+    "<code>/shablon qo'sh Post\n"
+    "Shu mavzuda Instagram post yoz: </code>\n\n"
+    "O'chirish: <code>/shablon o'chir Nomi</code>\n"
+    "Tugmani bossangiz, shablon matni savol sifatida yuboriladi."
+)
+
+LEVEL_INDEX = {"simple": 0, "medium": 1, "complex": 2}
+BUDGET_LEVELS = (50, 80, 100)
+LANGS = {"uz": "o'zbek tiliga (lotin yozuvida)", "ru": "rus tiliga", "en": "ingliz tiliga"}
 
 WELCOME_TEXT = (
     "👋 <b>Salom, {name}!</b>\n"
@@ -301,7 +333,10 @@ def billing_cycle_start(now: datetime, reset_day: int) -> datetime:
 
 def settings_line(s: UserSettings) -> str:
     search = "yoqilgan" if s.web_search else "o'chiq"
-    return f"{label(s.active_model)} · effort: {s.effort or 'standart'} · qidiruv: {search}"
+    line = f"{label(s.active_model)} · effort: {s.effort or 'standart'} · qidiruv: {search}"
+    if (s.mode or DEFAULT_MODE) != DEFAULT_MODE:
+        line += f" · rejim: {mode_label(s.mode)}"
+    return line
 
 
 # ------------------------------------------------------------------ buyruqlar
@@ -322,6 +357,10 @@ def menu_keyboard(s: UserSettings, owner: bool) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=f"🔎 Qidiruv {search}", callback_data="menu:search"),
             InlineKeyboardButton(text="💰 Xarajat", callback_data="menu:cost"),
+        ],
+        [
+            InlineKeyboardButton(text="🎯 Rejim", callback_data="menu:mode"),
+            InlineKeyboardButton(text="🗂 Tarix", callback_data="menu:history"),
         ],
         [
             InlineKeyboardButton(text="🆕 Yangi suhbat", callback_data="menu:new"),
@@ -390,6 +429,13 @@ async def cb_menu(callback: CallbackQuery, ctx: AppContext) -> None:
         await callback.answer()
         text, keyboard = await cost_report(ctx, uid)
         await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    elif action == "mode":
+        await callback.answer()
+        await message.answer(MODE_TEXT, parse_mode=ParseMode.HTML, reply_markup=mode_keyboard(s.mode))
+    elif action == "history":
+        await callback.answer()
+        text, keyboard = await history_view(ctx, uid)
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
     elif action == "new":
         await ctx.db.new_conversation(uid)
         ctx.pending.pop(uid, None)
@@ -421,7 +467,8 @@ def _price(value: float) -> str:
 
 
 def model_keyboard(current: str) -> InlineKeyboardMarkup:
-    rows = []
+    mark = "✅ " if current == AUTO_MODEL else ""
+    rows = [[InlineKeyboardButton(text=f"{mark}✨ Avto — savolga qarab tanlaydi", callback_data=f"m:{AUTO_MODEL}")]]
     for model_id in SELECTABLE_MODELS:
         spec = MODELS[model_id]
         mark = "✅ " if model_id == current else ""
@@ -432,6 +479,7 @@ def model_keyboard(current: str) -> InlineKeyboardMarkup:
 
 def model_text(s: UserSettings) -> str:
     lines = ["🤖 <b>Modelni tanlang</b>", "<i>Narx: 1M token uchun, kirish / chiqish</i>", ""]
+    lines.append("• <b>✨ Avto</b> — oddiy savolga arzon, murakkabiga kuchli model (kreditni tejaydi)")
     lines += [f"• <b>{MODELS[m].label}</b> — {MODELS[m].note}" for m in SELECTABLE_MODELS]
     if s.model_override:
         lines += [
@@ -449,7 +497,7 @@ async def cmd_model(message: Message, ctx: AppContext) -> None:
 
 async def cb_model(callback: CallbackQuery, ctx: AppContext) -> None:
     model_id = (callback.data or "").split(":", 1)[-1]
-    if model_id not in SELECTABLE_MODELS:
+    if model_id not in SELECTABLE_MODELS and model_id != AUTO_MODEL:
         await callback.answer("Noma'lum model")
         return
     uid = callback.from_user.id
@@ -884,6 +932,360 @@ async def cb_update(callback: CallbackQuery, ctx: AppContext) -> None:
     await ctx.request_restart()
 
 
+
+# ------------------------------------------------------------------ rejim, tarix, shablon, yozuv, tugmalar
+
+
+def mode_keyboard(current: str | None) -> InlineKeyboardMarkup:
+    selected = current or DEFAULT_MODE
+    rows = [
+        [InlineKeyboardButton(text=("✅ " if m.key == selected else "") + f"{m.emoji} {m.label}", callback_data=f"mode:{m.key}")]
+        for m in MODES.values()
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def cmd_mode(message: Message, ctx: AppContext) -> None:
+    s = await ctx.user_settings(message.from_user.id)
+    await message.answer(MODE_TEXT, parse_mode=ParseMode.HTML, reply_markup=mode_keyboard(s.mode))
+
+
+async def cb_mode(callback: CallbackQuery, ctx: AppContext) -> None:
+    key = (callback.data or "").partition(":")[2]
+    if key not in MODES:
+        await callback.answer("Noma'lum rejim")
+        return
+    uid = callback.from_user.id
+    await ctx.user_settings(uid)
+    await ctx.db.update_settings(uid, mode=None if key == DEFAULT_MODE else key)
+    await callback.answer(f"✅ Rejim: {mode_label(key)}")
+    if isinstance(callback.message, Message):
+        with contextlib.suppress(TelegramBadRequest):
+            await callback.message.edit_text(
+                f"{MODE_TEXT}\n\n✅ Tanlandi: <b>{mode_label(key)}</b>. Endi savolingizni yozing.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=mode_keyboard(key),
+            )
+
+
+def _when(stamp: str, tz: ZoneInfo) -> str:
+    try:
+        moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
+    except ValueError:
+        return stamp
+    return f"{moment.day}-{MONTHS[moment.month - 1][:3]} {moment:%H:%M}"
+
+
+HISTORY_PAGE = 8
+
+
+async def history_view(
+    ctx: AppContext, uid: int, page: int = 0, query: str | None = None
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    s = await ctx.user_settings(uid)
+    tz = ZoneInfo(ctx.settings.timezone)
+    if query:
+        items: list[Conversation] = await ctx.db.search_conversations(uid, query)
+        total, page = len(items), 0
+        title = f"🔍 <b>«{html.escape(query)}» bo'yicha suhbatlar</b>"
+    else:
+        items, total = await ctx.db.conversations(uid, HISTORY_PAGE, page * HISTORY_PAGE)
+        title = "🗂 <b>Suhbatlar tarixi</b>"
+    if not items:
+        hint = "Hech narsa topilmadi." if query else "Hali suhbatlar yo'q — savol yozing."
+        return f"{title}\n\n{hint}", None
+    lines = [title, ""]
+    rows = []
+    for c in items:
+        current = c.conv_id == s.conv_id
+        mark = "✅ " if current else ""
+        lines.append(f"{mark}<b>{html.escape(c.title, quote=False)}</b> — {_when(c.updated_at, tz)}, {c.turns} ta javob")
+        rows.append(
+            [InlineKeyboardButton(text=f"{'✅' if current else '▶️'} {_short(c.title, 40)}", callback_data=f"h:o:{c.conv_id}")]
+        )
+    lines += ["", "Davom ettirish uchun suhbatni bosing. Qidiruv: <code>/tarix so'z</code>"]
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Yangiroq", callback_data=f"h:p:{page - 1}"))
+    if (page + 1) * HISTORY_PAGE < total:
+        nav.append(InlineKeyboardButton(text="Eskiroq ➡️", callback_data=f"h:p:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def cmd_history(message: Message, command: CommandObject, ctx: AppContext) -> None:
+    text, keyboard = await history_view(ctx, message.from_user.id, query=(command.args or "").strip() or None)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def cb_history(callback: CallbackQuery, ctx: AppContext) -> None:
+    parts = (callback.data or "").split(":")
+    uid = callback.from_user.id
+    message = callback.message if isinstance(callback.message, Message) else None
+    if len(parts) != 3 or not parts[2].lstrip("-").isdigit():
+        await callback.answer()
+        return
+    if parts[1] == "p":
+        await callback.answer()
+        text, keyboard = await history_view(ctx, uid, page=max(int(parts[2]), 0))
+    else:
+        await ctx.user_settings(uid)
+        conversation = await ctx.db.switch_conversation(uid, int(parts[2]))
+        if conversation is None:
+            await callback.answer("Bu suhbat topilmadi", show_alert=True)
+            return
+        ctx.pending.pop(uid, None)
+        await callback.answer("↩️ Suhbat davom etmoqda")
+        text, keyboard = await history_view(ctx, uid)
+        text += f"\n\n↩️ Davom etmoqda: <b>{html.escape(conversation.title, quote=False)}</b>. Savolingizni yozing."
+    if message:
+        with contextlib.suppress(TelegramBadRequest):
+            await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def templates_view(ctx: AppContext, uid: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    items = await ctx.db.templates(uid)
+    if not items:
+        return TEMPLATE_HELP, None
+    lines = ["📌 <b>Shablonlar</b> — tugmani bossangiz, matn savol sifatida yuboriladi.", ""]
+    rows = []
+    for t in items:
+        lines.append(f"<b>{html.escape(t.name, quote=False)}</b>: {html.escape(_short(t.text, 80), quote=False)}")
+        rows.append(
+            [
+                InlineKeyboardButton(text=f"▶️ {_short(t.name, 28)}", callback_data=f"tpl:u:{t.id}"),
+                InlineKeyboardButton(text="🗑", callback_data=f"tpl:d:{t.id}"),
+            ]
+        )
+    lines += ["", "Qo'shish: <code>/shablon qo'sh Nomi</code> + keyingi qatorda matn"]
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def cmd_templates(message: Message, command: CommandObject, ctx: AppContext) -> None:
+    uid = message.from_user.id
+    args = (command.args or "").strip()
+    first, _, rest = args.partition("\n")
+    verb, _, name = first.strip().partition(" ")
+    verb = verb.lower()
+    if verb in ("qo'sh", "qosh", "add", "+"):
+        name, body = name.strip(), rest.strip()
+        if not name or not body:
+            await message.answer(
+                "Shablon nomi va matni kerak:\n<code>/shablon qo'sh Nomi\nmatn…</code>", parse_mode=ParseMode.HTML
+            )
+            return
+        await ctx.db.add_template(uid, name[:40], body[:4000])
+        await message.answer(f"✅ Shablon saqlandi: <b>{html.escape(name[:40])}</b>", parse_mode=ParseMode.HTML)
+        return
+    if verb in ("o'chir", "ochir", "del", "delete", "-"):
+        target = name.strip().lower()
+        match = next((t for t in await ctx.db.templates(uid) if t.name.lower() == target), None)
+        if match is None:
+            await message.answer("Bunday shablon yo'q. Ro'yxat: /shablon")
+            return
+        await ctx.db.delete_template(uid, match.id)
+        await message.answer(f"🗑 O'chirildi: <b>{html.escape(match.name)}</b>", parse_mode=ParseMode.HTML)
+        return
+    text, keyboard = await templates_view(ctx, uid)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def cb_template(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
+    parts = (callback.data or "").split(":")
+    uid = callback.from_user.id
+    message = callback.message if isinstance(callback.message, Message) else None
+    if len(parts) != 3 or not parts[2].isdigit():
+        await callback.answer()
+        return
+    template = await ctx.db.template(int(parts[2]))
+    if template is None or template.user_id != uid:
+        await callback.answer("Shablon topilmadi", show_alert=True)
+        return
+    if parts[1] == "d":
+        await ctx.db.delete_template(uid, template.id)
+        await callback.answer("🗑 O'chirildi")
+        if message:
+            text, keyboard = await templates_view(ctx, uid)
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        return
+    await callback.answer(f"▶️ {template.name}")
+    if message:
+        sent = await message.answer(f"📌 <b>{html.escape(template.name)}</b>\n{html.escape(template.text)}", parse_mode=ParseMode.HTML)
+        await run_chat_for(
+            uid, message.chat.id, sent.message_id, bot, ctx, ctx.take_pending(uid) + [{"type": "text", "text": template.text}]
+        )
+
+
+def _source_text(message: Message, args: str | None) -> str | None:
+    text = (args or "").strip()
+    if text:
+        return text
+    reply = message.reply_to_message
+    if reply is not None:
+        return (reply.text or reply.caption or "").strip() or None
+    return None
+
+
+async def _send_long(message: Message, text: str) -> None:
+    for start in range(0, len(text), 4000):
+        await message.answer(text[start : start + 4000], parse_mode=None)
+
+
+async def cmd_cyrillic(message: Message, command: CommandObject, ctx: AppContext) -> None:
+    text = _source_text(message, command.args)
+    if not text:
+        await message.answer("Matnni buyruqdan keyin yozing yoki biror xabarga reply qiling: /kirill Salom dunyo")
+        return
+    await _send_long(message, translit.to_cyrillic(text))
+
+
+async def cmd_latin(message: Message, command: CommandObject, ctx: AppContext) -> None:
+    text = _source_text(message, command.args)
+    if not text:
+        await message.answer("Matnni buyruqdan keyin yozing yoki biror xabarga reply qiling: /lotin Салом дунё")
+        return
+    await _send_long(message, translit.to_latin(text))
+
+
+def answer_keyboard(answer_id: int, regenerate: bool = True) -> InlineKeyboardMarkup:
+    first = []
+    if regenerate:
+        first.append(InlineKeyboardButton(text="🔄 Qayta", callback_data=f"ans:re:{answer_id}"))
+    first += [
+        InlineKeyboardButton(text="✂️ Qisqa", callback_data=f"ans:short:{answer_id}"),
+        InlineKeyboardButton(text="🌐 Tarjima", callback_data=f"ans:tr:{answer_id}"),
+    ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            first,
+            [
+                InlineKeyboardButton(text="📄 Word", callback_data=f"ans:word:{answer_id}"),
+                InlineKeyboardButton(text="🔡 Кирилл", callback_data=f"ans:cyr:{answer_id}"),
+            ],
+        ]
+    )
+
+
+def translate_keyboard(answer_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇺🇿 O'zbek", callback_data=f"ans:tr:{answer_id}:uz"),
+                InlineKeyboardButton(text="🇷🇺 Rus", callback_data=f"ans:tr:{answer_id}:ru"),
+                InlineKeyboardButton(text="🇬🇧 Ingliz", callback_data=f"ans:tr:{answer_id}:en"),
+            ],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"ans:kb:{answer_id}")],
+        ]
+    )
+
+
+async def quick_task(bot: Bot, ctx: AppContext, uid: int, chat_id: int, reply_to: int, instruction: str, source: str) -> None:
+    """Arzon model bilan bir martalik ish (qisqartirish, tarjima) — suhbat tarixiga yozilmaydi."""
+    model = ctx.settings.quick_model
+    system = (
+        "Sen matn ustida aniq topshiriqni bajaradigan yordamchisan. Faqat natijani ber: kirish so'zlari, "
+        "izoh va savollarsiz. Matn formatini (ro'yxat, sarlavha, qalin) saqla."
+    )
+    messages = [{"role": "user", "content": [{"type": "text", "text": f"{instruction}\n\n<matn>\n{source}\n</matn>"}]}]
+    async with ctx.lock_for(uid):
+        live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
+        notes: list[str] = []
+        try:
+            result = await _generate(
+                ctx, uid, live, model=model, system=system, messages=messages, effort=None, web_search=False, notes=notes
+            )
+            if result.refused:
+                await live.fail(refusal_message(result))
+                return
+            s = await ctx.user_settings(uid)
+            answer_id = await ctx.db.save_quick_answer(uid, result.text)
+            footer = await _footer(ctx, uid, s, model, None, result)
+            await live.finish(format_answer(result.text, [], notes, footer), answer_keyboard(answer_id, regenerate=False))
+        except Cancelled:
+            await live.finish(format_answer(live.text.strip(), [], ["⏹ To'xtatildi."], None))
+        except ClaudeError as exc:
+            await live.fail(exc.user_message)
+        finally:
+            await live.stop_ticker()
+
+
+async def cb_answer(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
+    parts = (callback.data or "").split(":")
+    uid = callback.from_user.id
+    message = callback.message if isinstance(callback.message, Message) else None
+    if len(parts) < 3 or not parts[2].isdigit() or message is None:
+        await callback.answer()
+        return
+    action, answer_id = parts[1], int(parts[2])
+    stored = await ctx.db.answer(answer_id)
+    if stored is None or stored[0] != uid:
+        await callback.answer("Bu javob topilmadi (ehtimol eski)", show_alert=True)
+        return
+    _, conv_id, text = stored
+    if action == "kb":
+        await callback.answer()
+        with contextlib.suppress(TelegramBadRequest):
+            await message.edit_reply_markup(reply_markup=answer_keyboard(answer_id, regenerate=conv_id != 0))
+        return
+    if action == "tr" and len(parts) == 3:
+        await callback.answer()
+        with contextlib.suppress(TelegramBadRequest):
+            await message.edit_reply_markup(reply_markup=translate_keyboard(answer_id))
+        return
+    if ctx.lock_for(uid).locked():
+        await callback.answer("Oldingi javob tugashini kuting", show_alert=True)
+        return
+    if action == "re":
+        s = await ctx.user_settings(uid)
+        if s.conv_id != conv_id:
+            await callback.answer("Bu javob boshqa suhbatdan — avval /tarix orqali o'sha suhbatga qayting", show_alert=True)
+            return
+        user_blocks = await ctx.db.pop_last_turn(uid, conv_id, answer_id)
+        if user_blocks is None:
+            await callback.answer("Faqat suhbatning oxirgi javobini qayta olish mumkin", show_alert=True)
+            return
+        await callback.answer("🔄 Qayta yozilmoqda…")
+        with contextlib.suppress(TelegramBadRequest):
+            await message.edit_reply_markup(reply_markup=None)
+        await run_chat_for(uid, message.chat.id, message.message_id, bot, ctx, user_blocks)
+    elif action == "short":
+        await callback.answer("✂️ Qisqartirilmoqda…")
+        await quick_task(
+            bot, ctx, uid, message.chat.id, message.message_id,
+            "Quyidagi matnni mazmunini saqlab, eng ko'pi bilan 3–4 jumlaga yoki 3–5 bandli ro'yxatga qisqartir.", text,
+        )
+    elif action == "tr" and len(parts) == 4 and parts[3] in LANGS:
+        await callback.answer("🌐 Tarjima qilinmoqda…")
+        with contextlib.suppress(TelegramBadRequest):
+            await message.edit_reply_markup(reply_markup=answer_keyboard(answer_id, regenerate=conv_id != 0))
+        await quick_task(
+            bot, ctx, uid, message.chat.id, message.message_id,
+            f"Quyidagi matnni {LANGS[parts[3]]} tarjima qil. Faqat tarjimani ber.", text,
+        )
+    elif action == "word":
+        await callback.answer("📄 Word tayyorlanmoqda…")
+        data = await asyncio.to_thread(export.answer_to_docx, text)
+        name = f"javob-{answer_id}.docx"
+        await message.answer_document(BufferedInputFile(data, filename=name), caption="📄 Javob Word hujjat ko'rinishida")
+    elif action == "cyr":
+        await callback.answer("🔡 Kirill yozuvi")
+        await _send_long(message, translit.to_cyrillic(text))
+    else:
+        await callback.answer()
+
+
+async def cmd_backup(message: Message, bot: Bot, ctx: AppContext) -> None:
+    if not await _owner_only(message, ctx):
+        return
+    ok = await scheduler.send_backup(
+        bot, ctx.db, ctx.settings.db_path, [message.chat.id], ctx.settings.timezone, reason="Zaxira nusxa (qo'lda)"
+    )
+    if not ok:
+        await message.answer("❌ Zaxira nusxa olinmadi — serverdagi loglarni tekshiring.")
+
+
 # ------------------------------------------------------------------ xabarlar
 
 
@@ -970,7 +1372,16 @@ async def on_text(message: Message, bot: Bot, ctx: AppContext) -> None:
         text = f"[Iqtibos]\n{quote}\n[/Iqtibos]\n\n{text}"
     if not text:
         return
-    await run_chat(collected[-1], bot, ctx, ctx.take_pending(uid) + [{"type": "text", "text": text}])
+    link_blocks: list[dict] = []
+    if ctx.settings.link_reading and links.find_links(text):
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_chat_action(message.chat.id, "typing")
+        link_blocks, errors = await links.read_links(text, ctx.settings.link_max_bytes)
+        if errors:
+            await message.answer("\n".join(errors) + "\n\nSavolga havolasiz javob beraman.")
+    await run_chat(
+        collected[-1], bot, ctx, ctx.take_pending(uid) + link_blocks + [{"type": "text", "text": text}]
+    )
 
 
 # ------------------------------------------------------------------ suhbat jarayoni
@@ -1001,9 +1412,10 @@ def _stop_notes(result: TurnResult, long_context: int) -> list[str]:
 
 
 async def _footer(
-    ctx: AppContext, uid: int, s: UserSettings, model: str, effort: str | None, result: TurnResult
+    ctx: AppContext, uid: int, s: UserSettings, model: str, effort: str | None, result: TurnResult,
+    shown_model: str | None = None,
 ) -> str:
-    parts = [label(model)]
+    parts = [shown_model or label(model)]
     if effort:
         parts.append(f"effort {effort}")
     if result.searches:
@@ -1070,23 +1482,86 @@ async def _generate(
 
 
 async def run_chat(message: Message, bot: Bot, ctx: AppContext, user_blocks: list[dict]) -> None:
-    lock = ctx.lock_for(message.from_user.id)
+    await run_chat_for(message.from_user.id, message.chat.id, message.message_id, bot, ctx, user_blocks)
+
+
+async def run_chat_for(
+    uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict]
+) -> None:
+    lock = ctx.lock_for(uid)
     if lock.locked():
         with contextlib.suppress(TelegramAPIError):
-            await bot.send_message(
-                chat_id=message.chat.id, text="⏳ Oldingi javob hali yozilmoqda — bu xabar navbatga qo'yildi."
-            )
+            await bot.send_message(chat_id=chat_id, text="⏳ Oldingi javob hali yozilmoqda — bu xabar navbatga qo'yildi.")
     async with lock:
-        await _chat(message, bot, ctx, user_blocks)
+        await _chat(uid, chat_id, reply_to, bot, ctx, user_blocks)
 
 
-async def _chat(message: Message, bot: Bot, ctx: AppContext, user_blocks: list[dict]) -> None:
-    uid = message.from_user.id
+async def pick_model(ctx: AppContext, uid: int, user_blocks: list[dict]) -> str:
+    """✨ Avto: savol murakkabligiga qarab arzon / o'rta / kuchli model."""
+    text = "\n".join(b.get("text", "") for b in user_blocks if b.get("type") == "text")
+    has_files = any(b.get("type") in ("image", "document") for b in user_blocks)
+    level, numbers, cost = await ctx.claude.classify(ctx.settings.quick_model, text, has_files)
+    if cost:
+        await ctx.db.log_usage(uid, ctx.settings.quick_model, numbers, cost)
+    return ctx.settings.auto_models[LEVEL_INDEX[level]]
+
+
+async def economy_mode(ctx: AppContext) -> float | None:
+    """Kredit sarfi tejamkor rejim chegarasiga yetgan bo'lsa — joriy foiz, aks holda None."""
+    budget, percent = ctx.settings.monthly_budget, ctx.settings.budget_economy_percent
+    if budget <= 0 or percent <= 0:
+        return None
+    cycle, _ = await ctx.db.spend_all(billing_cycle_start(ctx.now(), ctx.settings.budget_reset_day))
+    share = cycle / budget
+    return share if share * 100 >= percent else None
+
+
+async def check_budget(ctx: AppContext, bot: Bot) -> None:
+    """Kredit 50 / 80 / 100% ga yetganda egasiga bir marta (har davrda) xabar beradi."""
+    budget = ctx.settings.monthly_budget
+    if budget <= 0:
+        return
+    now = ctx.now()
+    start = billing_cycle_start(now, ctx.settings.budget_reset_day)
+    cycle, _ = await ctx.db.spend_all(start)
+    share = cycle / budget * 100
+    key = start.strftime("%Y-%m-%d")
+    for level in BUDGET_LEVELS:
+        if share < level or await ctx.db.alert_sent(key, level):
+            continue
+        await ctx.db.mark_alert(key, level)
+        icon = "🔴" if level >= 100 else "🟠" if level >= 80 else "🟡"
+        text = (
+            f"{icon} Kredit sarfi {level}% ga yetdi: <b>${cycle:.2f}</b> / ${budget:g} "
+            f"(davr {start.day}-{MONTHS[start.month - 1]}dan).\n"
+        )
+        if level >= 100:
+            text += "Oylik kredit tugagan bo'lishi mumkin — Console'da balansni tekshiring."
+        elif ctx.settings.budget_economy_percent:
+            text += f"{ctx.settings.budget_economy_percent}% dan keyin hamma tejamkor modelga o'tadi ({label(ctx.settings.economy_model)})."
+        for owner_id in ctx.settings.owner_ids:
+            with contextlib.suppress(TelegramAPIError):
+                await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
+
+
+async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict]) -> None:
     s = await ctx.user_settings(uid)
     model = s.active_model
     # Zaxira model ishlayotganda effort yuborilmaydi (u modelning standarti bilan ishlaydi)
     effort = None if s.model_override else s.effort
     notes: list[str] = []
+    shown_model: str | None = None
+    share = await economy_mode(ctx)
+    if share is not None and not s.model_override:
+        if model != ctx.settings.economy_model:
+            model = ctx.settings.economy_model
+            shown_model = f"💡 Tejamkor → {label(model)}"
+            notes.append(f"💡 Kredit {share:.0%} sarflangani uchun tejamkor model ishlatildi: {label(model)}.")
+    elif model == AUTO_MODEL:
+        model = await pick_model(ctx, uid, user_blocks)
+        shown_model = f"✨ Avto → {label(model)}"
+    if model == AUTO_MODEL:  # tejamkor model avto bilan bir xil bo'lsa ham API'ga «auto» ketmasin
+        model = ctx.settings.economy_model
 
     history = await ctx.db.history(uid, s.conv_id, s.history_start_id)
     limit = ctx.settings.history_max_messages
@@ -1102,9 +1577,9 @@ async def _chat(message: Message, bot: Bot, ctx: AppContext, user_blocks: list[d
 
     messages = [{"role": m.role, "content": m.content} for m in history]
     messages.append({"role": "user", "content": user_blocks})
-    system = ctx.prompt.build()
+    system = ctx.prompt.build(extra=load_mode_prompt(ctx.settings.modes_dir, s.mode))
 
-    live = await LiveMessage.start(bot, message.chat.id, message.message_id, label(model))
+    live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
     try:
         result = await _generate(
             ctx, uid, live, model=model, system=system, messages=messages,
@@ -1132,16 +1607,22 @@ async def _chat(message: Message, bot: Bot, ctx: AppContext, user_blocks: list[d
             await live.fail(refusal_message(result))
             return
 
-        await ctx.db.add_turn(uid, s.conv_id, user_blocks, result.text or "(bo'sh javob)")
+        answer_id = await ctx.db.add_turn(uid, s.conv_id, user_blocks, result.text or "(bo'sh javob)")
         notes.extend(_stop_notes(result, ctx.settings.long_context_tokens))
-        footer = await _footer(ctx, uid, s, model, effort, result)
-        await live.finish(format_answer(result.text, result.sources, notes, footer))
+        footer = await _footer(ctx, uid, s, model, effort, result, shown_model)
+        await live.finish(format_answer(result.text, result.sources, notes, footer), answer_keyboard(answer_id))
+        await check_budget(ctx, bot)
     except Cancelled:
         partial = live.text.strip()
         if partial:
-            await ctx.db.add_turn(uid, s.conv_id, user_blocks, partial + "\n\n[javob foydalanuvchi tomonidan to'xtatildi]")
-        notes.append("⏹ Javob to'xtatildi.")
-        await live.finish(format_answer(partial, [], notes, None))
+            answer_id = await ctx.db.add_turn(
+                uid, s.conv_id, user_blocks, partial + "\n\n[javob foydalanuvchi tomonidan to'xtatildi]"
+            )
+            notes.append("⏹ Javob to'xtatildi.")
+            await live.finish(format_answer(partial, [], notes, None), answer_keyboard(answer_id))
+        else:
+            notes.append("⏹ Javob to'xtatildi.")
+            await live.finish(format_answer(partial, [], notes, None))
     except ClaudeError as exc:
         await live.fail(exc.user_message)
     except Exception:
@@ -1169,6 +1650,12 @@ def build_router() -> Router:
     router.message.register(cmd_effort, Command("effort"))
     router.message.register(cmd_search, Command("qidiruv", "search"))
     router.message.register(cmd_cost, Command("xarajat", "cost"))
+    router.message.register(cmd_mode, Command("rejim", "mode"))
+    router.message.register(cmd_history, Command("tarix", "history"))
+    router.message.register(cmd_templates, Command("shablon", "shablonlar", "template"))
+    router.message.register(cmd_cyrillic, Command("kirill", "cyr"))
+    router.message.register(cmd_latin, Command("lotin", "lat"))
+    router.message.register(cmd_backup, Command("zaxira", "backup"))
     # admin (faqat egasi; tekshiruv har bir handler ichida)
     router.message.register(cmd_update, Command("yangilash", "update"))
     router.message.register(cmd_version, Command("versiya", "version"))
@@ -1187,6 +1674,10 @@ def build_router() -> Router:
     router.callback_query.register(cb_cost_toggle, F.data == "c:toggle")
     router.callback_query.register(cb_stop, F.data == "stop")
     router.callback_query.register(cb_menu, F.data.startswith("menu:"))
+    router.callback_query.register(cb_mode, F.data.startswith("mode:"))
+    router.callback_query.register(cb_history, F.data.startswith("h:"))
+    router.callback_query.register(cb_template, F.data.startswith("tpl:"))
+    router.callback_query.register(cb_answer, F.data.startswith("ans:"))
     router.callback_query.register(cb_member, F.data.startswith("rm:") | F.data.startswith("rs:"))
     router.callback_query.register(cb_update, F.data.startswith("up:"))
     return router

@@ -129,27 +129,32 @@ class LiveMessage:
                 await self._ticker
             self._ticker = None
 
-    async def finish(self, chunks: list[tuple[str | None, str]]) -> None:
-        """Yakuniy javob: birinchi bo'lak jonli xabar o'rniga, qolganlari yangi xabar bo'lib ketadi."""
+    async def finish(self, chunks: list[tuple[str | None, str]], reply_markup: Any = None) -> None:
+        """Yakuniy javob: birinchi bo'lak jonli xabar o'rniga, qolganlari yangi xabar bo'lib ketadi.
+        reply_markup (javob tugmalari) oxirgi bo'lakka qo'yiladi."""
         await self.stop_ticker()
+        last = len(chunks) - 1
         for index, (html_text, plain) in enumerate(chunks):
-            if index == 0 and await self._final_edit(html_text, plain):
+            markup = reply_markup if index == last else None
+            if index == 0 and await self._final_edit(html_text, plain, markup):
                 continue
-            await self._send(html_text, plain)
+            await self._send(html_text, plain, markup)
 
     async def fail(self, text: str) -> None:
         await self.finish([(None, text)])
 
-    async def _final_edit(self, html_text: str | None, plain: str) -> bool:
+    async def _final_edit(self, html_text: str | None, plain: str, reply_markup: Any = None) -> bool:
         for _ in range(3):
             try:
                 if html_text is not None:
                     await self.bot.edit_message_text(
-                        text=html_text, chat_id=self.chat_id, message_id=self.message_id, parse_mode=ParseMode.HTML
+                        text=html_text, chat_id=self.chat_id, message_id=self.message_id, parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
                     )
                 else:
                     await self.bot.edit_message_text(
-                        text=plain, chat_id=self.chat_id, message_id=self.message_id, parse_mode=None
+                        text=plain, chat_id=self.chat_id, message_id=self.message_id, parse_mode=None,
+                        reply_markup=reply_markup,
                     )
                 return True
             except TelegramRetryAfter as exc:
@@ -168,13 +173,17 @@ class LiveMessage:
                 return False
         return False
 
-    async def _send(self, html_text: str | None, plain: str) -> None:
+    async def _send(self, html_text: str | None, plain: str, reply_markup: Any = None) -> None:
         for _ in range(3):
             try:
                 if html_text is not None:
-                    await self.bot.send_message(chat_id=self.chat_id, text=html_text, parse_mode=ParseMode.HTML)
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=html_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+                    )
                 else:
-                    await self.bot.send_message(chat_id=self.chat_id, text=plain, parse_mode=None)
+                    await self.bot.send_message(
+                        chat_id=self.chat_id, text=plain, parse_mode=None, reply_markup=reply_markup
+                    )
                 return
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(exc.retry_after)

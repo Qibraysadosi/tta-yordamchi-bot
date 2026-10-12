@@ -60,11 +60,16 @@ MODELS: dict[str, ModelSpec] = {
 
 # /model menyusida ko'rinadiganlar
 SELECTABLE_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+# Avto: har savol uchun model murakkablikka qarab tanlanadi (sozlama sifatida saqlanadi, API'ga yuborilmaydi)
+AUTO_MODEL = "auto"
+AUTO_LABEL = "✨ Avto"
 
 WEB_SEARCH_USD = 10 / 1000  # $10 / 1000 qidiruv
 
 
 def label(model_id: str) -> str:
+    if model_id == AUTO_MODEL:
+        return AUTO_LABEL
     spec = MODELS.get(model_id)
     return spec.label if spec else model_id
 

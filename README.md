@@ -4,7 +4,15 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 
 ## Imkoniyatlar
 
-- **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi
+- **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
+- **Ish rejimlari:** `/rejim` — rasmiy xat (TKHTA nomidan), Instagram post, Meta reklama, tarjimon, dasturchi
+- **Javob ostidagi tugmalar:** 🔄 qayta, ✂️ qisqartirish, 🌐 tarjima (uz/ru/en), 📄 Word fayl, 🔡 kirill yozuvi
+- **Suhbatlar tarixi:** `/tarix` — eski suhbatlar ro'yxati va qidiruv, istalganiga qaytib davom ettirish
+- **Shablonlar:** `/shablon` — tez-tez yuboriladigan so'rovlar bir tugmada
+- **Havolalarni o'qish:** maqola yoki PDF havolasi yuborilsa, bot uni o'qib chiqadi
+- **Byudjet nazorati:** kredit 50/80/100% ga yetganda egasiga xabar; 90% dan keyin hamma tejamkor modelga o'tadi
+- **Kunlik zaxira:** `data/bot.db` nusxasi har kuni egasiga yuboriladi (`/zaxira` — hozir)
+- **Lotin ↔ kirill:** `/kirill`, `/lotin`
 - **Fikrlash darajasi:** `/effort` (low … max)
 - **Fayllar:** rasm, PDF, Word (.docx), Excel (.xlsx), matn/kod fayllari. Albom (bir nechta rasm) ham bo'ladi
 - **Internet qidiruvi:** yangi ma'lumot kerak bo'lsa Claude o'zi qidiradi, manbalarni ko'rsatadi (`/qidiruv` bilan yoq/o'chir)
@@ -21,7 +29,11 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 | Buyruq | Vazifasi |
 |---|---|
 | `/new` | Yangi suhbat (kontekst tozalanadi — javoblar arzonlashadi) |
-| `/model` | Modelni tanlash |
+| `/model` | Modelni tanlash (✨ Avto, Fable, Opus, Sonnet, Haiku) |
+| `/rejim` | Ish rejimi: rasmiy xat, Instagram post, Meta reklama, tarjimon, dasturchi |
+| `/tarix` | Suhbatlar tarixi; `/tarix so'z` — qidiruv |
+| `/shablon` | Shablonlar; `/shablon qo'sh Nomi` + keyingi qatorda matn |
+| `/kirill`, `/lotin` | Yozuvni o'girish (matn yoki xabarga reply) |
 | `/effort` | Fikrlash darajasi |
 | `/qidiruv` | Internet qidiruvini yoqish/o'chirish |
 | `/xarajat` | Sarf hisoboti; har javob ostidagi narxni yoqish/o'chirish |
@@ -39,6 +51,15 @@ Faylni izohsiz yuborsangiz, bot uni keyingi savolingiz bilan birga ko'rib chiqad
 | `/versiya` | Joriy versiya va qaytish mumkin bo'lgan versiyalar |
 | `/qaytarish` | Oldingi versiyaga qaytish |
 | `/kod` | Botning joriy kodi (.zip) — yangi funksiya so'raganda Claude'ga yuborish uchun |
+| `/zaxira` | Bazaning zaxira nusxasini hozir olish |
+
+## Sinov boti
+
+Yangilanishni avval sinov botida tekshirish uchun:
+
+1. @BotFather'da ikkinchi bot oching (masalan, `TTA_yordamchi_test_bot`) va tokenini oling.
+2. Serverda: `cd /root/claude-telegram-bot && bash install-test.sh` — token so'raydi va `../claude-telegram-bot-test` papkasida alohida konteyner ishga tushiradi (API kalit asosiy `.env` dan olinadi, baza alohida).
+3. Yangi `.zip` ni avval sinov botiga `/yangilash` bilan yuboring, ishlasa — asosiy botga.
 
 ## Parol bilan kirish
 
@@ -61,7 +82,7 @@ Xavfsizlik:
 - Har yangilanishdan oldin joriy versiya zaxiraga olinadi (oxirgi 5 tasi saqlanadi).
 - Yangi versiya ishga tushmasa, eski versiya **avtomatik** tiklanadi va sizga xato matni yuboriladi — shu matnni Claude'ga yuboring.
 - `/qaytarish` — oxirgi yangilanishni bekor qiladi (ketma-ket bosilsa, yanada oldingi versiyaga qaytadi).
-- Arxivdan faqat `bot/`, `prompts/`, `requirements.txt`, `VERSION` olinadi; `.env`, baza va `launcher.py` ga tegilmaydi.
+- Arxivdan `bot/`, `prompts/`, `requirements.txt`, `VERSION` (va `install*.sh`, `docker-compose.yml`, `README.md`) olinadi; `.env`, baza, `Dockerfile` va `launcher.py` ga tegilmaydi.
 - `requirements.txt` o'zgargan bo'lsa, yangi kutubxonalar avtomatik o'rnatiladi.
 
 Keyingi safar yangi funksiya so'raganingizda, avval botdan `/kod` bilan joriy kodni oling va uni Claude'ga yuboring.

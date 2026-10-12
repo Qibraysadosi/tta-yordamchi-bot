@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import MODELS, SELECTABLE_MODELS
+from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 WEB_SEARCH_TOOLS = ("web_search_20250305", "web_search_20260209", "web_search_20260318")
@@ -71,9 +71,17 @@ class Settings:
     image_max_edge: int
     monthly_budget: float
     budget_reset_day: int
+    budget_economy_percent: int  # kredit shu foizga yetganda hamma tejamkor modelga o'tadi (0 — o'chiq)
+    economy_model: str
+    auto_models: tuple[str, str, str]  # avto-model: oddiy / o'rta / murakkab savollar uchun
+    quick_model: str  # tasniflash, qisqartirish, tarjima kabi tez ishlar uchun arzon model
+    link_reading: bool
+    link_max_bytes: int
+    backup_time: str | None  # kunlik zaxira vaqti (HH:MM), None — o'chiq
     timezone: str
     db_path: Path
     system_prompt_path: Path
+    modes_dir: Path
 
 
 def load_settings() -> Settings:
@@ -100,8 +108,30 @@ def load_settings() -> Settings:
         raise ConfigError("OWNER_IDS bo'sh")
 
     default_model = _env("DEFAULT_MODEL", "claude-opus-5-5")
-    if default_model not in SELECTABLE_MODELS:
-        raise ConfigError(f"DEFAULT_MODEL quyidagilardan biri bo'lsin: {', '.join(SELECTABLE_MODELS)}")
+    if default_model not in SELECTABLE_MODELS and default_model != AUTO_MODEL:
+        raise ConfigError(f"DEFAULT_MODEL quyidagilardan biri bo'lsin: {AUTO_MODEL}, {', '.join(SELECTABLE_MODELS)}")
+
+    auto_raw = _env("AUTO_MODELS", "claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5")
+    auto_models = tuple(x.strip() for x in auto_raw.split(",") if x.strip())
+    if len(auto_models) != 3 or any(m not in MODELS for m in auto_models):
+        raise ConfigError("AUTO_MODELS vergul bilan 3 ta model bo'lsin: arzon,o'rta,kuchli")
+
+    quick_model = _env("QUICK_MODEL", "claude-haiku-5-5")
+    economy_model = _env("ECONOMY_MODEL", "claude-haiku-5-5")
+    for name, value in (("QUICK_MODEL", quick_model), ("ECONOMY_MODEL", economy_model)):
+        if value not in MODELS:
+            raise ConfigError(f"{name} quyidagilardan biri bo'lsin: {', '.join(MODELS)}")
+
+    backup_time: str | None = _env("BACKUP_TIME", "03:30")
+    if backup_time.lower() in ("off", "none", "0", "yoq", "yo'q"):
+        backup_time = None
+    else:
+        try:
+            hours, minutes = backup_time.split(":")
+            if not (0 <= int(hours) <= 23 and 0 <= int(minutes) <= 59):
+                raise ValueError
+        except ValueError as exc:
+            raise ConfigError("BACKUP_TIME HH:MM ko'rinishida bo'lsin (masalan 03:30) yoki off") from exc
 
     fallback_model = _env("FALLBACK_MODEL", "claude-opus-4-8")
     if fallback_model.lower() in ("off", "none", "0", "yoq", "yo'q"):
@@ -135,7 +165,15 @@ def load_settings() -> Settings:
         image_max_edge=_int("IMAGE_MAX_EDGE", 1568, 256, 2576),
         monthly_budget=_float("MONTHLY_BUDGET", 100.0),
         budget_reset_day=_int("BUDGET_RESET_DAY", 1, 1, 28),
+        budget_economy_percent=_int("BUDGET_ECONOMY_PERCENT", 90, 0, 100),
+        economy_model=economy_model,
+        auto_models=auto_models,  # type: ignore[arg-type]
+        quick_model=quick_model,
+        link_reading=_bool("LINK_READING", True),
+        link_max_bytes=_int("LINK_MAX_MB", 8, 1, 20) * 1024 * 1024,
+        backup_time=backup_time,
         timezone=_env("TIMEZONE", "Asia/Tashkent"),
         db_path=Path(_env("DB_PATH", "data/bot.db")),
         system_prompt_path=Path(_env("SYSTEM_PROMPT_FILE", "prompts/system.md")),
+        modes_dir=Path(_env("MODES_DIR", "prompts/modes")),
     )

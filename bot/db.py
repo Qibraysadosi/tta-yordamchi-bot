@@ -55,7 +55,34 @@ CREATE TABLE IF NOT EXISTS bot_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS conversations (
+    user_id    INTEGER NOT NULL,
+    conv_id    INTEGER NOT NULL,
+    title      TEXT    NOT NULL,
+    created_at TEXT    NOT NULL,
+    updated_at TEXT    NOT NULL,
+    turns      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, conv_id)
+);
+CREATE TABLE IF NOT EXISTS templates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    name       TEXT    NOT NULL,
+    text       TEXT    NOT NULL,
+    created_at TEXT    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS budget_alerts (
+    cycle TEXT    NOT NULL,
+    level INTEGER NOT NULL,
+    PRIMARY KEY (cycle, level)
+);
 """
+
+# Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)
+MIGRATIONS = {
+    "settings": {"mode": "TEXT"},
+}
+TITLE_LIMIT = 48
 
 EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
@@ -78,10 +105,47 @@ class UserSettings:
     conv_id: int
     history_start_id: int
     model_override: str | None
+    mode: str | None = None
 
     @property
     def active_model(self) -> str:
         return self.model_override or self.model
+
+
+@dataclass
+class Conversation:
+    conv_id: int
+    title: str
+    created_at: str
+    updated_at: str
+    turns: int
+
+
+@dataclass
+class Template:
+    id: int
+    user_id: int
+    name: str
+    text: str
+
+
+def conversation_title(user_content: list[dict]) -> str:
+    """Birinchi xabardan suhbat sarlavhasi: matnning boshi, matn bo'lmasa — fayl nomi."""
+    for block in user_content:
+        if block.get("type") == "text":
+            text = " ".join(block["text"].split())
+            if text.startswith("[Iqtibos]") and "[/Iqtibos]" in text:
+                text = text.split("[/Iqtibos]", 1)[1].strip() or text
+            if text:
+                return text if len(text) <= TITLE_LIMIT else text[: TITLE_LIMIT - 1].rstrip() + "…"
+    for block in user_content:
+        if block.get("type") == "document":
+            name = block.get("title") or (block.get("source") or {}).get("name")
+            if name:
+                return f"📎 {name}"[:TITLE_LIMIT]
+        if block.get("type") == "image":
+            return "🖼 Rasm bilan suhbat"
+    return "Suhbat"
 
 
 @dataclass
@@ -111,7 +175,7 @@ class Member:
 
 class Database:
     _SETTINGS_FIELDS = frozenset(
-        {"model", "effort", "web_search", "show_cost", "conv_id", "history_start_id", "model_override"}
+        {"model", "effort", "web_search", "show_cost", "conv_id", "history_start_id", "model_override", "mode"}
     )
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
@@ -125,10 +189,45 @@ class Database:
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.executescript(SCHEMA)
         await conn.commit()
-        return cls(conn)
+        db = cls(conn)
+        await db._migrate()
+        return db
+
+    async def _migrate(self) -> None:
+        for table, columns in MIGRATIONS.items():
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                existing = {row[1] for row in await cur.fetchall()}
+            for column, definition in columns.items():
+                if column not in existing:
+                    await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        # Eski suhbatlar uchun sarlavha yozuvlari (bir marta)
+        async with self._conn.execute(
+            "SELECT m.user_id, m.conv_id, MIN(m.id), MIN(m.created_at), MAX(m.created_at),"
+            " SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END)"
+            " FROM messages m LEFT JOIN conversations c ON c.user_id = m.user_id AND c.conv_id = m.conv_id"
+            " WHERE c.conv_id IS NULL AND m.conv_id > 0 GROUP BY m.user_id, m.conv_id"
+        ) as cur:
+            missing = await cur.fetchall()
+        for user_id, conv_id, first_id, created, updated, turns in missing:
+            async with self._conn.execute("SELECT content FROM messages WHERE id = ?", (first_id,)) as cur:
+                row = await cur.fetchone()
+            try:
+                title = conversation_title(json.loads(row[0])) if row else "Suhbat"
+            except (ValueError, TypeError, AttributeError):
+                title = "Suhbat"
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO conversations (user_id, conv_id, title, created_at, updated_at, turns)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, conv_id, title, created, updated, turns or 0),
+            )
+        await self._conn.commit()
 
     async def close(self) -> None:
         await self._conn.close()
+
+    async def vacuum_into(self, target: Path) -> None:
+        """Bazaning izchil nusxasini alohida faylga yozadi (zaxira uchun)."""
+        await self._conn.execute("VACUUM INTO ?", (str(target),))
 
     # --- sozlamalar ---
     async def get_settings(self, user_id: int, default_model: str, default_web_search: bool) -> UserSettings:
@@ -140,7 +239,7 @@ class Database:
                 (user_id, default_model, int(default_web_search)),
             )
             await self._conn.commit()
-            return UserSettings(user_id, default_model, None, default_web_search, True, 1, 0, None)
+            return UserSettings(user_id, default_model, None, default_web_search, True, 1, 0, None, None)
         return UserSettings(
             user_id=row["user_id"],
             model=row["model"],
@@ -150,6 +249,7 @@ class Database:
             conv_id=row["conv_id"],
             history_start_id=row["history_start_id"],
             model_override=row["model_override"],
+            mode=row["mode"],
         )
 
     async def update_settings(self, user_id: int, **fields: Any) -> None:
@@ -164,11 +264,64 @@ class Database:
         await self._conn.commit()
 
     async def new_conversation(self, user_id: int) -> None:
+        # Yangi raqam — shu foydalanuvchining eng katta suhbat raqamidan keyingisi (tarixdan qaytilgan bo'lsa ham)
         await self._conn.execute(
-            "UPDATE settings SET conv_id = conv_id + 1, history_start_id = 0, model_override = NULL WHERE user_id = ?",
-            (user_id,),
+            "UPDATE settings SET conv_id = (SELECT COALESCE(MAX(conv_id), 0) FROM messages WHERE user_id = ?) + 1,"
+            " history_start_id = 0, model_override = NULL WHERE user_id = ?",
+            (user_id, user_id),
         )
         await self._conn.commit()
+
+    async def switch_conversation(self, user_id: int, conv_id: int) -> Conversation | None:
+        conversation = await self.conversation(user_id, conv_id)
+        if conversation is None:
+            return None
+        await self._conn.execute(
+            "UPDATE settings SET conv_id = ?, history_start_id = 0, model_override = NULL WHERE user_id = ?",
+            (conv_id, user_id),
+        )
+        await self._conn.commit()
+        return conversation
+
+    # --- suhbatlar ro'yxati ---
+    async def conversation(self, user_id: int, conv_id: int) -> Conversation | None:
+        async with self._conn.execute(
+            "SELECT * FROM conversations WHERE user_id = ? AND conv_id = ?", (user_id, conv_id)
+        ) as cur:
+            row = await cur.fetchone()
+        return self._conversation(row) if row else None
+
+    async def conversations(self, user_id: int, limit: int = 8, offset: int = 0) -> tuple[list[Conversation], int]:
+        async with self._conn.execute(
+            "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC, conv_id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        ) as cur:
+            rows = await cur.fetchall()
+        async with self._conn.execute("SELECT COUNT(*) FROM conversations WHERE user_id = ?", (user_id,)) as cur:
+            total = (await cur.fetchone())[0]
+        return [self._conversation(row) for row in rows], int(total)
+
+    async def search_conversations(self, user_id: int, query: str, limit: int = 8) -> list[Conversation]:
+        """Sarlavha yoki xabarlar matnida qidiradi (katta-kichik harf farqsiz)."""
+        pattern = f"%{query.lower()}%"
+        async with self._conn.execute(
+            "SELECT c.* FROM conversations c WHERE c.user_id = ? AND (LOWER(c.title) LIKE ?"
+            " OR c.conv_id IN (SELECT conv_id FROM messages WHERE user_id = ? AND LOWER(content) LIKE ?))"
+            " ORDER BY c.updated_at DESC LIMIT ?",
+            (user_id, pattern, user_id, pattern, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._conversation(row) for row in rows]
+
+    @staticmethod
+    def _conversation(row: Any) -> Conversation:
+        return Conversation(
+            conv_id=row["conv_id"],
+            title=row["title"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            turns=row["turns"],
+        )
 
     # --- suhbat tarixi ---
     async def history(self, user_id: int, conv_id: int, start_id: int) -> list[StoredMessage]:
@@ -179,17 +332,102 @@ class Database:
             rows = await cur.fetchall()
         return [StoredMessage(row["id"], row["role"], json.loads(row["content"])) for row in rows]
 
-    async def add_turn(self, user_id: int, conv_id: int, user_content: list[dict], assistant_text: str) -> None:
+    async def add_turn(self, user_id: int, conv_id: int, user_content: list[dict], assistant_text: str) -> int:
+        """Savol-javobni saqlaydi; javob yozuvining id'sini qaytaradi (javob ostidagi tugmalar uchun)."""
         now = _now()
         assistant_content = [{"type": "text", "text": assistant_text}]
         await self._conn.execute(
             "INSERT INTO messages (user_id, conv_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
             (user_id, conv_id, json.dumps(user_content, ensure_ascii=False), now),
         )
-        await self._conn.execute(
+        cur = await self._conn.execute(
             "INSERT INTO messages (user_id, conv_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)",
             (user_id, conv_id, json.dumps(assistant_content, ensure_ascii=False), now),
         )
+        answer_id = int(cur.lastrowid)
+        await self._conn.execute(
+            "INSERT INTO conversations (user_id, conv_id, title, created_at, updated_at, turns) VALUES (?, ?, ?, ?, ?, 1)"
+            " ON CONFLICT(user_id, conv_id) DO UPDATE SET updated_at = excluded.updated_at, turns = turns + 1",
+            (user_id, conv_id, conversation_title(user_content), now, now),
+        )
+        await self._conn.commit()
+        return answer_id
+
+    async def save_quick_answer(self, user_id: int, text: str) -> int:
+        """Tarixga kirmaydigan javob (qisqartirish, tarjima) — tugmalar ishlashi uchun conv_id = 0 bilan saqlanadi."""
+        cur = await self._conn.execute(
+            "INSERT INTO messages (user_id, conv_id, role, content, created_at) VALUES (?, 0, 'assistant', ?, ?)",
+            (user_id, json.dumps([{"type": "text", "text": text}], ensure_ascii=False), _now()),
+        )
+        await self._conn.commit()
+        return int(cur.lastrowid)
+
+    async def answer(self, answer_id: int) -> tuple[int, int, str] | None:
+        """Javob yozuvi: (user_id, conv_id, matn)."""
+        async with self._conn.execute(
+            "SELECT user_id, conv_id, content FROM messages WHERE id = ? AND role = 'assistant'", (answer_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        blocks = json.loads(row["content"])
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        return int(row["user_id"]), int(row["conv_id"]), text
+
+    async def pop_last_turn(self, user_id: int, conv_id: int, answer_id: int) -> list[dict] | None:
+        """Qayta javob olish uchun: oxirgi savol-javobni o'chirib, savol matnini qaytaradi.
+        answer_id suhbatning oxirgi javobi bo'lmasa — None."""
+        async with self._conn.execute(
+            "SELECT id, role, content FROM messages WHERE user_id = ? AND conv_id = ? ORDER BY id DESC LIMIT 2",
+            (user_id, conv_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        if len(rows) != 2 or rows[0]["id"] != answer_id or rows[0]["role"] != "assistant" or rows[1]["role"] != "user":
+            return None
+        await self._conn.execute("DELETE FROM messages WHERE id IN (?, ?)", (rows[0]["id"], rows[1]["id"]))
+        await self._conn.execute(
+            "UPDATE conversations SET turns = MAX(turns - 1, 0) WHERE user_id = ? AND conv_id = ?", (user_id, conv_id)
+        )
+        await self._conn.commit()
+        return json.loads(rows[1]["content"])
+
+    # --- shablonlar ---
+    async def templates(self, user_id: int) -> list[Template]:
+        async with self._conn.execute(
+            "SELECT * FROM templates WHERE user_id = ? ORDER BY name COLLATE NOCASE", (user_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [Template(row["id"], row["user_id"], row["name"], row["text"]) for row in rows]
+
+    async def template(self, template_id: int) -> Template | None:
+        async with self._conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)) as cur:
+            row = await cur.fetchone()
+        return Template(row["id"], row["user_id"], row["name"], row["text"]) if row else None
+
+    async def add_template(self, user_id: int, name: str, text: str) -> Template:
+        await self._conn.execute(
+            "DELETE FROM templates WHERE user_id = ? AND LOWER(name) = LOWER(?)", (user_id, name)
+        )
+        cur = await self._conn.execute(
+            "INSERT INTO templates (user_id, name, text, created_at) VALUES (?, ?, ?, ?)", (user_id, name, text, _now())
+        )
+        await self._conn.commit()
+        return Template(int(cur.lastrowid), user_id, name, text)
+
+    async def delete_template(self, user_id: int, template_id: int) -> bool:
+        cur = await self._conn.execute("DELETE FROM templates WHERE id = ? AND user_id = ?", (template_id, user_id))
+        await self._conn.commit()
+        return cur.rowcount > 0
+
+    # --- byudjet ogohlantirishlari ---
+    async def alert_sent(self, cycle: str, level: int) -> bool:
+        async with self._conn.execute(
+            "SELECT 1 FROM budget_alerts WHERE cycle = ? AND level = ?", (cycle, level)
+        ) as cur:
+            return await cur.fetchone() is not None
+
+    async def mark_alert(self, cycle: str, level: int) -> None:
+        await self._conn.execute("INSERT OR IGNORE INTO budget_alerts (cycle, level) VALUES (?, ?)", (cycle, level))
         await self._conn.commit()
 
     # --- xarajatlar ---

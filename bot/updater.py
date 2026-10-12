@@ -35,14 +35,17 @@ STAMP_FORMAT = "%Y%m%d-%H%M%S"
 RELEASE_ITEMS = ("bot", "prompts", "requirements.txt", "VERSION")
 # Yangilanish arxivida ruxsat etilgan narsalar; qolganlari (.env, data/, Dockerfile, launcher.py ...) e'tiborsiz qoladi
 ALLOWED_TOP = frozenset(
-    {"bot", "prompts", "requirements.txt", "VERSION", "UPDATE_NOTES.md", "README.md", ".env.example", "install.sh"}
+    {
+        "bot", "prompts", "requirements.txt", "VERSION", "UPDATE_NOTES.md", "README.md", ".env.example",
+        "install.sh", "install-test.sh", "docker-compose.yml",
+    }
 )
 REPLACED_DIRS = frozenset({"bot"})  # butunlay almashtiriladi — eski versiyadagi ortiqcha fayllar qolmaydi
 NOT_INSTALLED = frozenset({"UPDATE_NOTES.md"})
 # /kod: botni qayta yig'ish uchun kerak bo'lgan hamma narsa (.env va data/ — kirmaydi)
 EXPORT_ITEMS = (
     "bot", "prompts", "requirements.txt", "VERSION", "launcher.py", "Dockerfile", "docker-compose.yml",
-    ".dockerignore", ".env.example", "install.sh", "README.md",
+    ".dockerignore", ".env.example", "install.sh", "install-test.sh", "README.md",
 )
 EXPORT_ROOT = "claude-telegram-bot"
 

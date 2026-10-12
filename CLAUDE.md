@@ -1,7 +1,8 @@
 # TTA Yordamchi — Claude Code uchun loyiha qo'llanmasi
 
 Shaxsiy Telegram bot (Claude API, aiogram 3, Python 3.13), Hostinger VPS'da Docker'da ishlaydi. Egasi botni
-`.zip` arxiv bilan Telegram orqali yangilaydi (`/yangilash`), shuning uchun har ish paketi tayyor arxiv bo'lib chiqadi.
+Telegram orqali yangilaydi: `.zip` arxiv yuborib (`/yangilash`) yoki GitHub Release'dan (`/yangilash github`), shuning uchun
+har ish paketi tayyor arxiv bo'lib chiqadi: `VERSION` + `UPDATE_NOTES.md` → testlar → push → `build_release.py --publish`.
 Texnik topshiriq (32 ta paket): `docs/TZ.md`. Mini App ekranlari: `docs/screens/`.
 
 ## Buyruqlar
@@ -12,6 +13,7 @@ python -m pytest                      # barcha testlar (tests/, ~30 s)
 python -m pyflakes bot scripts tests  # lint
 python tests/e2e/e2e.py               # haqiqiy launcher + soxta Telegram (~2 daqiqa)
 python scripts/build_release.py       # dist/claude-telegram-bot-v<VERSION>.zip + maxfiy satr tekshiruvi
+python scripts/build_release.py --publish   # + GitHub Release (tag v<VERSION>) — egasi botda /yangilash github
 python scripts/miniapp_shots.py       # Mini App skrinshotlari (playwright kerak)
 ```
 
@@ -23,7 +25,8 @@ python scripts/miniapp_shots.py       # Mini App skrinshotlari (playwright kerak
 - `bot/files.py`, `bot/pdfs.py`, `bot/doctrans.py`, `bot/export.py` — fayl yaratish/amallar; `bot/media.py` — kiruvchi fayllar
 - `bot/db.py` — SQLite (`SCHEMA` + `MIGRATIONS`), `bot/filestore.py` — yaratilgan fayllar galereyasi
 - `bot/webapp.py` + `bot/miniapp/` — Mini App API (Telegram `initData` imzosi) va frontend (framework'siz JS, `app.css` tokenlar, `icons.js`)
-- `bot/updater.py`, `launcher.py` — yangilanish, zaxira, orqaga qaytish; `bot/scheduler.py` — kunlik ishlar
+- `bot/updater.py`, `launcher.py` — yangilanish, zaxira, orqaga qaytish; `bot/github.py` — GitHub REST mijozi (`GitHubClient`: so'nggi release/aktiv yoki tarmoq arxivi)
+- `bot/scheduler.py` — kunlik ishlar: zaxira, yangi versiya tekshiruvi (`UPDATE_CHECK`)
 - `bot/config.py` — `.env` sozlamalari (hujjati `.env.example`); `prompts/system.md`, `prompts/modes/*.md` — ko'rsatmalar
 - `tests/fakes.py` — soxta Anthropic SSE (`simple_answer`, `tool_answer`, `json_answer`) va soxta Telegram sessiyasi; `tests/test_flow.py` — `Env` yordamchisi
 

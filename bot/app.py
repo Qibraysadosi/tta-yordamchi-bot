@@ -17,10 +17,13 @@ from .claude import ClaudeService
 from .config import ConfigError, Settings, load_settings
 from .db import Database
 from .filestore import FileStore
+from .github import GitHubClient
 from .handlers import COMMANDS, OWNER_COMMANDS, AccessMiddleware, AppContext, build_router
 from .models import label
 from .prompt import PromptLoader
 from .updater import UpdateManager
+
+UPDATE_CHECK_DEFAULT_TIME = "03:30"  # BACKUP_TIME o'chiq bo'lsa, GitHub tekshiruvi shu vaqtda
 
 log = logging.getLogger("bot")
 
@@ -131,6 +134,26 @@ def start_backup_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
     return job
 
 
+def start_update_check_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
+    """Har kuni (zaxira vaqtida) GitHub'da yangi versiya bormi — bo'lsa egasiga bir marta xabar."""
+    if ctx.github is None or not ctx.settings.update_check or ctx.updater is None:
+        return None
+    at = ctx.settings.backup_time or UPDATE_CHECK_DEFAULT_TIME
+    owners = sorted(ctx.settings.owner_ids)
+
+    async def run_check() -> None:
+        await scheduler.check_update(bot, ctx.db, ctx.github, ctx.updater.version, owners, ctx.settings.timezone)
+
+    async def catch_up() -> None:
+        if await scheduler.missed_update_check(ctx.db, ctx.settings.timezone, at):
+            await run_check()
+
+    asyncio.create_task(catch_up(), name="update-check:catch-up")
+    job = scheduler.DailyJob("update-check", at, ctx.settings.timezone, run_check)
+    job.start()
+    return job
+
+
 async def run() -> bool:
     """Botni ishlatadi. True — qayta ishga tushirish so'ralgan (yangilanish o'rnatildi)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -147,6 +170,7 @@ async def run() -> bool:
         prompt=PromptLoader(settings.system_prompt_path, settings.timezone),
         updater=UpdateManager(app_dir=APP_DIR, data_dir=data_dir),
         files=FileStore(db, data_dir / "files", settings.files_max_bytes),
+        github=GitHubClient(settings.github_repo, settings.github_token, settings.github_branch) if settings.github_repo else None,
     )
     bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
     dp = build_dispatcher(ctx)
@@ -159,6 +183,11 @@ async def run() -> bool:
             label(settings.default_model),
             ", ".join(str(i) for i in sorted(settings.owner_ids)),
         )
+        if ctx.github is not None:
+            log.info(
+                "GitHub'dan yangilash: %s (token: %s, kunlik tekshiruv: %s)",
+                ctx.github.repo, "bor" if ctx.github.has_token else "yo'q", "on" if settings.update_check else "off",
+            )
         await announce_update(bot, ctx)
         if missing_libraries():
             log.warning("Kutubxonalar yo'q: %s (pip install -r requirements.txt)", ", ".join(missing_libraries()))
@@ -173,11 +202,11 @@ async def run() -> bool:
                 server = await webapp.start_webapp(ctx, bot)
             except OSError:
                 log.exception("Mini App serveri ishga tushmadi (port %s band?)", settings.webapp_port)
-        job = start_backup_job(bot, ctx)
+        jobs = [job for job in (start_backup_job(bot, ctx), start_update_check_job(bot, ctx)) if job is not None]
         try:
             await dp.start_polling(bot)
         finally:
-            if job is not None:
+            for job in jobs:
                 await job.stop()
             await webapp.stop_webapp(server)
     finally:

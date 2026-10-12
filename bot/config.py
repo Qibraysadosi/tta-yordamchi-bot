@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +86,14 @@ class Settings:
     db_path: Path
     system_prompt_path: Path
     modes_dir: Path
+    github_repo: str | None = None  # GitHub'dan yangilash: owner/repo; None — o'chiq
+    github_token: str | None = None  # yopiq repo uchun faqat o'qish huquqli token (ixtiyoriy)
+    github_branch: str = "main"  # release bo'lmasa shu tarmoqning arxivi olinadi
+    update_check: bool = True  # har kuni (zaxira vaqtida) GitHub'da yangi versiya bormi tekshirish
+
+
+OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
+DEFAULT_GITHUB_REPO = "Qibraysadosi/tta-yordamchi-bot"
 
 
 def load_settings() -> Settings:
@@ -159,6 +168,18 @@ def load_settings() -> Settings:
     if cache_ttl not in ("5m", "1h"):
         raise ConfigError("CACHE_TTL faqat 5m yoki 1h bo'lishi mumkin")
 
+    github_repo: str | None = _env("GITHUB_REPO", DEFAULT_GITHUB_REPO)
+    if github_repo.lower() in OFF_WORDS:
+        github_repo = None
+    elif not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", github_repo):
+        raise ConfigError(f"GITHUB_REPO owner/repo ko'rinishida bo'lsin (masalan {DEFAULT_GITHUB_REPO}) yoki off")
+    github_token = _env("GITHUB_TOKEN")
+    if github_token is not None and not re.fullmatch(r"\S{4,255}", github_token):
+        raise ConfigError("GITHUB_TOKEN ko'rinishi noto'g'ri — GitHub bergan tokenni to'liq, bo'shliqsiz yozing")
+    github_branch = _env("GITHUB_BRANCH", "main")
+    if not re.fullmatch(r"[A-Za-z0-9_./-]{1,100}", github_branch) or ".." in github_branch:
+        raise ConfigError("GITHUB_BRANCH tarmoq nomi bo'lsin (masalan main)")
+
     return Settings(
         telegram_token=token,
         anthropic_api_key=api_key,
@@ -191,4 +212,8 @@ def load_settings() -> Settings:
         db_path=Path(_env("DB_PATH", "data/bot.db")),
         system_prompt_path=Path(_env("SYSTEM_PROMPT_FILE", "prompts/system.md")),
         modes_dir=Path(_env("MODES_DIR", "prompts/modes")),
+        github_repo=github_repo,
+        github_token=github_token,
+        github_branch=github_branch,
+        update_check=_bool("UPDATE_CHECK", True),
     )

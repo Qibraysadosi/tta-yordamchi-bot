@@ -428,7 +428,8 @@
       '<div class="sub">' + when(m.joined_at) + ' dan · davrda ' + money(m.cycle_cost) + '</div></span><span class="switch"><input type="checkbox" data-member="' + m.user_id + '"' + (m.active ? ' checked' : '') + '><span></span></span></label>';
     $screen.innerHTML = '<div class="title">Admin panel<small>Faqat bot egasi ko\'radi</small></div>' +
       '<div class="group">' +
-      row('admin', 'shield', 'Versiya', 'yangilash: chatda /yangilash → .zip', '<span class="value">v' + esc(a.version || '?') + '</span>', 'none') +
+      row('admin', 'shield', 'Versiya', a.github_repo ? 'yangilash: pastdagi GitHub qatori yoki chatda /yangilash' : 'yangilash: chatda /yangilash → .zip', '<span class="value">v' + esc(a.version || '?') + '</span>', 'none') +
+      (a.github_repo ? row('admin', 'download', 'GitHub\'dan yangilash', esc(a.github_repo) + (a.update_check ? ' · har kuni tekshiriladi' : '') + ' — so\'nggi versiyani yuklab, tasdiqni chatga yuboradi', '<span class="value">yuklash</span>' + chev(), 'github') : '') +
       row('template', 'key', 'Kirish paroli', a.password_set ? 'o\'rnatilgan' : 'o\'rnatilmagan — yangi odam kira olmaydi', '<span class="value">' + (a.password_set ? 'o\'zgartirish' : 'o\'rnatish') + '</span>' + chev(), 'password') +
       '<div class="meter-row"><div class="k"><span>Kredit sarfi, ' + when(b.cycle_start ? b.cycle_start + 'T00:00:00' : '') + '</span><span>' + money(b.used_all) + (b.monthly > 0 ? ' / $' + b.monthly + ' (' + Math.round(b.percent) + '%)' : '') + '</span></div><div class="bar"><i style="width:' + pct + '%"></i></div></div>' +
       '</div>' +
@@ -500,6 +501,7 @@
       'password-off': () => guard(async () => { await api('api/admin/password', { method: 'POST', body: { remove: true } }); closeSheet(); toast('Parol o\'chirildi'); render(); }),
       backup: () => guard(async () => { toast('Zaxira olinmoqda…'); await api('api/admin/backup', { method: 'POST', body: {} }); notify('success'); toast('Zaxira nusxa chatga yuborildi'); }),
       restore: () => guard(async () => { const r = await api('api/admin/restore', { method: 'POST', body: {} }); notify('warning'); toast('Tasdiqlash so\'rovi chatga yuborildi (v' + r.version + ')'); }),
+      github: () => guard(async () => { toast('GitHub\'dan yuklanmoqda…'); const r = await api('api/admin/github', { method: 'POST', body: {} }); notify('warning'); toast('Tasdiqlash so\'rovi chatga yuborildi (v' + r.current + ' → v' + r.version + ')'); }),
     };
     if (actions[action]) actions[action]();
   });

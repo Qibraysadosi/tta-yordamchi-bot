@@ -11,6 +11,9 @@ Tartib:
 
 Zaxiralar «bekor qilish» navbati kabi ishlaydi: har yangilanishdan oldin bitta zaxira qo'shiladi,
 /qaytarish eng oxirgisini tiklaydi va uni navbatdan oladi (ketma-ket bosilsa, yanada oldingiga qaytadi).
+
+GitHub'dan yangilash (/yangilash github): fetch_release() so'nggi Release aktivini (yoki tarmoq arxivini)
+yuklaydi, keyin arxiv xuddi .zip yuborilgandek stage() → tasdiq → apply() yo'lidan o'tadi.
 """
 from __future__ import annotations
 
@@ -25,7 +28,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from .github import GitHubClient, Release
+
 RESTART_CODE = 75
+# Inline tugmalar (handlers va scheduler bir xil qiymatni ishlatadi)
+CALLBACK_GITHUB_INSTALL = "gh:install"
+CALLBACK_GITHUB_CHECK = "gh:check"
+MAX_CHANGED_SHOWN = 8
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_UNPACKED_BYTES = 50 * 1024 * 1024
 KEEP_BACKUPS = 5
@@ -63,8 +72,10 @@ class StagedUpdate:
     notes: str
     files: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    changed: list[str] = field(default_factory=list)  # joriy versiyaga nisbatan o'zgaradigan fayllar
     requirements_changed: bool = False
     restore_from: Path | None = None  # /qaytarish: shu zaxira nusxadan tiklanadi
+    source: str = ""  # qayerdan kelgan: «GitHub Release v1.6.0 (…)»; bo'sh — Telegram'dan yuborilgan .zip
 
     @property
     def is_restore(self) -> bool:
@@ -142,8 +153,35 @@ class UpdateManager:
             notes=notes[:1500],
             files=files,
             skipped=skipped,
+            changed=self._changed_files(staging),
             requirements_changed=self._requirements_differ(staging),
         )
+
+    def _changed_files(self, staging: Path) -> list[str]:
+        """Joriy versiyaga nisbatan yangi yoki o'zgargan fayllar; bot/ dan yo'qoladiganlar «(o'chiriladi)» bilan."""
+        changed: list[str] = []
+        for file in sorted(staging.rglob("*")):
+            if not file.is_file():
+                continue
+            relative = file.relative_to(staging)
+            if relative.parts[0] in NOT_INSTALLED or _skip(relative):
+                continue
+            current = self.app_dir / relative
+            try:
+                same = current.is_file() and current.read_bytes() == file.read_bytes()
+            except OSError:
+                same = False
+            if not same:
+                changed.append(relative.as_posix())
+        for name in REPLACED_DIRS:
+            current_dir = self.app_dir / name
+            if not current_dir.is_dir() or not (staging / name).is_dir():
+                continue
+            for file in sorted(current_dir.rglob("*")):
+                relative = file.relative_to(self.app_dir)
+                if file.is_file() and not _skip(relative) and not (staging / relative).exists():
+                    changed.append(f"{relative.as_posix()} (o'chiriladi)")
+        return changed
 
     def _extract(self, zf: zipfile.ZipFile, staging: Path) -> tuple[list[str], list[str]]:
         infos = [info for info in zf.infolist() if not info.is_dir()]
@@ -424,3 +462,21 @@ class UpdateManager:
                 elif path.is_file():
                     zf.write(path, f"{EXPORT_ROOT}/{item}")
         return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------- GitHub
+async def fetch_release(github: GitHubClient) -> tuple[Release, bytes]:
+    """GitHub'dagi eng so'nggi versiya arxivini yuklaydi: Release aktivi, u bo'lmasa tarmoq manbasi."""
+    release = await github.latest()
+    data = await github.download(release)
+    if len(data) > MAX_ARCHIVE_BYTES:
+        raise UpdateError("Arxiv juda katta (20 MB dan oshmasin).")
+    return release, data
+
+
+def describe_release(staged: StagedUpdate, release: Release) -> StagedUpdate:
+    """GitHub'dan kelgan arxivga manba va (arxivda izoh bo'lmasa) release izohini qo'shadi."""
+    staged.source = release.label
+    if not staged.notes and release.notes:
+        staged.notes = release.notes[:1500]
+    return staged

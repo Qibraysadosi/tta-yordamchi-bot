@@ -48,6 +48,7 @@ def make_settings(tmp_path, **over) -> Settings:
         auto_models=("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"), quick_model="claude-haiku-5-5",
         link_reading=True, link_max_bytes=8 * 1024 * 1024, backup_time="03:30", modes_dir=PROJECT / "prompts/modes",
         webapp_url=None, webapp_port=8091, files_max_bytes=300 * 1024 * 1024,
+        github_repo=None, github_token=None, github_branch="main", update_check=False,
     )
     base.update(over)
     return Settings(**base)

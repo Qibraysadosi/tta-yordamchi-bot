@@ -28,12 +28,16 @@ from aiohttp import web
 from . import scheduler
 from .access import MIN_PASSWORD_LENGTH, hash_password
 from .config import EFFORT_LEVELS
+from .github import GitHubError
 from .handlers import (
     PASSWORD_KEY,
     AppContext,
     _confirm_keyboard,
     billing_cycle_start,
+    github_check_text,
     run_chat_for,
+    stage_from_github,
+    update_summary,
 )
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import MODES
@@ -158,6 +162,7 @@ class WebApp:
         add("POST", "/api/admin/members/{member_id}", self.admin_member)
         add("POST", "/api/admin/backup", self.admin_backup)
         add("POST", "/api/admin/restore", self.admin_restore)
+        add("POST", "/api/admin/github", self.admin_github)
         add("GET", "/files/{file_id}/download", self.download)
         self.app.router.add_static("/static", STATIC_DIR, show_index=False)
 
@@ -586,6 +591,8 @@ class WebApp:
             "backup_time": ctx.settings.backup_time,
             "owner_ids": sorted(ctx.settings.owner_ids),
             "default_model": label(ctx.settings.default_model),
+            "github_repo": ctx.github.repo if ctx.github is not None else None,
+            "update_check": bool(ctx.github is not None and ctx.settings.update_check),
         })
 
     async def admin_password(self, request: web.Request) -> web.Response:
@@ -651,6 +658,33 @@ class WebApp:
         except TelegramAPIError as exc:
             return _error(f"Chatga yozib bo'lmadi: {exc}", 502, "telegram")
         return _json({"ok": True, "message": "Tasdiqlash so'rovi chatga yuborildi.", "version": staged.version})
+
+    async def admin_github(self, request: web.Request) -> web.Response:
+        """GitHub'dan yangilash: {"action": "check"} — faqat tekshiradi; aks holda yuklab, tasdiqni chatga yuboradi."""
+        uid: int = request[UID]
+        ctx = self.ctx
+        if ctx.github is None or ctx.updater is None:
+            return _error("GitHub'dan yangilash o'chiq (.env → GITHUB_REPO)", 409, "disabled")
+        body = await self._body(request)
+        if body.get("action") == "check":
+            return _json({"ok": True, "message": await github_check_text(ctx), "current": ctx.updater.version})
+        try:
+            staged = await stage_from_github(ctx, uid)
+        except (GitHubError, UpdateError) as exc:
+            return _error(str(exc), 409, "github")
+        except Exception:
+            log.exception("GitHub'dan yangilanishni tayyorlashda xato")
+            return _error("GitHub'dan yangilanishni tayyorlab bo'lmadi — serverdagi loglarni tekshiring", 500, "failed")
+        try:
+            await self.bot.send_message(
+                chat_id=uid, text=update_summary(staged), parse_mode=ParseMode.HTML, reply_markup=_confirm_keyboard(staged)
+            )
+        except TelegramAPIError as exc:
+            return _error(f"Chatga yozib bo'lmadi: {exc}", 502, "telegram")
+        return _json({
+            "ok": True, "message": "Tasdiqlash so'rovi chatga yuborildi.", "version": staged.version,
+            "current": staged.current_version, "changed": len(staged.changed),
+        })
 
 
 async def start_webapp(ctx: AppContext, bot: Bot, host: str = "0.0.0.0", port: int | None = None) -> web.AppRunner:

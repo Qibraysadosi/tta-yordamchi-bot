@@ -5,13 +5,25 @@ Arxivga faqat serverga kerakli fayllar kiradi (bot/, prompts/, requirements.txt,
 .env.example, install*.sh, docker-compose.yml, launcher.py, Dockerfile, .dockerignore) + UPDATE_NOTES.md.
 Har fayl maxfiy satrlar (API kaliti, bot tokeni) bo'yicha tekshiriladi — topilsa arxiv yig'ilmaydi.
 
+`--publish` — arxivdan keyin GitHub Release (teg v<VERSION>, izoh UPDATE_NOTES.md, aktiv .zip) yaratadi
+yoki mavjudini yangilaydi. Repo: `--repo` → `GITHUB_REPO` → `git remote origin`. Transport: `gh` CLI
+(kirilgan bo'lsa), aks holda REST (`GITHUB_TOKEN` yoki `GH_TOKEN` muhitdan). Token hech qachon chop etilmaydi.
+
 Ishlatish: python scripts/build_release.py [--out dist] [--notes UPDATE_NOTES.md]
+                                           [--publish [--repo owner/name] [--branch main]]
 """
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -30,6 +42,13 @@ SECRET_PATTERNS = [
     re.compile(rb"ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}"),  # GitHub tokeni
     re.compile(rb"-----BEGIN (RSA |EC )?PRIVATE KEY-----"),
 ]
+API = "https://api.github.com"
+# https://github.com/owner/name(.git) yoki git@github.com:owner/name(.git)
+REMOTE_RE = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+
+
+class PublishError(Exception):
+    """Release yaratishda xato — foydalanuvchiga ko'rsatiladigan matn."""
 
 
 def iter_files() -> list[Path]:
@@ -57,10 +76,153 @@ def scan_secrets(path: Path, data: bytes) -> str | None:
     return None
 
 
+# ----------------------------------------------------------------------------- GitHub Release
+
+def _normalize_repo(value: str) -> str | None:
+    """`owner/name` yoki GitHub URL (https/ssh) → `owner/name`."""
+    value = value.strip()
+    match = REMOTE_RE.search(value)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", value):
+        return value
+    return None
+
+
+def _resolve_repo(arg: str | None) -> str | None:
+    """Repo: --repo → GITHUB_REPO → git remote origin."""
+    candidate = arg or os.environ.get("GITHUB_REPO", "")
+    if candidate.strip():
+        return _normalize_repo(candidate)
+    proc = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                          check=False, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    return _normalize_repo(proc.stdout)
+
+
+def _gh(*argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["gh", *argv], check=False, capture_output=True, text=True)
+
+
+def _gh_available() -> bool:
+    """`gh` o'rnatilgan va kirilgan bo'lsa — shu orqali chiqaramiz."""
+    if not shutil.which("gh"):
+        return False
+    return _gh("auth", "status").returncode == 0
+
+
+def _publish_gh(repo: str, tag: str, zip_path: Path, notes_path: Path, branch: str) -> str:
+    if _gh("release", "view", tag, "--repo", repo).returncode == 0:
+        steps = [
+            ["release", "upload", tag, str(zip_path), "--repo", repo, "--clobber"],
+            ["release", "edit", tag, "--repo", repo, "--title", tag, "--notes-file", str(notes_path)],
+        ]
+    else:
+        steps = [["release", "create", tag, str(zip_path), "--repo", repo, "--title", tag,
+                  "--notes-file", str(notes_path), "--target", branch]]
+    for step in steps:
+        proc = _gh(*step)
+        if proc.returncode != 0:
+            # gh xato matnida token bo'lmaydi
+            raise PublishError(f"gh {step[0]} {step[1]} bajarilmadi:\n{proc.stderr.strip()}")
+    return f"https://github.com/{repo}/releases/tag/{tag}"
+
+
+def _api(method: str, url: str, token: str, data: bytes | None = None,
+         content_type: str | None = None) -> tuple[int, dict | bytes]:
+    """GitHub REST chaqiruvi: (holat kodi, JSON lug'at yoki xom baytlar). HTTP xato ham kod bilan qaytadi."""
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    req.add_header("User-Agent", "tta-yordamchi-bot-release")
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            status, raw = resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        status, raw = exc.code, exc.read()
+    except urllib.error.URLError as exc:
+        raise PublishError(f"GitHub'ga ulanib bo'lmadi: {exc.reason}") from None
+    if not raw:
+        return status, {}
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw
+
+
+def _expect(status: int, body: dict | bytes, *ok: int, step: str) -> dict:
+    if status in ok and isinstance(body, dict):
+        return body
+    message = (body.get("message", "") if isinstance(body, dict) else "") or "noma'lum xato"
+    raise PublishError(f"GitHub API {status} ({step}): {message}")
+
+
+def _publish_rest(repo: str, tag: str, zip_path: Path, notes: str, branch: str, token: str) -> str:
+    base = f"{API}/repos/{repo}/releases"
+    payload = {"tag_name": tag, "name": tag, "body": notes, "target_commitish": branch}
+    status, body = _api("POST", base, token, json.dumps(payload).encode(), "application/json")
+    if status == 422:
+        # teg/release allaqachon bor — izohni yangilaymiz, eski aktivni o'chiramiz
+        existing = _expect(*_api("GET", f"{base}/tags/{tag}", token), 200, step="release topish")
+        patch = json.dumps({"name": tag, "body": notes}).encode()
+        body = _expect(*_api("PATCH", f"{base}/{existing['id']}", token, patch, "application/json"),
+                       200, step="izohni yangilash")
+        for asset in existing.get("assets", []):
+            if asset.get("name") == zip_path.name:
+                _expect(*_api("DELETE", f"{base}/assets/{asset['id']}", token), 204, step="eski aktivni o'chirish")
+    else:
+        body = _expect(status, body, 201, step="release yaratish")
+    upload_url = body["upload_url"].split("{", 1)[0] + "?name=" + urllib.parse.quote(zip_path.name)
+    _expect(*_api("POST", upload_url, token, zip_path.read_bytes(), "application/zip"), 201, step="aktiv yuklash")
+    return body["html_url"]
+
+
+def publish_release(version: str, zip_path: Path, notes_path: Path, repo_arg: str | None, branch: str) -> int:
+    repo = _resolve_repo(repo_arg)
+    if not repo:
+        print("❌ GitHub repo aniqlanmadi — `--repo owner/name` bering yoki GITHUB_REPO ni muhitga qo'ying "
+              "(yoki git remote origin GitHub'ga ko'rsatsin).")
+        return 1
+    tag = f"v{version}"
+    try:
+        if _gh_available():
+            url = _publish_gh(repo, tag, zip_path, notes_path, branch)
+        else:
+            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+            if not token:
+                print("❌ GitHub token yo'q: `gh auth login` qiling yoki GITHUB_TOKEN muhit o'zgaruvchisini bering "
+                      f"(fine-grained token, {repo} uchun Contents: Read and write).")
+                return 1
+            url = _publish_rest(repo, tag, zip_path, notes_path.read_text(encoding="utf-8"), branch, token)
+    except PublishError as exc:
+        print(f"❌ {exc}")
+        return 1
+    print(f"✅ GitHub Release: {url}")
+    print("Keyingi qadam: botga /yangilash github yozing (avval sinov botida).")
+    return 0
+
+
+# ----------------------------------------------------------------------------- arxiv
+
+def _display(path: Path) -> str:
+    """Chop etish uchun yo'l: loyiha ichida — nisbiy, tashqarida (masalan --out /tmp/..) — to'liq."""
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="dist")
     parser.add_argument("--notes", default="UPDATE_NOTES.md")
+    parser.add_argument("--publish", action="store_true", help="GitHub Release yaratish/yangilash")
+    parser.add_argument("--repo", help="owner/name (standart: GITHUB_REPO yoki git remote origin)")
+    parser.add_argument("--branch", default="main", help="release nishon tarmog'i")
     args = parser.parse_args()
     version = (ROOT / "VERSION").read_text().strip()
     out_dir = ROOT / args.out
@@ -87,7 +249,9 @@ def main() -> int:
     with zipfile.ZipFile(target) as archive:
         names = archive.namelist()
     assert not any(n.endswith("/.env") or "/data/" in n for n in names)
-    print(f"✅ {target.relative_to(ROOT)} — {len(names)} fayl, {target.stat().st_size // 1024} KB (v{version})")
+    print(f"✅ {_display(target)} — {len(names)} fayl, {target.stat().st_size // 1024} KB (v{version})")
+    if args.publish:
+        return publish_release(version, target, notes_path, args.repo, args.branch)
     print("Keyingi qadam: botga /yangilash yozib, shu faylni yuboring (avval sinov botiga).")
     return 0
 

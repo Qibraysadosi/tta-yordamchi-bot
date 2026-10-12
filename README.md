@@ -25,7 +25,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Zaxira model:** Fable yoki Opus so'rovni rad etsa (kiberxavfsizlik, biologiya kabi mavzular), javobni avtomatik Opus 4.8 beradi
 - **Chiroyli ko'rinish:** `/start` — rasmli bosh menyu va tez tugmalar (model, fikrlash, qidiruv, xarajat); bot profili (rasm, tavsif) yangilanishda avtomatik o'rnatiladi
 - **Parol bilan himoya:** egasi (`OWNER_IDS`) har doim kiradi; boshqalar faqat siz o'rnatgan parolni yozib kiradi
-- **Kompyutersiz yangilash:** yangi versiyani .zip qilib botga yuborasiz — bot o'zini yangilaydi, ishlamasa eski versiyani o'zi tiklaydi
+- **Kompyutersiz yangilash:** yangi versiyani .zip qilib botga yuborasiz yoki `/yangilash github` deysiz — bot so'nggi versiyani GitHub'dan o'zi yuklab o'rnatadi, ishlamasa eski versiyani o'zi tiklaydi; yangi versiya chiqqanini har kuni tekshirib, bir marta xabar beradi
 
 ## Buyruqlar
 
@@ -62,7 +62,7 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 |---|---|
 | `/parol YANGI_PAROL` | Kirish parolini o'rnatish yoki almashtirish (`/parol off` — o'chirish) |
 | `/foydalanuvchilar` | Parol bilan kirganlar, ularni chiqarish yoki qaytarish |
-| `/yangilash` | Botni yangilash: buyruqdan keyin .zip yuborasiz |
+| `/yangilash` | Botni yangilash: buyruqdan keyin .zip yuborasiz; `/yangilash github` — so'nggi versiyani GitHub'dan o'zi yuklaydi; `/yangilash tekshir` — yangi versiya bormi |
 | `/versiya` | Joriy versiya va qaytish mumkin bo'lgan versiyalar |
 | `/qaytarish` | Oldingi versiyaga qaytish |
 | `/kod` | Botning joriy kodi (.zip) — yangi funksiya so'raganda Claude'ga yuborish uchun |
@@ -103,13 +103,15 @@ WEBAPP_PORT=8091
 
 Tekshirish: serverda `curl -s http://127.0.0.1:8091/health` → `{"ok": true, ...}`; brauzerda `https://bepulkurs.uz/yordamchi/` sahifasi «Faqat Telegram ichida» deb ochilsa — hammasi joyida (ilovaning o'zi faqat Telegram'dan ishlaydi).
 
-Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa va oldingi versiyaga qaytish (tasdiq chatga keladi).
+Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa, GitHub'dan yangilash va oldingi versiyaga qaytish (tasdiq chatga keladi).
 
 ## Ishlab chiquvchilar uchun
 
 - `CLAUDE.md` — loyiha qoidalari va kod xaritasi (Claude Code avtomatik o'qiydi); `docs/TZ.md` — keyingi funksiyalarning texnik topshirig'i (32 ta paket).
 - Testlar: `pip install -r requirements-dev.txt && python -m pytest` (soxta Telegram va Anthropic bilan, ~30 s); `python tests/e2e/e2e.py` — haqiqiy launcher bilan yangilanish/qaytarish sinovi.
-- Chiqarish: `VERSION` + `UPDATE_NOTES.md` → `python scripts/build_release.py` → `dist/claude-telegram-bot-v….zip` (maxfiy satrlar tekshiriladi) → botga `/yangilash`.
+- Chiqarish: `VERSION` + `UPDATE_NOTES.md` → testlar → `git push` → `python scripts/build_release.py --publish` → `dist/claude-telegram-bot-v….zip` (maxfiy satrlar tekshiriladi) + GitHub Release `v<VERSION>` shu zip bilan → egasi botda `/yangilash github`. `--publish`siz faqat zip yig'iladi (botga `/yangilash` + .zip).
+- `--publish`: `gh` CLI (kirilgan bo'lsa) yoki REST orqali — muhitdagi `GITHUB_TOKEN`/`GH_TOKEN` (fine-grained, Contents: Read and write); ixtiyoriy `--repo owner/name`, `--branch main`. Release chiqarilmasa ham bot `main` tarmog'i arxividan o'rnata oladi (oddiy push'dan keyin `/yangilash github` ishlaydi, faqat release izohlari bo'lmaydi).
+- Claude Code ish tartibi: paket tayyor → `VERSION` + `UPDATE_NOTES.md` → testlar → push → `build_release.py --publish` → egasi botda `/yangilash github`.
 - Mini App skrinshotlari: `python scripts/miniapp_shots.py` (Playwright) → `docs/screens/`.
 
 ## Sinov boti
@@ -134,7 +136,7 @@ Yangilanishni avval sinov botida tekshirish uchun:
 
 1. Claude'dan yangi versiyani `.zip` qilib oling.
 2. Botga `/yangilash` yozing, keyin shu `.zip` faylni yuboring (yoki faylni `/yangilash` izohi bilan yuboring).
-3. Bot arxivni tekshiradi va nima o'zgarishini ko'rsatadi → **✅ O'rnatish** ni bosing.
+3. Bot arxivni tekshiradi va nima o'zgarishini (versiya, o'zgargan fayllar, izohlar) ko'rsatadi → **✅ O'rnatish** ni bosing.
 4. Bot 10–30 soniyaga qayta ishga tushadi va «✅ Bot yangilandi: v… → v…» deb yozadi.
 
 Xavfsizlik:
@@ -145,6 +147,30 @@ Xavfsizlik:
 - `requirements.txt` o'zgargan bo'lsa, yangi kutubxonalar avtomatik o'rnatiladi (v1.4.0 da PDF, PowerPoint va grafik kutubxonalari qo'shilgan — birinchi ishga tushish 1–3 daqiqa cho'zilishi mumkin).
 
 Keyingi safar yangi funksiya so'raganingizda, avval botdan `/kod` bilan joriy kodni oling va uni Claude'ga yuboring.
+
+### GitHub'dan yangilash
+
+Zip ko'chirmasdan: yangi versiya GitHub'ga chiqqach, botga `/yangilash github` deb yozasiz — bot arxivni o'zi yuklab, yuqoridagi tekshiruv va tasdiq bilan o'rnatadi. Zaxira, avtomatik tiklash va `/qaytarish` bu usulda ham xuddi shunday ishlaydi.
+
+`.env` sozlamalari (hammasi ixtiyoriy; o'zgartirgach `docker compose up -d --force-recreate`):
+
+| Sozlama | Ma'nosi |
+|---|---|
+| `GITHUB_REPO` | `owner/repo` (standart `Qibraysadosi/tta-yordamchi-bot`); `off` — GitHub'dan yangilash o'chiq |
+| `GITHUB_TOKEN` | Faqat yopiq (private) repo uchun; ochiq repo tokensiz ishlaydi |
+| `GITHUB_BRANCH` | Standart `main`; faqat Release bo'lmaganda ishlatiladi — tarmoq arxivi olinadi, versiya undagi `VERSION` dan |
+| `UPDATE_CHECK` | `on` (standart) — har kuni zaxira vaqtida (`BACKUP_TIME`; zaxira o'chiq bo'lsa 03:30) GitHub tekshiriladi, yangi versiya bo'lsa egasiga har versiya uchun bir marta xabar keladi («⬇️ Yuklab o'rnatish» tugmasi va release izohlari bilan); `off` — tekshirmaydi |
+
+**Token (faqat yopiq repo uchun):** github.com → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token. Repository access — faqat shu repo; Repository permissions → Contents: **Read-only** (boshqa huquq kerak emas, yozish huquqi bermang). Tokenni faqat serverdagi `.env` ga `GITHUB_TOKEN=` qatoriga yozing va konteynerni qayta yarating (`docker compose up -d --force-recreate`).
+
+Buyruqlar (faqat egasi):
+
+- `/yangilash github` (`/yangilash git`, `/update github`) — bot so'nggi Release'dagi `claude-telegram-bot-vX.Y.Z.zip` ni yuklaydi (Release'da zip bo'lmasa — uning manba arxivi; Release umuman bo'lmasa — `GITHUB_BRANCH` arxivi), uni yuborilgan .zip kabi tekshiradi (tuzilma, sintaksis, hajm ≤ 20 MB) va «📦 Yangilanish: v1.5.0 → v1.6.0», manba (release/tag), o'zgargan fayllar ro'yxati va izohlarni ko'rsatadi → **✅ O'rnatish** / **❌ Bekor**. Tasdiqdan keyin odatdagi yo'l: zaxira, qayta ishga tushish, yangi versiya ishlamasa avtomatik qaytish.
+- `/yangilash tekshir` (`check`) — faqat yangi versiya bor-yo'qligini aytadi, hech narsa yuklamaydi.
+- `/yangilash` — avvalgidek .zip kutadi; `GITHUB_REPO` sozlangan bo'lsa javob ostida «🐙 GitHub'dan yangilash» va «🔍 Yangi versiya bormi?» tugmalari chiqadi.
+- Mini App → Admin panel → «GitHub'dan yangilash» — arxivni yuklab, tasdiqni chatga yuboradi.
+
+Xatolar: `GITHUB_REPO` yo'q yoki `off` — «GitHub'dan yangilash o'chiq»; yopiq repo tokensiz yoki token noto'g'ri — `.env` ga `GITHUB_TOKEN` yozish so'raladi; GitHub so'rovlar chegarasi (rate limit) — biroz kuting yoki token qo'shing; tarmoq xatosi — keyinroq qayta urinib ko'ring. Xato bo'lganda joriy versiya o'zgarmaydi.
 
 ## O'rnatish (Hostinger VPS, Docker)
 
@@ -183,7 +209,7 @@ Skript oxirida «✅ TAYYOR» chiqadi. Qo'shimcha sozlamalar (`DEFAULT_MODEL`, `
 |---|---|
 | Loglarni ko'rish | `docker compose logs -f --tail 100` |
 | Qayta ishga tushirish (`.env` o'zgarganda) | `docker compose up -d --force-recreate` |
-| Yangilash | Telegram'da `/yangilash` (yuqoriga qarang). Faqat `Dockerfile`, `docker-compose.yml` yoki `launcher.py` o'zgarsa: fayllarni almashtirib → `docker compose up -d --build` |
+| Yangilash | Telegram'da `/yangilash github` (GitHub'dan) yoki `/yangilash` + .zip (yuqoriga qarang). Faqat `Dockerfile`, `docker-compose.yml` yoki `launcher.py` o'zgarsa: fayllarni almashtirib → `docker compose up -d --build` |
 | To'xtatish | `docker compose down` |
 | Zaxira nusxa | `data/` papkasini saqlab qo'ying (baza va kod zaxiralari) |
 
@@ -215,3 +241,5 @@ Botning xulq-atvori `prompts/system.md` faylida. Uni tahrirlasangiz, keyingi xab
 | «🔑 ANTHROPIC_API_KEY noto'g'ri» | `.env` dagi kalitni tekshiring |
 | «💸 xarajat limitiga yetildi» | Console → workspace limitini oshiring |
 | Bot umuman javob bermaydi | `docker compose logs`: token xato bo'lsa log aytadi; shu token bilan boshqa joyda bot ishlamayotganini tekshiring |
+| «GitHub'da … topilmadi yoki yopiq» | Repo yopiq (private) yoki `GITHUB_REPO` noto'g'ri. Faqat o'qish huquqli fine-grained token yarating (yuqorida «GitHub'dan yangilash») → `.env` ga `GITHUB_TOKEN=` → `docker compose up -d --force-recreate` |
+| «GitHub so'rovlar chegarasi» (rate limit) | Bir oz kuting (odatda 1 soatgacha) yoki `.env` ga `GITHUB_TOKEN` qo'shing — token bilan chegara ancha yuqori |

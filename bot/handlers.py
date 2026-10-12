@@ -40,8 +40,18 @@ from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
 from .tgformat import format_answer
+from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
-from .updater import StagedUpdate, UpdateError, UpdateManager
+from .updater import (
+    CALLBACK_GITHUB_CHECK,
+    CALLBACK_GITHUB_INSTALL,
+    MAX_CHANGED_SHOWN,
+    StagedUpdate,
+    UpdateError,
+    UpdateManager,
+    describe_release,
+    fetch_release,
+)
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +74,7 @@ COMMANDS = [
 ]
 OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="zaxira", description="💾 Bazaning zaxira nusxasini hozir olish"),
-    BotCommand(command="yangilash", description="📦 Botni yangilash (.zip)"),
+    BotCommand(command="yangilash", description="📦 Botni yangilash (.zip yoki GitHub)"),
     BotCommand(command="versiya", description="🏷 Versiya va zaxiralar"),
     BotCommand(command="qaytarish", description="↩️ Oldingi versiyaga qaytish"),
     BotCommand(command="parol", description="🔐 Kirish paroli"),
@@ -128,7 +138,8 @@ APP_DISABLED_TEXT = (
 
 ADMIN_HELP = (
     "⚙️ <b>Admin panel</b> <i>(faqat siz uchun)</i>\n\n"
-    "📦 /yangilash — botni yangilash: buyruqdan keyin .zip yuborasiz\n"
+    "📦 /yangilash — botni yangilash: buyruqdan keyin .zip yuborasiz; /yangilash github — so'nggi versiyani "
+    "GitHub'dan o'zi yuklaydi; /yangilash tekshir — yangi versiya bormi\n"
     "🏷 /versiya — joriy versiya va zaxira nusxalar\n"
     "↩️ /qaytarish — oldingi versiyaga qaytish\n"
     "🔐 /parol — kirish parolini o'rnatish yoki o'zgartirish\n"
@@ -223,10 +234,12 @@ class AppContext:
     raw: RawStore = field(default_factory=RawStore)  # yuborilgan fayllarning asl nusxasi (vositalar uchun)
     files: FileStore | None = None  # yaratilgan fayllar galereyasi (Mini App)
     updater: UpdateManager | None = None
+    github: GitHubClient | None = None  # GitHub'dan yangilash (GITHUB_REPO); None — o'chiq
     limiter: AttemptLimiter = field(default_factory=AttemptLimiter)
     prompted: set[int] = field(default_factory=set)  # parol so'ralgan (birinchi xabari kelgan) begonalar
     awaiting_update: dict[int, float] = field(default_factory=dict)
     staged: dict[int, StagedUpdate] = field(default_factory=dict)
+    github_busy: set[int] = field(default_factory=set)  # GitHub'dan yuklash davom etayotgan egalar
     restart_requested: bool = False
     restart_delay: float = 1.0
     dispatcher: Dispatcher | None = None
@@ -791,12 +804,20 @@ def _confirm_keyboard(staged: StagedUpdate) -> InlineKeyboardMarkup:
 
 def update_summary(staged: StagedUpdate) -> str:
     esc = html.escape
-    lines = [
-        f"📦 <b>Yangilanish:</b> v{esc(staged.current_version)} → <b>v{esc(staged.version)}</b>",
-        f"Fayllar: {len(staged.files)} ta",
-    ]
+    lines = [f"📦 <b>Yangilanish:</b> v{esc(staged.current_version)} → <b>v{esc(staged.version)}</b>"]
+    if staged.source:
+        lines.append(f"Manba: {esc(staged.source)}")
+    lines.append(f"Fayllar: {len(staged.files)} ta")
+    if staged.changed:
+        shown = ", ".join(staged.changed[:MAX_CHANGED_SHOWN])
+        more = f" … (+{len(staged.changed) - MAX_CHANGED_SHOWN})" if len(staged.changed) > MAX_CHANGED_SHOWN else ""
+        lines.append(f"✏️ O'zgargan fayllar ({len(staged.changed)}): {esc(shown)}{more}")
+    elif not staged.is_restore:
+        lines.append("ℹ️ Fayllar joriy versiya bilan bir xil.")
     if staged.version == staged.current_version:
         lines.append("ℹ️ Bu versiya allaqachon o'rnatilgan — qayta o'rnatiladi.")
+    elif staged.source and not staged.is_restore and not is_newer(staged.version, staged.current_version):
+        lines.append("⚠️ GitHub'dagi versiya joriy versiyadan eski — o'rnatsangiz, bot eski versiyaga qaytadi.")
     if staged.requirements_changed:
         lines.append("📚 Yangi kutubxonalar o'rnatiladi (1–2 daqiqa qo'shimcha)")
     if staged.skipped:
@@ -808,17 +829,124 @@ def update_summary(staged: StagedUpdate) -> str:
     return "\n".join(lines)
 
 
-async def cmd_update(message: Message, bot: Bot, ctx: AppContext) -> None:
+GITHUB_OFF_TEXT = (
+    "🐙 GitHub'dan yangilash o'chiq: serverdagi .env faylida GITHUB_REPO ko'rsatilmagan (README → Yangilash → GitHub)."
+)
+GITHUB_INSTALL_WORDS = ("github", "git", "gh")
+GITHUB_CHECK_WORDS = ("tekshir", "tekshirish", "check")
+
+
+def _github_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🐙 GitHub'dan yangilash", callback_data=CALLBACK_GITHUB_INSTALL),
+                InlineKeyboardButton(text="🔍 Yangi versiya bormi?", callback_data=CALLBACK_GITHUB_CHECK),
+            ]
+        ]
+    )
+
+
+async def cmd_update(message: Message, command: CommandObject, bot: Bot, ctx: AppContext) -> None:
     if not await _owner_only(message, ctx):
         return
     if message.document is not None:  # .zip izohiga /yangilash yozilgan bo'lsa
         await handle_update_upload(message, bot, ctx)
         return
+    args = (command.args or "").strip().lower()
+    if args in GITHUB_INSTALL_WORDS:
+        await github_update(bot, message.chat.id, message.from_user.id, ctx)
+        return
+    if args in GITHUB_CHECK_WORDS:
+        await message.answer(await github_check_text(ctx))
+        return
     ctx.awaiting_update[message.from_user.id] = time.monotonic()
-    await message.answer(
-        f"📦 Joriy versiya: v{ctx.updater.version}\n"
-        "Yangilanish arxivini (.zip) shu chatga yuboring. Bekor qilish: /bekor"
-    )
+    text = f"📦 Joriy versiya: v{ctx.updater.version}\nYangilanish arxivini (.zip) shu chatga yuboring. Bekor qilish: /bekor"
+    if ctx.github is not None:
+        text += f"\n\n🐙 Yoki GitHub'dan ({ctx.github.repo}): /yangilash github — so'nggi versiyani o'zim yuklayman."
+        await message.answer(text, reply_markup=_github_keyboard())
+        return
+    await message.answer(text)
+
+
+async def github_check_text(ctx: AppContext) -> str:
+    """/yangilash tekshir: GitHub'da yangi versiya bormi — faqat ma'lumot, yuklamaydi."""
+    if ctx.github is None:
+        return GITHUB_OFF_TEXT
+    current = ctx.updater.version
+    try:
+        release = await ctx.github.latest()
+    except GitHubError as exc:
+        return f"❌ GitHub tekshirilmadi: {exc}"
+    if is_newer(release.version, current):
+        return (
+            f"🆕 Yangi versiya bor: v{release.version} (joriy v{current})\n{release.label}\n"
+            "O'rnatish: /yangilash github"
+        )
+    if release.version == current:
+        return f"✅ Siz eng so'nggi versiyadasiz: v{current}\n{release.label}"
+    return f"ℹ️ GitHub'dagi versiya (v{release.version}) joriy v{current} dan eski.\n{release.label}"
+
+
+async def stage_from_github(ctx: AppContext, uid: int, progress: Callable[[str], Awaitable[None]] | None = None) -> StagedUpdate:
+    """GitHub'dan so'nggi arxivni yuklab, .zip kabi tekshiradi va tasdiq uchun saqlaydi (ctx.staged)."""
+    if ctx.github is None or ctx.updater is None:
+        raise GitHubError(GITHUB_OFF_TEXT)
+    if uid in ctx.github_busy:
+        raise GitHubError("GitHub'dan yuklash hali davom etmoqda — biroz kuting.")
+    ctx.github_busy.add(uid)
+    try:
+        release, data = await fetch_release(ctx.github)
+        if progress is not None:
+            await progress(f"🔍 {release.label} tekshirilmoqda…")
+        staged = await asyncio.to_thread(ctx.updater.stage, data)
+    finally:
+        ctx.github_busy.discard(uid)
+    describe_release(staged, release)
+    old = ctx.staged.pop(uid, None)
+    if old is not None and old.path != staged.path:
+        ctx.updater.discard(old)
+    ctx.staged[uid] = staged
+    return staged
+
+
+async def github_update(bot: Bot, chat_id: int, uid: int, ctx: AppContext) -> None:
+    """/yangilash github: yuklash → tekshirish → xulosa va ✅ O'rnatish / ❌ Bekor tugmalari."""
+    if ctx.github is None:
+        await bot.send_message(chat_id, GITHUB_OFF_TEXT)
+        return
+    status = await bot.send_message(chat_id, f"⬇️ GitHub'dan yuklanmoqda ({ctx.github.repo})…")
+
+    async def progress(text: str) -> None:
+        with contextlib.suppress(TelegramBadRequest):
+            await status.edit_text(text)
+
+    try:
+        staged = await stage_from_github(ctx, uid, progress)
+    except (GitHubError, UpdateError) as exc:
+        await progress(f"❌ GitHub'dan yangilab bo'lmadi: {exc}\n\nJoriy versiya o'zgarmadi.")
+        return
+    except Exception:
+        log.exception("GitHub'dan yangilanishni tayyorlashda xato")
+        await progress("❌ GitHub'dan yangilanishni tayyorlab bo'lmadi. Joriy versiya o'zgarmadi.")
+        return
+    with contextlib.suppress(TelegramBadRequest):
+        await status.edit_text(update_summary(staged), parse_mode=ParseMode.HTML, reply_markup=_confirm_keyboard(staged))
+
+
+async def cb_github(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
+    """🐙 / 🔍 / ⬇️ tugmalari (faqat egasi)."""
+    uid = callback.from_user.id
+    if not ctx.is_owner(uid):
+        await callback.answer("⛔ Ruxsat yo'q")
+        return
+    chat_id = callback.message.chat.id if isinstance(callback.message, Message) else uid
+    if callback.data == CALLBACK_GITHUB_CHECK:
+        await callback.answer("Tekshirilmoqda…")
+        await bot.send_message(chat_id, await github_check_text(ctx))
+        return
+    await callback.answer()
+    await github_update(bot, chat_id, uid, ctx)
 
 
 async def cmd_cancel(message: Message, ctx: AppContext) -> None:
@@ -1759,4 +1887,5 @@ def build_router() -> Router:
     router.callback_query.register(cb_answer, F.data.startswith("ans:"))
     router.callback_query.register(cb_member, F.data.startswith("rm:") | F.data.startswith("rs:"))
     router.callback_query.register(cb_update, F.data.startswith("up:"))
+    router.callback_query.register(cb_github, F.data.in_({CALLBACK_GITHUB_INSTALL, CALLBACK_GITHUB_CHECK}))
     return router

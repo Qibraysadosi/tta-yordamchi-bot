@@ -4,3 +4,9 @@ data/
 **/__pycache__/
 *.pyc
 .git
+tests/
+scripts/
+docs/
+dist/
+requirements-dev.txt
+pytest.ini

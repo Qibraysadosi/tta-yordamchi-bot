@@ -1,0 +1,5 @@
+# Ishlab chiqish va testlar uchun (serverga kerak emas)
+pytest>=8.4
+pyflakes>=3.2
+aiohttp>=3.12
+playwright>=1.55   # faqat scripts/miniapp_shots.py uchun (ixtiyoriy): keyin `playwright install chromium`

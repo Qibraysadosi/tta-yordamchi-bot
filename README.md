@@ -105,6 +105,13 @@ Tekshirish: serverda `curl -s http://127.0.0.1:8091/health` → `{"ok": true, ..
 
 Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa va oldingi versiyaga qaytish (tasdiq chatga keladi).
 
+## Ishlab chiquvchilar uchun
+
+- `CLAUDE.md` — loyiha qoidalari va kod xaritasi (Claude Code avtomatik o'qiydi); `docs/TZ.md` — keyingi funksiyalarning texnik topshirig'i (32 ta paket).
+- Testlar: `pip install -r requirements-dev.txt && python -m pytest` (soxta Telegram va Anthropic bilan, ~30 s); `python tests/e2e/e2e.py` — haqiqiy launcher bilan yangilanish/qaytarish sinovi.
+- Chiqarish: `VERSION` + `UPDATE_NOTES.md` → `python scripts/build_release.py` → `dist/claude-telegram-bot-v….zip` (maxfiy satrlar tekshiriladi) → botga `/yangilash`.
+- Mini App skrinshotlari: `python scripts/miniapp_shots.py` (Playwright) → `docs/screens/`.
+
 ## Sinov boti
 
 Yangilanishni avval sinov botida tekshirish uchun:

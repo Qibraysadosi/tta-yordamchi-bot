@@ -5,3 +5,7 @@ __pycache__/
 *.pyc
 *.zip
 .pytest_cache/
+dist/
+tests/e2e/run/
+docs/screens/*.png
+!docs/screens/overview-*.png

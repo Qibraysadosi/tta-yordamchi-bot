@@ -78,6 +78,9 @@ class Settings:
     link_reading: bool
     link_max_bytes: int
     backup_time: str | None  # kunlik zaxira vaqti (HH:MM), None — o'chiq
+    webapp_url: str | None  # Mini App'ning ochiq (HTTPS) manzili; None — ilova o'chiq
+    webapp_port: int  # konteyner ichida Mini App serveri tinglaydigan port
+    files_max_bytes: int  # har foydalanuvchi uchun saqlanadigan yaratilgan fayllar hajmi
     timezone: str
     db_path: Path
     system_prompt_path: Path
@@ -133,6 +136,15 @@ def load_settings() -> Settings:
         except ValueError as exc:
             raise ConfigError("BACKUP_TIME HH:MM ko'rinishida bo'lsin (masalan 03:30) yoki off") from exc
 
+    webapp_url: str | None = _env("WEBAPP_URL")
+    if webapp_url is not None:
+        if webapp_url.lower() in ("off", "none", "0", "yoq", "yo'q"):
+            webapp_url = None
+        elif not webapp_url.startswith("https://"):
+            raise ConfigError("WEBAPP_URL https:// bilan boshlanishi kerak (Telegram Mini App faqat HTTPS'da ochiladi)")
+        elif not webapp_url.endswith("/"):
+            webapp_url += "/"
+
     fallback_model = _env("FALLBACK_MODEL", "claude-opus-4-8")
     if fallback_model.lower() in ("off", "none", "0", "yoq", "yo'q"):
         fallback_model = None
@@ -172,6 +184,9 @@ def load_settings() -> Settings:
         link_reading=_bool("LINK_READING", True),
         link_max_bytes=_int("LINK_MAX_MB", 8, 1, 20) * 1024 * 1024,
         backup_time=backup_time,
+        webapp_url=webapp_url,
+        webapp_port=_int("WEBAPP_PORT", 8091, 1, 65535),
+        files_max_bytes=_int("FILES_MAX_MB", 300, 10, 10_000) * 1024 * 1024,
         timezone=_env("TIMEZONE", "Asia/Tashkent"),
         db_path=Path(_env("DB_PATH", "data/bot.db")),
         system_prompt_path=Path(_env("SYSTEM_PROMPT_FILE", "prompts/system.md")),

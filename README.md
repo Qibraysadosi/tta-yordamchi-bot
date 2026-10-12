@@ -4,6 +4,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 
 ## Imkoniyatlar
 
+- **Mini App (📱 /ilova):** Telegram ichidagi ilova — sozlamalar (model, fikrlash, qidiruv, rejim), suhbatlar tarixi va qidiruv, yaratilgan fayllar galereyasi, xarajat grafiklari, egasi uchun admin panel; Telegram mavzusiga mos yorug'/qorong'i ko'rinish. Chatning menyu tugmasidan yoki /ilova bilan ochiladi (sozlash: pastda «Mini App»)
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
@@ -36,6 +37,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 | `/tarix` | Suhbatlar tarixi; `/tarix so'z` — qidiruv |
 | `/shablon` | Shablonlar; `/shablon qo'sh Nomi` + keyingi qatorda matn |
 | `/kirill`, `/lotin` | Yozuvni o'girish (matn yoki xabarga reply) |
+| `/ilova` | Mini App: sozlamalar, tarix, fayllar, xarajat (egasi uchun admin panel ham) |
 | `/effort` | Fikrlash darajasi |
 | `/qidiruv` | Internet qidiruvini yoqish/o'chirish |
 | `/xarajat` | Sarf hisoboti; har javob ostidagi narxni yoqish/o'chirish |
@@ -66,6 +68,43 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/kod` | Botning joriy kodi (.zip) — yangi funksiya so'raganda Claude'ga yuborish uchun |
 | `/zaxira` | Bazaning zaxira nusxasini hozir olish |
 
+## Mini App (Telegram ichidagi ilova)
+
+Ilova botning o'zida ishlaydi (alohida server kerak emas): konteyner ichida `WEBAPP_PORT` (8091) portida HTTP server turadi, docker-compose uni faqat `127.0.0.1` ga ochadi. Telegram ilovani faqat **HTTPS** manzildan ochadi, shuning uchun serverdagi Caddy (yoki Nginx) orqali tashqariga chiqariladi. Kirish: Telegram imzosi (initData) bot tokeni bilan tekshiriladi, ilovaga faqat egasi va parol bilan kirganlar kiradi.
+
+**1. Manzil tanlang.** Eng oson yo'l — serverda allaqachon HTTPS bilan ishlayotgan domenga papka qo'shish, masalan `https://bepulkurs.uz/yordamchi/`. Caddyfile'ga (`/etc/caddy/Caddyfile`) shu domen blokiga qo'shing:
+
+```
+bepulkurs.uz {
+    # ... mavjud sozlamalar o'z joyida qoladi ...
+    redir /yordamchi /yordamchi/ 301
+    handle_path /yordamchi/* {
+        reverse_proxy 127.0.0.1:8091
+    }
+}
+```
+
+va `systemctl reload caddy`. Alohida subdomen istasangiz — DNS'da `A` yozuv (`yordamchi.bepulkurs.uz → server IP`) va Caddyfile'da:
+
+```
+yordamchi.bepulkurs.uz {
+    reverse_proxy 127.0.0.1:8091
+}
+```
+
+**2. `.env` ga yozing** (`/root/claude-telegram-bot/.env`):
+
+```
+WEBAPP_URL=https://bepulkurs.uz/yordamchi/
+WEBAPP_PORT=8091
+```
+
+**3. Konteynerni qayta yarating** (port va `.env` o'zgargani uchun bir marta): `docker compose up -d --force-recreate`. Bot ishga tushganda chatning menyu tugmasini «Ilova» qilib qo'yadi; `/start` menyusida va `/ilova` da 📱 tugma chiqadi.
+
+Tekshirish: serverda `curl -s http://127.0.0.1:8091/health` → `{"ok": true, ...}`; brauzerda `https://bepulkurs.uz/yordamchi/` sahifasi «Faqat Telegram ichida» deb ochilsa — hammasi joyida (ilovaning o'zi faqat Telegram'dan ishlaydi).
+
+Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa va oldingi versiyaga qaytish (tasdiq chatga keladi).
+
 ## Sinov boti
 
 Yangilanishni avval sinov botida tekshirish uchun:
@@ -95,7 +134,7 @@ Xavfsizlik:
 - Har yangilanishdan oldin joriy versiya zaxiraga olinadi (oxirgi 5 tasi saqlanadi).
 - Yangi versiya ishga tushmasa, eski versiya **avtomatik** tiklanadi va sizga xato matni yuboriladi — shu matnni Claude'ga yuboring.
 - `/qaytarish` — oxirgi yangilanishni bekor qiladi (ketma-ket bosilsa, yanada oldingi versiyaga qaytadi).
-- Arxivdan `bot/`, `prompts/`, `requirements.txt`, `VERSION` (va `install*.sh`, `docker-compose.yml`, `README.md`) olinadi; `.env`, baza, `Dockerfile` va `launcher.py` ga tegilmaydi.
+- Arxivdan `bot/`, `prompts/`, `requirements.txt`, `VERSION` (va `install*.sh`, `docker-compose.yml`, `README.md`) olinadi; `.env`, baza, `Dockerfile` va `launcher.py` ga tegilmaydi. `docker-compose.yml` o'zgargan bo'lsa (masalan, v1.5.0 da Mini App porti), bir marta `docker compose up -d` qiling.
 - `requirements.txt` o'zgargan bo'lsa, yangi kutubxonalar avtomatik o'rnatiladi (v1.4.0 da PDF, PowerPoint va grafik kutubxonalari qo'shilgan — birinchi ishga tushish 1–3 daqiqa cho'zilishi mumkin).
 
 Keyingi safar yangi funksiya so'raganingizda, avval botdan `/kod` bilan joriy kodni oling va uni Claude'ga yuboring.

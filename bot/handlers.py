@@ -26,6 +26,7 @@ from aiogram.types import (
     Message,
     TelegramObject,
     User,
+    WebAppInfo,
 )
 
 from . import branding, export, links, media, scheduler, tools, translit
@@ -33,6 +34,7 @@ from .access import MIN_PASSWORD_LENGTH, AttemptLimiter, hash_password, verify_p
 from .claude import ClaudeError, ClaudeService, TurnResult
 from .config import Settings
 from .db import Conversation, Database, UserSettings
+from .filestore import FileStore
 from .live import LiveMessage
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
@@ -57,6 +59,7 @@ COMMANDS = [
     BotCommand(command="qidiruv", description="🔎 Internet qidiruvi: yoqish/o'chirish"),
     BotCommand(command="xarajat", description="💰 Xarajat hisoboti"),
     BotCommand(command="kirill", description="🔡 Lotin → kirill (matn yoki javobga reply)"),
+    BotCommand(command="ilova", description="📱 Ilova: sozlamalar, tarix, fayllar, xarajat"),
     BotCommand(command="yordam", description="📖 Yordam"),
 ]
 OWNER_COMMANDS = COMMANDS + [
@@ -110,7 +113,17 @@ HELP_TEXT = (
     "🧠 /effort — fikrlash darajasi\n"
     "🔎 /qidiruv — internet qidiruvini yoqish/o'chirish\n"
     "💰 /xarajat — sarf hisoboti\n"
-    "🔡 /kirill, /lotin — yozuvni o'girish"
+    "🔡 /kirill, /lotin — yozuvni o'girish\n"
+    "📱 /ilova — Mini App: sozlamalar, suhbatlar, fayllar galereyasi, xarajat grafigi"
+)
+
+APP_TEXT = (
+    "📱 <b>TTA Yordamchi ilovasi</b>\n\n"
+    "Sozlamalar, suhbatlar tarixi, yaratilgan fayllar, xarajat grafigi — bir ekranda. "
+    "Tugmani bosing yoki chatning pastki chap burchagidagi menyu tugmasidan oching."
+)
+APP_DISABLED_TEXT = (
+    "📱 Ilova hali ulanmagan: serverdagi .env faylida WEBAPP_URL ko'rsatilmagan (README → Mini App)."
 )
 
 ADMIN_HELP = (
@@ -208,6 +221,7 @@ class AppContext:
     active: dict[int, asyncio.Task] = field(default_factory=dict)
     pending: dict[int, tuple[float, list[dict]]] = field(default_factory=dict)
     raw: RawStore = field(default_factory=RawStore)  # yuborilgan fayllarning asl nusxasi (vositalar uchun)
+    files: FileStore | None = None  # yaratilgan fayllar galereyasi (Mini App)
     updater: UpdateManager | None = None
     limiter: AttemptLimiter = field(default_factory=AttemptLimiter)
     prompted: set[int] = field(default_factory=set)  # parol so'ralgan (birinchi xabari kelgan) begonalar
@@ -353,7 +367,11 @@ def welcome_caption(user: User, s: UserSettings) -> str:
     return WELCOME_TEXT.format(name=name, settings=html.escape(settings_line(s), quote=False))
 
 
-def menu_keyboard(s: UserSettings, owner: bool) -> InlineKeyboardMarkup:
+def app_button(url: str | None) -> InlineKeyboardButton | None:
+    return InlineKeyboardButton(text="📱 Ilova", web_app=WebAppInfo(url=url)) if url else None
+
+
+def menu_keyboard(s: UserSettings, owner: bool, webapp_url: str | None = None) -> InlineKeyboardMarkup:
     search = "✅" if s.web_search else "⬜"
     rows = [
         [
@@ -373,15 +391,22 @@ def menu_keyboard(s: UserSettings, owner: bool) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📖 Yordam", callback_data="menu:help"),
         ],
     ]
+    last: list[InlineKeyboardButton] = []
+    button = app_button(webapp_url)
+    if button is not None:
+        last.append(button)
     if owner:
-        rows.append([InlineKeyboardButton(text="⚙️ Admin panel", callback_data="menu:admin")])
+        last.append(InlineKeyboardButton(text="⚙️ Admin panel", callback_data="menu:admin"))
+    if last:
+        rows.append(last)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def send_welcome(bot: Bot, ctx: AppContext, chat_id: int, user: User) -> None:
     s = await ctx.user_settings(user.id)
     await branding.send_banner(
-        bot, ctx.db, chat_id, "welcome", welcome_caption(user, s), menu_keyboard(s, ctx.is_owner(user.id))
+        bot, ctx.db, chat_id, "welcome", welcome_caption(user, s),
+        menu_keyboard(s, ctx.is_owner(user.id), ctx.settings.webapp_url),
     )
 
 
@@ -397,6 +422,16 @@ async def admin_panel_text(ctx: AppContext) -> str:
 
 async def cmd_start(message: Message, bot: Bot, ctx: AppContext) -> None:
     await send_welcome(bot, ctx, message.chat.id, message.from_user)
+
+
+async def cmd_app(message: Message, ctx: AppContext) -> None:
+    button = app_button(ctx.settings.webapp_url)
+    if button is None:
+        await message.answer(APP_DISABLED_TEXT)
+        return
+    await message.answer(
+        APP_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
+    )
 
 
 async def cmd_help(message: Message, ctx: AppContext) -> None:
@@ -425,7 +460,7 @@ async def cb_menu(callback: CallbackQuery, ctx: AppContext) -> None:
         s = await ctx.user_settings(uid)
         await callback.answer("🔎 Qidiruv yoqildi" if s.web_search else "🔎 Qidiruv o'chirildi")
         caption = welcome_caption(callback.from_user, s)
-        keyboard = menu_keyboard(s, ctx.is_owner(uid))
+        keyboard = menu_keyboard(s, ctx.is_owner(uid), ctx.settings.webapp_url)
         with contextlib.suppress(TelegramBadRequest):
             if message.photo:
                 await message.edit_caption(caption=caption, parse_mode=ParseMode.HTML, reply_markup=keyboard)
@@ -1274,7 +1309,12 @@ async def cb_answer(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
         await callback.answer("📄 Word tayyorlanmoqda…")
         data = await asyncio.to_thread(export.answer_to_docx, text)
         name = f"javob-{answer_id}.docx"
-        await message.answer_document(BufferedInputFile(data, filename=name), caption="📄 Javob Word hujjat ko'rinishida")
+        sent = await message.answer_document(
+            BufferedInputFile(data, filename=name), caption="📄 Javob Word hujjat ko'rinishida"
+        )
+        if ctx.files is not None:
+            document = getattr(sent, "document", None)
+            await ctx.files.save(uid, conv_id, name, data, document.file_id if document is not None else None)
     elif action == "cyr":
         await callback.answer("🔡 Kirill yozuvi")
         await _send_long(message, translit.to_cyrillic(text))
@@ -1606,9 +1646,13 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
     async def log_tool_usage(tool_model: str, numbers: dict, cost: float) -> None:
         await ctx.db.log_usage(uid, tool_model, numbers, cost)
 
+    async def remember_file(name: str, data: bytes, file_id: str | None) -> None:
+        if ctx.files is not None:
+            await ctx.files.save(uid, s.conv_id, name, data, file_id)
+
     tool_ctx = ToolContext(
         bot=bot, chat_id=chat_id, reply_to=reply_to, uid=uid, files=ctx.raw.recent(uid), model=model,
-        claude=ctx.claude, live=live, log_usage=log_tool_usage,
+        claude=ctx.claude, live=live, log_usage=log_tool_usage, on_file=remember_file,
     )
     try:
         result = await _generate(
@@ -1690,6 +1734,7 @@ def build_router() -> Router:
     router.message.register(cmd_cyrillic, Command("kirill", "cyr"))
     router.message.register(cmd_latin, Command("lotin", "lat"))
     router.message.register(cmd_backup, Command("zaxira", "backup"))
+    router.message.register(cmd_app, Command("ilova", "app"))
     # admin (faqat egasi; tekshiruv har bir handler ichida)
     router.message.register(cmd_update, Command("yangilash", "update"))
     router.message.register(cmd_version, Command("versiya", "version"))

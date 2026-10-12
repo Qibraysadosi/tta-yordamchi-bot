@@ -246,6 +246,7 @@ class ToolContext:
     claude: Any = None  # ClaudeService — hujjat tarjimasi uchun
     live: Any = None  # LiveMessage — holat qatori uchun
     log_usage: Any = None  # async (model, numbers, cost) — tarjima xarajatini yozish
+    on_file: Any = None  # async (name, data, telegram_file_id) — yaratilgan faylni galereyaga yozish
     sent: list[str] = field(default_factory=list)
     cost: float = 0.0
 
@@ -256,21 +257,33 @@ class ToolContext:
     def _reply(self) -> ReplyParameters:
         return ReplyParameters(message_id=self.reply_to, allow_sending_without_reply=True)
 
+    async def _remember(self, name: str, data: bytes, file_id: str | None) -> None:
+        if self.on_file is None:
+            return
+        try:
+            await self.on_file(name, data, file_id)
+        except Exception:  # noqa: BLE001 — galereya xatosi javobga xalaqit bermasin
+            log.exception("Faylni galereyaga yozib bo'lmadi: %s", name)
+
     async def send_document(self, data: bytes, name: str, caption: str | None = None) -> None:
-        await self.bot.send_document(
+        message = await self.bot.send_document(
             chat_id=self.chat_id, document=BufferedInputFile(data, filename=name),
             caption=caption or f"📎 {name}", reply_parameters=self._reply(),
         )
         self.sent.append(name)
         await self.status(f"📎 {name} yuborildi ✅")
+        document = getattr(message, "document", None)
+        await self._remember(name, data, document.file_id if document is not None else None)
 
     async def send_photo(self, data: bytes, name: str, caption: str | None = None) -> None:
-        await self.bot.send_photo(
+        message = await self.bot.send_photo(
             chat_id=self.chat_id, photo=BufferedInputFile(data, filename=name), caption=caption,
             reply_parameters=self._reply(),
         )
         self.sent.append(name)
         await self.status(f"📊 {name} yuborildi ✅")
+        photos = getattr(message, "photo", None) or []
+        await self._remember(name, data, photos[-1].file_id if photos else None)
 
 
 # ------------------------------------------------------------------ yordamchilar

@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS budget_alerts (
     level INTEGER NOT NULL,
     PRIMARY KEY (cycle, level)
 );
+CREATE TABLE IF NOT EXISTS files (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    conv_id    INTEGER NOT NULL DEFAULT 0,
+    name       TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    size       INTEGER NOT NULL,
+    file_id    TEXT,
+    path       TEXT,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_user ON files (user_id, id);
 """
 
 # Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)
@@ -127,6 +139,21 @@ class Template:
     user_id: int
     name: str
     text: str
+
+
+@dataclass
+class StoredFile:
+    """Bot yaratgan fayl (Mini App galereyasi uchun): Telegram file_id va diskdagi nusxa."""
+
+    id: int
+    user_id: int
+    conv_id: int
+    name: str
+    kind: str
+    size: int
+    file_id: str | None
+    path: str | None
+    created_at: str
 
 
 def conversation_title(user_content: list[dict]) -> str:
@@ -525,6 +552,68 @@ class Database:
             username=row["username"],
             joined_at=row["joined_at"],
             active=bool(row["active"]),
+        )
+
+    async def usage_rows(self, user_id: int | None, since: datetime) -> list[tuple[str, float, int]]:
+        """(created_at, cost, searches) — kunlik grafik uchun; user_id=None — barcha foydalanuvchilar."""
+        if user_id is None:
+            query, params = "SELECT created_at, cost, searches FROM usage_log WHERE created_at >= ? ORDER BY id", (_iso(since),)
+        else:
+            query, params = (
+                "SELECT created_at, cost, searches FROM usage_log WHERE user_id = ? AND created_at >= ? ORDER BY id",
+                (user_id, _iso(since)),
+            )
+        async with self._conn.execute(query, params) as cur:
+            rows = await cur.fetchall()
+        return [(row[0], float(row[1]), int(row[2])) for row in rows]
+
+    # --- yaratilgan fayllar ---
+    async def add_file(
+        self, user_id: int, conv_id: int, name: str, kind: str, size: int, file_id: str | None, path: str | None
+    ) -> int:
+        cur = await self._conn.execute(
+            "INSERT INTO files (user_id, conv_id, name, kind, size, file_id, path, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, conv_id, name, kind, size, file_id, path, _now()),
+        )
+        await self._conn.commit()
+        return int(cur.lastrowid)
+
+    async def set_file_path(self, file_pk: int, path: str | None) -> None:
+        await self._conn.execute("UPDATE files SET path = ? WHERE id = ?", (path, file_pk))
+        await self._conn.commit()
+
+    async def file(self, file_pk: int) -> StoredFile | None:
+        async with self._conn.execute("SELECT * FROM files WHERE id = ?", (file_pk,)) as cur:
+            row = await cur.fetchone()
+        return self._file(row) if row else None
+
+    async def files(self, user_id: int, limit: int = 50, offset: int = 0) -> tuple[list[StoredFile], int]:
+        async with self._conn.execute(
+            "SELECT * FROM files WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?", (user_id, limit, offset)
+        ) as cur:
+            rows = await cur.fetchall()
+        async with self._conn.execute("SELECT COUNT(*) FROM files WHERE user_id = ?", (user_id,)) as cur:
+            total = (await cur.fetchone())[0]
+        return [self._file(row) for row in rows], int(total)
+
+    async def files_on_disk(self, user_id: int) -> list[StoredFile]:
+        """Diskda nusxasi bor fayllar, eng eskisi birinchi (joy bo'shatish uchun)."""
+        async with self._conn.execute(
+            "SELECT * FROM files WHERE user_id = ? AND path IS NOT NULL ORDER BY id", (user_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._file(row) for row in rows]
+
+    async def delete_file(self, file_pk: int) -> None:
+        await self._conn.execute("DELETE FROM files WHERE id = ?", (file_pk,))
+        await self._conn.commit()
+
+    @staticmethod
+    def _file(row: Any) -> StoredFile:
+        return StoredFile(
+            id=row["id"], user_id=row["user_id"], conv_id=row["conv_id"], name=row["name"], kind=row["kind"],
+            size=row["size"], file_id=row["file_id"], path=row["path"], created_at=row["created_at"],
         )
 
     async def spend_by_model(self, user_id: int, since: datetime) -> list[tuple[str, float, int]]:

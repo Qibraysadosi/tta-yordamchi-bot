@@ -10,12 +10,13 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramUnauthorizedError
-from aiogram.types import BotCommandScopeChat, User
+from aiogram.types import BotCommandScopeChat, MenuButtonDefault, MenuButtonWebApp, User, WebAppInfo
 
-from . import branding, scheduler
+from . import branding, scheduler, webapp
 from .claude import ClaudeService
 from .config import ConfigError, Settings, load_settings
 from .db import Database
+from .filestore import FileStore
 from .handlers import COMMANDS, OWNER_COMMANDS, AccessMiddleware, AppContext, build_router
 from .models import label
 from .prompt import PromptLoader
@@ -80,6 +81,15 @@ async def connect(bot: Bot, owner_ids: frozenset[int] = frozenset(), attempts: i
     return me
 
 
+async def apply_menu_button(bot: Bot, webapp_url: str | None) -> None:
+    """Chatning pastki chap burchagidagi menyu tugmasi: Mini App ulangan bo'lsa — «Ilova», aks holda buyruqlar."""
+    with contextlib.suppress(TelegramAPIError):
+        if webapp_url:
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Ilova", web_app=WebAppInfo(url=webapp_url)))
+        else:
+            await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+
+
 async def announce_update(bot: Bot, ctx: AppContext) -> None:
     """Yangilanish yoki avtomatik tiklash natijasini egasiga yozadi."""
     if ctx.updater is None:
@@ -129,12 +139,14 @@ async def run() -> bool:
     settings = load_settings()
     db = await Database.open(settings.db_path)
     claude = build_claude(settings)
+    data_dir = settings.db_path.resolve().parent
     ctx = AppContext(
         settings=settings,
         db=db,
         claude=claude,
         prompt=PromptLoader(settings.system_prompt_path, settings.timezone),
-        updater=UpdateManager(app_dir=APP_DIR, data_dir=settings.db_path.resolve().parent),
+        updater=UpdateManager(app_dir=APP_DIR, data_dir=data_dir),
+        files=FileStore(db, data_dir / "files", settings.files_max_bytes),
     )
     bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
     dp = build_dispatcher(ctx)
@@ -154,12 +166,20 @@ async def run() -> bool:
             await branding.apply_profile(bot, db)  # tavsif va profil rasmi (faqat o'zgarganda)
         except Exception:  # noqa: BLE001 — ko'rinish botning ishlashiga xalaqit bermasin
             log.exception("Bot profilini o'rnatishda xato")
+        await apply_menu_button(bot, settings.webapp_url)
+        server = None
+        if settings.webapp_url:
+            try:
+                server = await webapp.start_webapp(ctx, bot)
+            except OSError:
+                log.exception("Mini App serveri ishga tushmadi (port %s band?)", settings.webapp_port)
         job = start_backup_job(bot, ctx)
         try:
             await dp.start_polling(bot)
         finally:
             if job is not None:
                 await job.stop()
+            await webapp.stop_webapp(server)
     finally:
         await db.close()
         await bot.session.close()

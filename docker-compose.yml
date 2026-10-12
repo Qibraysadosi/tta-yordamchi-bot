@@ -6,6 +6,10 @@ services:
     restart: unless-stopped
     init: true
     env_file: .env
+    # Mini App serveri faqat shu serverning o'zida ochiq (127.0.0.1); tashqariga Caddy/Nginx HTTPS orqali chiqadi.
+    # Port .env dagi WEBAPP_PORT bilan bir xil (standart 8091; sinov boti uchun 8092)
+    ports:
+      - "127.0.0.1:${WEBAPP_PORT:-8091}:${WEBAPP_PORT:-8091}"
     volumes:
       # Kod, prompts va data/ (baza, zaxiralar) serverdagi shu papkada turadi:
       # /yangilash yangi kodni shu yerga yozadi, konteyner qayta yig'ilsa ham hammasi saqlanadi

@@ -18,7 +18,7 @@ tar --exclude=./data --exclude=./.env --exclude=./.git --exclude='__pycache__' -
 mkdir -p "$TEST/data"
 
 if [ ! -f "$TEST/.env" ]; then
-  grep -vE '^(TELEGRAM_BOT_TOKEN|CONTAINER_NAME|BACKUP_TIME)=' .env > "$TEST/.env"
+  grep -vE '^(TELEGRAM_BOT_TOKEN|CONTAINER_NAME|BACKUP_TIME|WEBAPP_URL|WEBAPP_PORT)=' .env > "$TEST/.env"
   TOKEN_RE='^[0-9]+:[A-Za-z0-9_-]{30,}$'
   while true; do
     read -rp "Sinov botining tokeni (@BotFather'dan, asosiy botnikidan boshqa): " token
@@ -30,6 +30,8 @@ if [ ! -f "$TEST/.env" ]; then
     echo "TELEGRAM_BOT_TOKEN=$token"
     echo "CONTAINER_NAME=claude-telegram-bot-test"
     echo "BACKUP_TIME=off"
+    echo "WEBAPP_PORT=8092"
+    echo "# Sinov botida Mini App kerak bo'lsa: WEBAPP_URL=https://DOMEN/yordamchi-test/ (README → Mini App)"
   } >> "$TEST/.env"
   chmod 600 "$TEST/.env"
 fi

@@ -1,0 +1,58 @@
+/* TTA Yordamchi — chiziqli ikonkalar to'plami (24×24, 1.75px chiziq). Bot va Mini App uchun yagona uslub. */
+(function () {
+  const paths = {
+    sparkles: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/><path d="M5 3l.6 1.6L7 5l-1.4.6L5 7l-.6-1.4L3 5l1.4-.4z"/>',
+    cpu: '<rect x="6" y="6" width="12" height="12" rx="2.5"/><rect x="10" y="10" width="4" height="4" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+    brain: '<path d="M9.5 4.5A2.5 2.5 0 0 0 5 6v1.2A3 3 0 0 0 4 12a3 3 0 0 0 1 2.3V15a3 3 0 0 0 4.5 2.6"/><path d="M14.5 4.5A2.5 2.5 0 0 1 19 6v1.2a3 3 0 0 1 1 4.8 3 3 0 0 1-1 2.3V15a3 3 0 0 1-4.5 2.6"/><path d="M12 4v16"/><path d="M9.5 9.5a2 2 0 0 1-2-1.5M14.5 9.5a2 2 0 0 0 2-1.5M9.5 14.5a2 2 0 0 0-2 1.5M14.5 14.5a2 2 0 0 1 2 1.5"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+    target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>',
+    chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.4 3.3A.6.6 0 0 1 4.6 20V17A2.5 2.5 0 0 1 4 14.5z"/><path d="M8 9h8M8 12.5h5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 3.5V8h4.5"/><path d="M12 7.5V12l3 2"/>',
+    folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.6a2 2 0 0 1 1.5.7L12 8h6.5a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+    fileText: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    table: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M4 14.5h16M10 5v14M15 5v14"/>',
+    presentation: '<rect x="3.5" y="4" width="17" height="11" rx="2"/><path d="M12 15v5M8.5 20h7M8 11.5l2.5-3 2.5 2 3-3.5"/>',
+    pdf: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M8.5 17v-5h1.6a1.5 1.5 0 0 1 0 3H8.5M13 17v-5h1a2.5 2.5 0 0 1 0 5z"/>',
+    image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.6"/><path d="M20.5 15.5l-4.3-4.3a1.5 1.5 0 0 0-2.1 0L7 18.5"/>',
+    zip: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M10 7h1.5M10 10h1.5M10 13h1.5M10 16h1.5"/>',
+    chart: '<path d="M4 20V4"/><path d="M4 20h16"/><path d="M8 16v-5M12 16V7M16 16v-3"/>',
+    wallet: '<path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><path d="M4 10h16"/><path d="M15.5 14.5h2"/>',
+    shield: '<path d="M12 3l7 3v5.5c0 4.5-3 7.8-7 9.5-4-1.7-7-5-7-9.5V6z"/><path d="M9.5 12l1.8 1.8L15 10.3"/>',
+    users: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M15.5 15a4.5 4.5 0 0 1 5 4"/>',
+    key: '<circle cx="8" cy="14" r="4"/><path d="M11 11l8.5-8.5M15 7l2.5 2.5M17.5 4.5L20 7"/>',
+    database: '<ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3"/>',
+    rotate: '<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v4.5h4.5"/>',
+    send: '<path d="M20 4L4 10.5l7 2.5 2.5 7z"/><path d="M11 13l9-9"/>',
+    download: '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M4.5 16v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2"/>',
+    trash: '<path d="M4.5 7h15M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2"/><path d="M6.5 7l.8 12a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4l.8-12"/><path d="M10 11v6M14 11v6"/>',
+    chevronRight: '<path d="M9.5 6l6 6-6 6"/>',
+    chevronLeft: '<path d="M14.5 6l-6 6 6 6"/>',
+    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/>',
+    external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M19 13.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4.5"/>',
+    refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v4.5h-4.5"/>',
+    sliders: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+    bolt: '<path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z"/>',
+    tag: '<path d="M3.5 12.5V5a1.5 1.5 0 0 1 1.5-1.5h7.5l8 8-9 9z"/><circle cx="8" cy="8" r="1.3" fill="currentColor"/>',
+    home: '<path d="M4 11l8-7 8 7"/><path d="M6 10v9.5h12V10"/><path d="M10 19.5V14h4v5.5"/>',
+    coins: '<circle cx="9" cy="9" r="5.5"/><path d="M14.5 10.2a5.5 5.5 0 1 1-4.3 4.3"/><path d="M7 9h4M9 7v4"/>',
+    letter: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M3.5 8l8.5 5.5L20.5 8"/>',
+    camera: '<path d="M4 8.5A2 2 0 0 1 6 6.5h2l1.3-2h5.4l1.3 2h2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.2"/>',
+    megaphone: '<path d="M4 10v4a1 1 0 0 0 1 1h2l6 4V5L7 9H5a1 1 0 0 0-1 1z"/><path d="M16.5 9.5a3.5 3.5 0 0 1 0 5"/><path d="M19 7a7 7 0 0 1 0 10"/>',
+    code: '<path d="M9 7.5L4.5 12 9 16.5M15 7.5l4.5 4.5-4.5 4.5"/>',
+    translate: '<path d="M3.5 5.5h9M8 3.5v2M10.5 5.5c-.6 3.5-3 6.5-6 8.5M6 8.5c1 2.5 3 4.5 5.5 5.5"/><path d="M13 20.5l3.5-9 3.5 9M14.3 17.5h4.4"/>',
+    user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+    power: '<path d="M12 3.5v8"/><path d="M7 7a7 7 0 1 0 10 0"/>',
+    alert: '<path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17v.5"/>',
+    lock: '<rect x="5.5" y="10.5" width="13" height="10" rx="2"/><path d="M8.5 10.5V7.5a3.5 3.5 0 0 1 7 0v3"/>',
+  };
+  window.ICONS = paths;
+  window.icon = function (name, cls) {
+    const d = paths[name] || paths.info;
+    return '<svg class="ic' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>';
+  };
+})();

@@ -36,7 +36,7 @@ def assert_valid_html(h: str):
     checker.close()
     assert not checker.errors, checker.errors
     assert not checker.stack, f"yopilmagan: {checker.stack}"
-    assert len(h) <= tgformat.TG_LIMIT
+    assert tgformat._visible_len(h) <= tgformat.TG_LIMIT  # Telegram teglarsiz matnni sanaydi
 
 
 def test_inline_formatting():

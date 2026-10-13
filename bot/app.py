@@ -159,20 +159,24 @@ async def run() -> bool:
 
     settings = load_settings()
     db = await Database.open(settings.db_path)
-    claude = build_claude(settings)
-    data_dir = settings.db_path.resolve().parent
-    ctx = AppContext(
-        settings=settings,
-        db=db,
-        claude=claude,
-        prompt=PromptLoader(settings.system_prompt_path, settings.timezone),
-        updater=UpdateManager(app_dir=APP_DIR, data_dir=data_dir),
-        files=FileStore(db, data_dir / "files", settings.files_max_bytes),
-        github=GitHubClient(settings.github_repo, settings.github_token, settings.github_branch) if settings.github_repo else None,
-    )
-    bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
-    dp = build_dispatcher(ctx)
+    # Baza ochilgach har qanday xato ham uni yopsin: aks holda aiosqlite oqimi jarayonni osib qo'yadi
+    # va launcher buzilgan yangilanishni orqaga qaytara olmaydi
+    bot: Bot | None = None
+    claude: ClaudeService | None = None
     try:
+        claude = build_claude(settings)
+        data_dir = settings.db_path.resolve().parent
+        ctx = AppContext(
+            settings=settings,
+            db=db,
+            claude=claude,
+            prompt=PromptLoader(settings.system_prompt_path, settings.timezone),
+            updater=UpdateManager(app_dir=APP_DIR, data_dir=data_dir),
+            files=FileStore(db, data_dir / "files", settings.files_max_bytes),
+            github=GitHubClient(settings.github_repo, settings.github_token, settings.github_branch) if settings.github_repo else None,
+        )
+        bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
+        dp = build_dispatcher(ctx)
         me = await connect(bot, settings.owner_ids)
         log.info(
             "Bot ishga tushdi: @%s · v%s · standart model: %s · egalari: %s",
@@ -209,7 +213,9 @@ async def run() -> bool:
             await webapp.stop_webapp(server)
     finally:
         await db.close()
-        await bot.session.close()
-        with contextlib.suppress(Exception):
-            await claude.client.close()
+        if bot is not None:
+            await bot.session.close()
+        if claude is not None:
+            with contextlib.suppress(Exception):
+                await claude.client.close()
     return ctx.restart_requested

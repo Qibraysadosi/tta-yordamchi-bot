@@ -69,7 +69,8 @@ def specs() -> list[dict]:
                     "sheets": {
                         "type": "array",
                         "description": (
-                            "xlsx/csv varaqlari. Sonlarni son sifatida ber; Excel formulalarini '=SUM(B2:B9)' "
+                            "xlsx varaqlari (csv — faqat bitta varaq). Sonlarni son sifatida ber (ID, hisob raqami — "
+                            "matn); Excel formulalarini '=SUM(B2:B9)' "
                             "ko'rinishida satr qilib berish mumkin."
                         ),
                         "items": {
@@ -153,7 +154,7 @@ def specs() -> list[dict]:
                     "files": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Fayl nomlari (tartib muhim). Berilmasa — shu suhbatda yuborilgan mos fayllar.",
+                        "description": "Fayl nomlari (tartib muhim). Berilmasa — oxirgi marta yuborilgan mos fayllar.",
                     },
                     "pages": {"type": "string", "description": "Sahifalar, masalan '1-3,5' (extract, rotate)"},
                     "angle": {"type": "integer", "description": "rotate uchun: 90, 180 yoki 270"},
@@ -204,6 +205,7 @@ class RawFile:
     kind: str  # image | pdf | docx | xlsx | text
     data: bytes
     stamp: float = field(default_factory=time.monotonic)
+    batch: int = 0  # qaysi suhbat navbatigacha yuborilgan (RawStore belgilaydi) — nom berilmasa oxirgi to'plam olinadi
 
 
 class RawStore:
@@ -212,9 +214,12 @@ class RawStore:
     def __init__(self, ttl: float = RAW_TTL, max_files: int = RAW_MAX_FILES, max_bytes: int = RAW_MAX_BYTES) -> None:
         self.ttl, self.max_files, self.max_bytes = ttl, max_files, max_bytes
         self._items: dict[int, list[RawFile]] = {}
+        self._turns: dict[int, int] = {}
 
     def add(self, user_id: int, items: list[RawFile]) -> None:
-        kept = self.recent(user_id) + list(items)
+        for item in items:  # keyingi navbatgacha yuborilganlar bitta to'plam (albom, kutilayotgan fayllar)
+            item.batch = self._turns.get(user_id, 0)
+        kept = self._fresh(user_id) + list(items)
         while len(kept) > self.max_files or sum(len(f.data) for f in kept) > self.max_bytes:
             if len(kept) <= 1:
                 break
@@ -222,6 +227,17 @@ class RawStore:
         self._items[user_id] = kept
 
     def recent(self, user_id: int) -> list[RawFile]:
+        """Suhbat navbati (Claude so'rovi) uchun yaqindagi fayllar (to'plamni o'zgartirmaydi)."""
+        return self._fresh(user_id)
+
+    def close_batch(self, user_id: int) -> None:
+        """Fayl ishlatgan navbat saqlandi — bundan keyin yuborilganlar yangi to'plam bo'ladi.
+
+        Vaqtinchalik xatoda (fayllar navbatga qaytganda) yoki faylsiz navbatda (🔄, ilovadan savol) chaqirilmaydi:
+        kutayotgan va keyin yuborilgan fayllar bitta to'plamda qoladi."""
+        self._turns[user_id] = self._turns.get(user_id, 0) + 1
+
+    def _fresh(self, user_id: int) -> list[RawFile]:
         now = time.monotonic()
         fresh = [f for f in self._items.get(user_id, []) if now - f.stamp <= self.ttl]
         if fresh:
@@ -291,23 +307,32 @@ def _size(data: bytes) -> str:
     return f"{len(data) / 1024:.0f} KB" if len(data) < 1024 * 1024 else f"{len(data) / 1024 / 1024:.1f} MB"
 
 
-def _match(files_: list[RawFile], name: str) -> RawFile | None:
+def _match(files_: list[RawFile], name: str, exclude: list[RawFile] | tuple = ()) -> RawFile | None:
+    """Avval to'liq nom (shartnoma.docx ≠ shartnoma.pdf), keyin kengaytmasiz; allaqachon tanlangani oxirida."""
     wanted = name.strip().lower()
     stem = wanted.rsplit(".", 1)[0]
-    for item in reversed(files_):
-        low = item.name.lower()
-        if low == wanted or low.rsplit(".", 1)[0] == stem:
-            return item
+    ordered = list(reversed(files_))  # eng yangisi birinchi
+    fresh = [f for f in ordered if not any(f is e for e in exclude)]
+    for same in (lambda low: low == wanted, lambda low: low.rsplit(".", 1)[0] == stem):
+        for pool in (fresh, ordered):
+            for item in pool:
+                if same(item.name.lower()):
+                    return item
     return None
 
 
 def pick(files_: list[RawFile], names: list[str] | None, kinds: tuple[str, ...], *, at_least: int = 1) -> list[RawFile]:
-    """Nomi bo'yicha (tartib saqlanadi) yoki, nom berilmasa, turi mos barcha fayllar."""
+    """Nomi bo'yicha (tartib saqlanadi) yoki, nom berilmasa, oxirgi to'plamdagi (yetmasa — barcha) mos fayllar."""
     available = [f for f in files_ if f.kind in kinds]
+    if not names and available:
+        # Oldingi savolga yuborilgan eski rasm/PDF yangi so'rovga aralashib ketmasin
+        latest = [f for f in available if f.batch == available[-1].batch]
+        if len(latest) >= at_least:
+            available = latest
     if names:
-        chosen = []
+        chosen: list[RawFile] = []
         for name in names:
-            found = _match(files_, str(name))
+            found = _match(files_, str(name), chosen)
             if found is None:
                 have = ", ".join(f.name for f in files_) or "hech narsa"
                 raise ToolError(f"«{name}» fayli topilmadi. Shu suhbatda mavjud fayllar: {have}.")
@@ -321,6 +346,14 @@ def pick(files_: list[RawFile], names: list[str] | None, kinds: tuple[str, ...],
             f"(kerak: {', '.join(kinds)}, kamida {at_least} ta)."
         )
     return available
+
+
+def _left_out(files_: list[RawFile], names: Any, used: list[RawFile], kind: str) -> str:
+    """Nom berilmaganda olinmagan eski fayllar — Claude kerak bo'lsa nomi bilan qayta chaqiradi."""
+    rest = [] if names else [f.name for f in files_ if f.kind == kind and not any(f is u for u in used)]
+    if not rest:
+        return ""
+    return f" Oldinroq yuborilgan {len(rest)} ta fayl qo'shilmadi (kerak bo'lsa files'da bering): {', '.join(rest[:10])}."
 
 
 def text_of(item: RawFile) -> str:
@@ -387,13 +420,16 @@ async def pdf_tool(tctx: ToolContext, args: dict) -> str:
         data = await asyncio.to_thread(pdfs.images_to_pdf, [f.data for f in images])
         name = files.safe_name(str(custom or "skaner"), "pdf")
         await tctx.send_document(data, name)
-        return f"{len(images)} ta rasmdan PDF yuborildi: {name} ({_size(data)})."
+        return f"{len(images)} ta rasmdan PDF yuborildi: {name} ({_size(data)}).{_left_out(tctx.files, names, images, 'image')}"
     if action == "merge":
         items = pick(tctx.files, names, ("pdf",), at_least=2)
         data = await asyncio.to_thread(pdfs.merge, [f.data for f in items])
         name = files.safe_name(str(custom or "birlashtirilgan"), "pdf")
         await tctx.send_document(data, name)
-        return f"{len(items)} ta PDF birlashtirildi: {name} ({_size(data)}, {pdfs.page_count(data)} sahifa)."
+        return (
+            f"{len(items)} ta PDF birlashtirildi: {name} ({_size(data)}, {pdfs.page_count(data)} sahifa)."
+            f"{_left_out(tctx.files, names, items, 'pdf')}"
+        )
     items = pick(tctx.files, names, ("pdf",))
     source = items[-1]
     stem = source.name.rsplit(".", 1)[0]
@@ -457,9 +493,20 @@ async def translate_document(tctx: ToolContext, args: dict) -> str:
 
 
 async def compare_documents(tctx: ToolContext, args: dict) -> str:
-    names = [str(args[k]) for k in ("file_a", "file_b") if args.get(k)]
-    items = pick(tctx.files, names or None, TEXT_KINDS, at_least=2)
-    first, second = items[-2], items[-1]
+    name_a, name_b = (str(args.get(k) or "").strip() for k in ("file_a", "file_b"))
+    if bool(name_a) != bool(name_b):
+        # Bitta nom berildi — ikkinchisi oxirgi yuborilgan boshqa matnli hujjat
+        named = pick(tctx.files, [name_a or name_b], TEXT_KINDS)[0]
+        others = [f for f in tctx.files if f.kind in TEXT_KINDS and f is not named]
+        if not others:
+            raise ToolError(f"«{named.name}» bilan solishtirish uchun ikkinchi hujjat yo'q — foydalanuvchi uni yuborsin.")
+        first, second = (named, others[-1]) if name_a else (others[-1], named)
+    else:
+        items = pick(tctx.files, [name_a, name_b] if name_a else None, TEXT_KINDS, at_least=2)
+        first, second = items[-2], items[-1]
+        order = [id(f) for f in tctx.files]
+        if name_a and name_a.lower() == name_b.lower() and order.index(id(first)) > order.index(id(second)):
+            first, second = second, first  # bir xil nomli ikki nusxa: A — eskisi, B — yangisi
     await tctx.status("🔍 Hujjatlar solishtirilmoqda…")
     text_a, text_b = await asyncio.to_thread(text_of, first), await asyncio.to_thread(text_of, second)
     lines_a = [line.strip() for line in text_a.splitlines() if line.strip()]

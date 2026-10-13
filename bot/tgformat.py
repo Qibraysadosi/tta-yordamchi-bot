@@ -5,13 +5,13 @@ import html
 import re
 
 TG_LIMIT = 4096
-SOURCE_CHUNK = 3300  # bitta xabardagi xom matn (HTML teglari uchun zaxira qoldiriladi)
+SOURCE_CHUNK = 3300  # bitta xabardagi xom matn (jadval va ro'yxat bezaklari uchun zaxira qoldiriladi)
 PREVIEW_LIMIT = 3800
 
 Block = tuple[str, str, str]  # (tur: "text" | "code", dasturlash tili, matn)
 
 _FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+#.-]*)")
-_HEADER = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+_HEADER = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)(?:\s+#+)?\s*$")  # "C#" dagi # matnga tegishli
 _HR = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
 _BULLET = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _QUOTE = re.compile(r"^\s{0,3}>\s?(.*)$")
@@ -19,13 +19,17 @@ _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 _SEP_CELL = re.compile(r"^:?-{2,}:?$")
 
 _CODE_SPAN = re.compile(r"(`+)(.+?)\1")
-_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+|tg://[^\s)]+|mailto:[^\s)]+)(?:\s+\"[^\"\n]*\")?\)")
+_URL = r"(?:[^\s()]|\([^\s()]*\))+"  # bir qavat qavsga ruxsat: wiki/Python_(dasturlash_tili)
+_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://" + _URL + r"|tg://" + _URL + r"|mailto:" + _URL + r")(?:\s+\"[^\"\n]*\")?\)")
+_TRIPLE = re.compile(r"\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*")
 _BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)")
 _STRIKE = re.compile(r"~~(?=\S)(.+?)(?<=\S)~~")
 _ITALIC_STAR = re.compile(r"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])")
 _ITALIC_UNDER = re.compile(r"(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])")
 _PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
 _MARKS = re.compile(r"\*\*|__|~~|`")
+_ANY_TAG = re.compile(r"<[^>]*>")
+_FMT_TAG = re.compile(r"<(/?)([bis])>")
 
 
 def _esc(text: str) -> str:
@@ -34,6 +38,34 @@ def _esc(text: str) -> str:
 
 def _strip_marks(text: str) -> str:
     return _MARKS.sub("", text)
+
+
+def _u16(text: str) -> int:
+    """Telegram uzunlikni UTF-16 birliklarida sanaydi (emoji — 2)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _visible_len(h: str) -> int:
+    """HTML xabarning Telegram sanaydigan uzunligi: teglar hisobga olinmaydi, &lt; — 1 belgi."""
+    return _u16(html.unescape(_ANY_TAG.sub("", h)))
+
+
+def _balanced(text: str) -> bool:
+    stack: list[str] = []
+    for m in _FMT_TAG.finditer(text):
+        if not m.group(1):
+            stack.append(m.group(2))
+        elif not stack or stack.pop() != m.group(2):
+            return False
+    return not stack
+
+
+def _wrap(tag: str):
+    """Ichidagi teglar to'g'ri yopilgan bo'lsagina o'raydi (aks holda belgilar o'zgarmaydi)."""
+    def sub(m: re.Match) -> str:
+        inner = m.group(m.lastindex)
+        return f"<{tag}>{inner}</{tag}>" if _balanced(inner) else m.group(0)
+    return sub
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -82,7 +114,18 @@ def _split_long(kind: str, lang: str, body: str, limit: int) -> list[Block]:
     parts: list[str] = []
     buf: list[str] = []
     size = 0
+    head: list[str] = []  # joriy jadval sarlavhasi (sarlavha + ajratuvchi qator)
+    data = 0  # sarlavhadan keyingi qatorlar soni
     for line in body.split("\n"):
+        row = kind == "text" and bool(_TABLE_ROW.match(line))
+        is_head = False
+        if not row:
+            head, data = [], 0
+        elif not head:
+            head, is_head = [line], True
+        elif len(head) == 1 and not data and _is_sep_row(line):
+            head.append(line)
+            is_head = True
         while len(line) > limit:
             if buf:
                 parts.append("\n".join(buf))
@@ -93,10 +136,23 @@ def _split_long(kind: str, lang: str, body: str, limit: int) -> list[Block]:
             parts.append(line[:cut])
             line = line[cut:]
         if buf and size + len(line) + 1 > limit:
+            # Jadval o'rtasida bo'linsa — keyingi qismda sarlavha takrorlanadi
+            carry: list[str] = []
+            if row and not (is_head and len(head) == 1):
+                if data:
+                    carry = list(head)  # sarlavha nusxasi
+                elif 0 < len(head) - is_head < len(buf):
+                    carry = buf[len(buf) - len(head) + is_head :]  # hali qatorsiz sarlavha ko'chadi
+                if sum(len(c) + 1 for c in carry) + len(line) + 1 > limit:
+                    carry = []
+                elif not data:
+                    buf = buf[: len(buf) - len(carry)]
             parts.append("\n".join(buf))
-            buf, size = [], 0
+            buf, size = carry, sum(len(c) + 1 for c in carry)
         buf.append(line)
         size += len(line) + 1
+        if row and not is_head:
+            data += 1
     if buf:
         parts.append("\n".join(buf))
     return [(kind, lang, part) for part in parts]
@@ -136,16 +192,20 @@ def _inline(text: str) -> str:
 
     def link(m: re.Match) -> str:
         url = html.escape(m.group(2), quote=True)
-        return keep(f'<a href="{url}">{_esc(_strip_marks(m.group(1)))}</a>')
+        # Havola matnidagi `kod` oddiy matnga aylanadi (Telegram <a> ichida <code> ni qabul qilmaydi)
+        label = _PLACEHOLDER.sub(lambda p: _ANY_TAG.sub("", stash[int(p.group(1))]), _esc(_strip_marks(m.group(1))))
+        return keep(f'<a href="{url}">{label}</a>')
 
     text = text.replace("\x00", "")
     text = _CODE_SPAN.sub(code, text)
     text = _LINK.sub(link, text)
     text = _esc(text)
-    text = _BOLD.sub(lambda m: f"<b>{m.group(1) or m.group(2)}</b>", text)
-    text = _STRIKE.sub(r"<s>\1</s>", text)
-    text = _ITALIC_STAR.sub(r"<i>\1</i>", text)
-    text = _ITALIC_UNDER.sub(r"<i>\1</i>", text)
+    # Har o'rash ichki teglar to'g'ri yopilgandagina bajariladi — kesishgan teglar chiqmaydi
+    text = _TRIPLE.sub(lambda m: f"<b><i>{m.group(1)}</i></b>", text)
+    text = _BOLD.sub(_wrap("b"), text)
+    text = _STRIKE.sub(_wrap("s"), text)
+    text = _ITALIC_STAR.sub(_wrap("i"), text)
+    text = _ITALIC_UNDER.sub(_wrap("i"), text)
     return _PLACEHOLDER.sub(lambda m: stash[int(m.group(1))], text)
 
 
@@ -164,6 +224,11 @@ def _render_line(line: str) -> str:
 
 def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_sep_row(line: str) -> bool:
+    cells = [c for c in _cells(line) if c]
+    return bool(cells) and all(_SEP_CELL.match(c) for c in cells)
 
 
 def _render_table(lines: list[str]) -> str:
@@ -242,14 +307,25 @@ def plain_chunk(blocks: list[Block]) -> str:
     return "\n".join(parts).strip()
 
 
+def _fit(text: str, limit: int) -> int:
+    """UTF-16 bo'yicha limit'ga sig'adigan eng uzun boshlang'ich qism (belgilar soni)."""
+    units = 0
+    for i, ch in enumerate(text):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > limit:
+            return i
+    return len(text)
+
+
 def _hard_split(text: str, limit: int) -> list[str]:
     pieces = []
-    while len(text) > limit:
-        cut = text.rfind("\n", 0, limit)
-        if cut <= limit // 2:
-            cut = text.rfind(" ", 0, limit)
-        if cut <= limit // 2:
-            cut = limit
+    while _u16(text) > limit:
+        size = _fit(text, limit)
+        cut = text.rfind("\n", 0, size)
+        if cut <= size // 2:
+            cut = text.rfind(" ", 0, size)
+        if cut <= size // 2:
+            cut = size
         pieces.append(text[:cut])
         text = text[cut:].lstrip("\n")
     if text:
@@ -293,7 +369,11 @@ def format_answer(
 
     if tail_html:
         h, p = "\n\n".join(tail_html), "\n\n".join(tail_plain)
-        if rendered and len(rendered[-1][0]) + len(h) + 2 <= TG_LIMIT and len(rendered[-1][1]) + len(p) + 2 <= TG_LIMIT:
+        if (
+            rendered
+            and _visible_len(rendered[-1][0]) + _visible_len(h) + 2 <= TG_LIMIT
+            and _u16(rendered[-1][1]) + _u16(p) + 2 <= TG_LIMIT
+        ):
             rendered[-1][0] += "\n\n" + h
             rendered[-1][1] += "\n\n" + p
         else:
@@ -303,7 +383,8 @@ def format_answer(
 
     out: list[tuple[str | None, str]] = []
     for h, p in rendered:
-        if len(h) <= TG_LIMIT and len(p) <= TG_LIMIT:
+        # Telegram cheklovi teglar olib tashlangandan keyingi matnga qo'yiladi (UTF-16)
+        if _visible_len(h) <= TG_LIMIT and _u16(p) <= TG_LIMIT:
             out.append((h, p))
         else:
             out.extend((None, piece) for piece in _hard_split(p, TG_LIMIT))

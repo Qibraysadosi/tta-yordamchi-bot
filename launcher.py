@@ -25,6 +25,7 @@ UPDATE_DIR = APP / "data" / "update"
 PENDING = UPDATE_DIR / "pending.json"
 RESULT = UPDATE_DIR / "result.json"
 REQ_STAMP = Path(os.environ.get("REQ_STAMP", "/usr/local/share/claude-bot/requirements.sha256"))
+PIP_ERROR_NAME = "pip_error.json"  # pip xatosi: bot (UpdateManager.finalize) egasiga aytadi
 BOT_COMMAND = os.environ.get("BOT_COMMAND", f"{sys.executable} -m bot").split()
 
 child: subprocess.Popen | None = None
@@ -41,7 +42,9 @@ def ensure_requirements() -> None:
         return
     digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
     installed = REQ_STAMP.read_text().strip() if REQ_STAMP.exists() else ""
+    pip_error = UPDATE_DIR / PIP_ERROR_NAME
     if digest == installed:
+        pip_error.unlink(missing_ok=True)
         return
     log("requirements.txt o'zgargan — kutubxonalar o'rnatilmoqda...")
     code = subprocess.call(
@@ -50,8 +53,14 @@ def ensure_requirements() -> None:
     if code == 0:
         REQ_STAMP.parent.mkdir(parents=True, exist_ok=True)
         REQ_STAMP.write_text(digest)
+        pip_error.unlink(missing_ok=True)
     else:
         log(f"pip install xato bilan tugadi (kod {code})")
+        try:
+            UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+            pip_error.write_text(json.dumps({"code": code, "sha256": digest}), encoding="utf-8")
+        except OSError as exc:
+            log(f"pip xatosini yozib bo'lmadi: {exc}")
 
 
 def run_bot() -> tuple[int, list[str]]:

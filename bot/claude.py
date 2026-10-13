@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 import anthropic
+import httpx2
 
 from .models import cost_usd, usage_numbers
 
@@ -18,6 +19,14 @@ log = logging.getLogger(__name__)
 MAX_CONTINUATIONS = 4
 # Bitta javob ichida vositalar (fayl yaratish va h.k.) ko'pi bilan shuncha marta chaqiriladi
 MAX_TOOL_ROUNDS = 6
+# Tasniflashda fikrlashni o'chirish mumkin bo'lgan modellar (boshqalarida `disabled` 400 qaytaradi)
+CLASSIFY_NO_THINKING = frozenset({"claude-haiku-5-5"})
+# Oqim ichidagi `event: error` (HTTP 200): xato turi bo'yicha mos HTTP holati
+STREAM_ERROR_STATUS = {
+    "invalid_request_error": 400, "authentication_error": 401, "billing_error": 402,
+    "permission_error": 403, "not_found_error": 404, "request_too_large": 413,
+    "rate_limit_error": 429, "api_error": 500, "timeout_error": 504, "overloaded_error": 529,
+}
 
 ToolRunner = Callable[[str, dict], Awaitable[str]]
 
@@ -56,10 +65,19 @@ class TurnResult:
 class ClaudeError(Exception):
     """Foydalanuvchiga ko'rsatiladigan API xatosi."""
 
-    def __init__(self, message: str, *, search_problem: bool = False) -> None:
+    def __init__(self, message: str, *, search_problem: bool = False, retryable: bool = False) -> None:
         super().__init__(message)
         self.user_message = message
         self.search_problem = search_problem
+        self.retryable = retryable  # vaqtinchalik xato (band, limit, tarmoq) — qayta urinsa bo'ladi
+        # Xatogacha tugagan (to'langan) qadamlar — usage_log ga yoziladi
+        self.numbers: dict[str, int] = {}
+        self.cost = 0.0
+
+
+def _with_spent(err: ClaudeError, numbers: Counter[str], cost: float) -> ClaudeError:
+    err.numbers, err.cost = dict(numbers), cost
+    return err
 
 
 def _attr(obj: Any, name: str) -> Any:
@@ -105,6 +123,9 @@ def _error_text(exc: anthropic.APIStatusError) -> str:
 
 def translate_error(exc: anthropic.APIStatusError, web_search: bool) -> ClaudeError:
     status = exc.status_code
+    if status < 400:  # oqim ichidagi `event: error`: javob 200 bilan ochilgan, asl turi body'da
+        error = exc.body.get("error") if isinstance(exc.body, dict) else None
+        status = STREAM_ERROR_STATUS.get(error.get("type") if isinstance(error, dict) else None, 500)
     text = _error_text(exc)
     low = text.lower()
     log.warning("Claude API xatosi %s: %s", status, text)
@@ -124,9 +145,9 @@ def translate_error(exc: anthropic.APIStatusError, web_search: bool) -> ClaudeEr
     if status == 429:
         if "spend" in low:
             return ClaudeError("💸 Console'dagi xarajat limitiga yetildi. Limitni oshiring yoki keyingi oyni kuting.")
-        return ClaudeError("⏳ So'rovlar limiti oshdi. Bir daqiqadan keyin qayta urinib ko'ring.")
+        return ClaudeError("⏳ So'rovlar limiti oshdi. Bir daqiqadan keyin qayta urinib ko'ring.", retryable=True)
     if status >= 500:
-        return ClaudeError("🛠 Anthropic serverlari hozir band. Birozdan keyin qayta urinib ko'ring.")
+        return ClaudeError("🛠 Anthropic serverlari hozir band. Birozdan keyin qayta urinib ko'ring.", retryable=True)
     if status == 400:
         if "prompt is too long" in low or "context window" in low or "too many tokens" in low:
             return ClaudeError("📚 Suhbat model chegarasidan uzun bo'lib ketdi. /new bosing.")
@@ -262,11 +283,16 @@ class ClaudeService:
                             await listener.on_text(display)
                     final = await stream.get_final_message()
             except anthropic.APIStatusError as exc:
-                raise translate_error(exc, web_search) from exc
-            except anthropic.APITimeoutError as exc:
-                raise ClaudeError("⏱ Claude javob berishga ulgurmadi (vaqt tugadi). Qayta urinib ko'ring.") from exc
+                raise _with_spent(translate_error(exc, web_search), numbers, cost) from exc
+            except (anthropic.APITimeoutError, httpx2.TimeoutException) as exc:
+                err = ClaudeError("⏱ Claude javob berishga ulgurmadi (vaqt tugadi). Qayta urinib ko'ring.", retryable=True)
+                raise _with_spent(err, numbers, cost) from exc
             except anthropic.APIConnectionError as exc:
-                raise ClaudeError("🌐 Anthropic serveriga ulanib bo'lmadi. Server internetini tekshiring.") from exc
+                err = ClaudeError("🌐 Anthropic serveriga ulanib bo'lmadi. Server internetini tekshiring.", retryable=True)
+                raise _with_spent(err, numbers, cost) from exc
+            except httpx2.TransportError as exc:  # oqim o'rtasida aloqa uzildi (SDK buni o'ramaydi)
+                err = ClaudeError("🌐 Anthropic bilan aloqa uzilib qoldi. Qayta urinib ko'ring.", retryable=True)
+                raise _with_spent(err, numbers, cost) from exc
 
             step = usage_numbers(final.usage, self.cache_ttl)
             step_cost = cost_usd(model, step)
@@ -331,9 +357,12 @@ class ClaudeService:
             "complex — chuqur tahlil, ko'p bosqichli mantiq, hujjat tuzish, murakkab kod yoki hisob-kitob, tadqiqot.\n\n"
             f"{note}So'rov:\n{snippet}"
         )
+        # Fikrlash max_tokens ga kiradi: joy qoldiramiz, Haiku'da esa fikrlashni o'chiramiz
+        extra: dict[str, Any] = {"thinking": {"type": "disabled"}} if model in CLASSIFY_NO_THINKING else {}
         try:
             response = await self.client.messages.create(
-                model=model, max_tokens=5, messages=[{"role": "user", "content": prompt}]
+                model=model, max_tokens=1024, output_config={"effort": "low"},
+                messages=[{"role": "user", "content": prompt}], **extra,
             )
         except (anthropic.APIError, anthropic.APIConnectionError) as exc:
             log.warning("Tasniflash ishlamadi, o'rta model tanlanadi: %s", exc)
@@ -344,7 +373,10 @@ class ClaudeService:
         except (AttributeError, TypeError) as exc:
             log.warning("Tasniflash javobi tushunarsiz, o'rta model tanlanadi: %s", exc)
             return "medium", {}, 0.0
-        level = next((name for name in ("simple", "medium", "complex") if name in answer), "medium")
+        level = next((name for name in ("simple", "medium", "complex") if name in answer), None)
+        if level is None:
+            log.warning("Tasniflash javobsiz (stop_reason=%s), o'rta model tanlanadi", _attr(response, "stop_reason"))
+            level = "medium"
         return level, numbers, cost_usd(model, numbers)
 
     async def translate_items(
@@ -371,6 +403,9 @@ class ClaudeService:
             raise ClaudeError("⏱ Tarjima vaqti tugadi. Qayta urinib ko'ring.") from exc
         except anthropic.APIConnectionError as exc:
             raise ClaudeError("🌐 Anthropic serveriga ulanib bo'lmadi.") from exc
+        # Narx tahlildan oldin: javob yaroqsiz bo'lsa ham to'langan chaqiruv usage_log ga tushadi
+        numbers = usage_numbers(response.usage, self.cache_ttl)
+        cost = cost_usd(model, numbers)
         text = blocks_to_text(response.content).strip()
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
         start, end = text.find("["), text.rfind("]")
@@ -379,9 +414,10 @@ class ClaudeService:
         except json.JSONDecodeError:
             parsed = None
         if not isinstance(parsed, list):
-            raise ClaudeError("Tarjima javobi JSON massiv emas — qayta urinib ko'ring.")
-        numbers = usage_numbers(response.usage, self.cache_ttl)
-        return [str(x) if x is not None else "" for x in parsed], numbers, cost_usd(model, numbers)
+            # Bo'sh ro'yxat: chaqiruvchi narxni yozadi, doctrans esa «soni mos kelmadi» xatosini beradi
+            log.warning("Tarjima javobi JSON massiv emas (stop_reason=%s)", _attr(response, "stop_reason"))
+            return [], numbers, cost
+        return [str(x) if x is not None else "" for x in parsed], numbers, cost
 
     def estimate_partial(self, model: str, start_usage: Any, partial_text: str) -> tuple[dict[str, int], float]:
         """Javob to'xtatilganda taxminiy narx: kirish aniq, chiqish matn uzunligidan taxminan."""

@@ -145,8 +145,13 @@
     state.param = h[1] || null;
     if (!TABS.some((t) => t.id === state.route)) { state.route = 'home'; state.param = null; }
   }
+  // Har render o'z raqamini oladi: kechikkan javob yangi ekran ustiga chizilmaydi
+  let renderSeq = 0;
   async function render() {
     if (state.locked) return renderLock();
+    const seq = ++renderSeq;
+    const live = () => seq === renderSeq && !state.locked;
+    clearTimeout(searchTimer);
     parseRoute();
     renderTabs();
     backButton(!!state.param);
@@ -155,9 +160,9 @@
     window.scrollTo(0, 0);
     const fn = { home: renderHome, history: state.param ? renderConversation : renderHistory, files: renderFiles, stats: renderStats, admin: renderAdmin }[state.route];
     try {
-      await fn();
+      await fn(live);
     } catch (e) {
-      if (!state.locked) $screen.innerHTML = emptyState('alert', 'Xato', e.message);
+      if (live()) $screen.innerHTML = emptyState('alert', 'Xato', e.message);
     }
   }
   window.addEventListener('hashchange', render);
@@ -190,7 +195,7 @@
     const s = me.settings;
     const b = me.budget;
     const pct = b.percent == null ? null : Math.min(b.percent, 100);
-    const cls = pct == null ? '' : pct >= 100 ? 'bad' : pct >= b.economy_percent ? 'warn' : '';
+    const cls = pct == null ? '' : pct >= 100 ? 'bad' : (b.economy_percent > 0 && pct >= b.economy_percent) ? 'warn' : '';
     const model = s.model_override ? modelLabel(s.model_override) + ' (zaxira)' : modelLabel(s.model);
     const mode = modeOf(s.mode);
     return '<div class="hero">' + MARK +
@@ -216,11 +221,13 @@
   }
   const chev = () => icon('chevronRight', 'chev');
 
-  async function renderHome() {
+  async function renderHome(live) {
     $screen.innerHTML = skeleton(5);
     const me = await loadMe(true);
+    if (!live()) return;
     const s = me.settings;
     const templates = (await api('api/templates')).items;
+    if (!live()) return;
     state.cache.templates = templates;
     const mode = modeOf(s.mode);
     $screen.innerHTML =
@@ -291,10 +298,13 @@
 
   // ------------------------------------------------------------ TARIX
   let searchTimer = null;
-  async function renderHistory(query) {
+  let historySeq = 0;
+  async function renderHistory(live, query) {
+    const mine = ++historySeq;  // eski qidiruv javobi yangisini bosib ketmasin
     const q = (query || '').trim();
     if (query === undefined) $screen.innerHTML = '<div class="title">Suhbatlar</div><div class="search-box">' + icon('search') + '<input type="search" placeholder="Qidirish…" data-search="history" value="' + esc(q) + '"></div><div id="history-list">' + skeleton(6) + '</div>';
     const data = await api('api/conversations?limit=60' + (q ? '&q=' + encodeURIComponent(q) : ''));
+    if (!live() || mine !== historySeq) return;
     const list = document.getElementById('history-list');
     if (!list) return;
     if (!data.items.length) {
@@ -306,13 +316,16 @@
       (c.conv_id === data.current ? '<span class="badge">joriy</span>' : '') + '</div><div class="sub">' + when(c.updated_at, true) + ' · ' + c.turns + ' ta savol-javob</div></span>' + chev() + '</button>'
     ).join('') + '</div>' + (data.total > data.items.length ? '<p class="note">Jami ' + data.total + ' ta; eski suhbatlarni qidiruv orqali toping.</p>' : '');
   }
-  async function renderConversation() {
+  async function renderConversation(live) {
     $screen.innerHTML = '<button class="back" data-action="back">' + icon('chevronLeft') + 'Tarix</button>' + skeleton(5);
     const data = await api('api/conversations/' + encodeURIComponent(state.param));
-    const me = await loadMe();
-    const current = me.settings.conv_id === data.conversation.conv_id;
+    if (!live()) return;
+    // joriy suhbat — serverdan (chatda /new yoki /tarix bilan o'zgargan bo'lishi mumkin)
+    const current = data.current === data.conversation.conv_id;
+    if (state.me && data.current != null) state.me.settings.conv_id = data.current;
+    const updated = when(data.conversation.updated_at, true);
     $screen.innerHTML = '<button class="back" data-action="back">' + icon('chevronLeft') + 'Tarix</button>' +
-      '<div class="title">' + esc(data.conversation.title) + '<small>' + when(data.conversation.updated_at, true) + ' · ' + data.conversation.turns + ' ta savol-javob' + (current ? ' · joriy' : '') + '</small></div>' +
+      '<div class="title">' + esc(data.conversation.title) + '<small>' + (updated ? updated + ' · ' : '') + data.conversation.turns + ' ta savol-javob' + (current ? ' · joriy' : '') + '</small></div>' +
       '<div class="msgs">' + (data.messages.length ? data.messages.map((m) =>
         '<div class="msg ' + m.role + '">' + m.attachments.map((a) => '<span class="att">' + esc(a) + '</span>').join('') + (m.attachments.length && m.text ? '\n' : '') + esc(m.text) + '</div>'
       ).join('') : emptyState('chat', 'Bo\'sh suhbat', '')) + '</div>' +
@@ -321,9 +334,10 @@
   }
 
   // ------------------------------------------------------------ FAYLLAR
-  async function renderFiles() {
+  async function renderFiles(live) {
     $screen.innerHTML = '<div class="title">Fayllar<small>Bot yaratgan hujjatlar va grafiklar</small></div>' + skeleton(5);
     const data = await api('api/files?limit=200');
+    if (!live()) return;
     state.cache.files = data.items;
     if (!data.items.length) {
       $screen.innerHTML = '<div class="title">Fayllar</div>' + emptyState('folder', 'Hali fayl yo\'q', 'Chatda «Word qilib ber», «Excel jadval tuz» yoki «grafik chiz» deb so\'rang — fayllar shu yerda to\'planadi.');
@@ -372,10 +386,12 @@
     });
     return svg + '</svg>';
   }
-  async function renderStats() {
+  async function renderStats(live) {
     $screen.innerHTML = '<div class="title">Xarajat</div>' + skeleton(5);
     const data = await api('api/stats');
+    if (!live()) return;
     const me = await loadMe();
+    if (!live()) return;
     const t = data.totals, b = data.budget;
     const since = when(b.cycle_start + 'T00:00:00');
     const maxModel = Math.max(0.0001, ...data.by_model.map((m) => m.cost));
@@ -392,12 +408,13 @@
     }
     if (data.everyone) {
       const e = data.everyone;
+      const eco = me.budget.monthly > 0 && me.budget.economy_percent > 0;  // tejamkor rejim yoqiqmi
       const pct = b.monthly > 0 ? Math.min(e.cycle / b.monthly * 100, 100) : 0;
       const maxUser = Math.max(0.0001, ...e.by_user.map((u) => u.cost));
       html += '<div class="section"><div class="section-h">Barcha foydalanuvchilar</div><div class="group">' +
         '<div class="meter-row"><div class="k"><span>Kredit, ' + since + ' dan</span><span>' + money(e.cycle) + (b.monthly > 0 ? ' / $' + b.monthly : '') + '</span></div><div class="bar"><i style="width:' + pct + '%"></i></div></div>' +
-        e.by_user.map((u) => '<div class="hbar"><span class="name">' + esc(u.name) + '</span><span class="track"><i style="width:' + Math.max(2, u.cost / maxUser * 100) + '%"></i></span><span class="num">' + money(u.cost) + '</span></div>').join('') +
-        '</div><p class="note">Bugun hammasi: ' + money(e.today) + '. Kredit umumiy — ' + (me.budget.economy_percent || 0) + '% dan keyin hamma ' + esc(me.budget.economy_model) + ' bilan ishlaydi.</p></div>';
+        e.by_user.map((u) => '<div class="hbar"><span class="name" title="' + esc(u.name) + '">' + esc(u.name) + '</span><span class="track"><i style="width:' + Math.max(2, u.cost / maxUser * 100) + '%"></i></span><span class="num">' + money(u.cost) + '</span></div>').join('') +
+        '</div><p class="note">Bugun hammasi: ' + money(e.today) + '.' + (eco ? ' Kredit umumiy — ' + me.budget.economy_percent + '% dan keyin hamma ' + esc(me.budget.economy_model) + ' bilan ishlaydi.' : '') + '</p></div>';
     }
     html += '<div class="section"><div class="group">' + toggleRow('cost', 'coins', 'Javob ostida narx', 'har javobda sarf ko\'rinadi', 'show_cost', data.show_cost) + '</div></div>';
     $screen.innerHTML = html;
@@ -417,9 +434,10 @@
   }
 
   // ------------------------------------------------------------ ADMIN
-  async function renderAdmin() {
+  async function renderAdmin(live) {
     $screen.innerHTML = '<div class="title">Admin panel</div>' + skeleton(5);
     const a = await api('api/admin');
+    if (!live()) return;
     state.cache.admin = a;
     const b = a.budget;
     const pct = b.percent == null ? 0 : Math.min(b.percent, 100);
@@ -525,7 +543,8 @@
     if (e.target.dataset.search === 'history') {
       clearTimeout(searchTimer);
       const q = e.target.value.trim();
-      searchTimer = setTimeout(() => renderHistory(q).catch((err) => toast(err.message)), 300);
+      const seq = renderSeq;
+      searchTimer = setTimeout(() => renderHistory(() => seq === renderSeq && !state.locked, q).catch((err) => toast(err.message)), 300);
     }
   });
   document.addEventListener('submit', (e) => {

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
+import json
 import logging
+import sqlite3
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -23,6 +27,8 @@ BACKUP_STAMP_KEY = "backup:last"
 UPDATE_CHECK_KEY = "update:last_check"  # GitHub oxirgi marta tekshirilgan sana
 UPDATE_NOTIFIED_KEY = "update:notified"  # egasiga aytilgan versiya (har versiya uchun bir marta)
 NOTES_PREVIEW = 600
+BACKUP_MAX_BYTES = 49 * 1024 * 1024  # Telegram bot fayl yuklash chegarasi 50 MB
+ATTACHMENT_PLACEHOLDER = "[ilova (PDF/rasm) zaxiraga kiritilmagan]"
 
 
 class DailyJob:
@@ -65,20 +71,81 @@ class DailyJob:
     async def _loop(self) -> None:
         while True:
             now = datetime.now(self.tz)
-            wait = (self.next_run(now) - now).total_seconds()
+            # mutlaq vaqt bilan: yozgi/qishki vaqt almashadigan kuni ham soat to'g'ri, ikki marta ishlamaydi
+            wait = max(0.0, self.next_run(now).timestamp() - now.timestamp())
             await asyncio.sleep(wait)
             await self._safe(self.run)
 
 
+def _strip_attachments(node) -> int:
+    """Base64 ilovalar o'rniga qisqa belgi qo'yadi (joyida); nechta almashtirilganini qaytaradi."""
+    if isinstance(node, list):
+        return sum(_strip_attachments(item) for item in node)
+    if not isinstance(node, dict):
+        return 0
+    source = node.get("source")
+    if isinstance(source, dict) and source.get("type") == "base64":
+        if node.get("type") == "document":  # hujjat bloki qoladi — tiklangan suhbat Claude'ga yaroqli bo'lsin
+            node["source"] = {"type": "text", "media_type": "text/plain", "data": ATTACHMENT_PLACEHOLDER}
+        else:  # rasm — matn bloki bilan almashadi
+            node.clear()
+            node.update(type="text", text=ATTACHMENT_PLACEHOLDER)
+        return 1
+    return sum(_strip_attachments(value) for value in node.values())
+
+
+def slim_backup(path: Path) -> int:
+    """Zaxira NUSXASIDAN (asl bazadan emas) PDF/rasm baytlarini olib tashlaydi; nechta ilova olinganini qaytaradi."""
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute("SELECT id, content FROM messages WHERE content LIKE '%\"base64\"%'").fetchall()
+        removed = 0
+        for row_id, content in rows:
+            try:
+                value = json.loads(content)
+            except ValueError:
+                continue
+            count = _strip_attachments(value)
+            if count:
+                conn.execute("UPDATE messages SET content = ? WHERE id = ?", (json.dumps(value, ensure_ascii=False), row_id))
+                removed += count
+        conn.commit()
+        if removed:
+            conn.execute("VACUUM")
+        return removed
+    finally:
+        conn.close()
+
+
+def _zip_backup(data: bytes, name: str) -> tuple[bytes, str]:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(name, data)
+    return buffer.getvalue(), name.removesuffix(".db") + ".zip"
+
+
 async def make_backup(db: Database, db_path: Path, label: str) -> tuple[bytes, str]:
-    """Bazaning izchil nusxasi (VACUUM INTO) — baytlar va fayl nomi."""
+    """Bazaning izchil nusxasi (VACUUM INTO) — baytlar va fayl nomi.
+
+    Nusxadan ilovalar (base64 PDF/rasm) olib tashlanadi; baribir katta bo'lsa — .zip qilinadi.
+    """
     target = db_path.with_name(f"backup-{label}.db")
     target.unlink(missing_ok=True)
     try:
         await db.vacuum_into(target)
-        return target.read_bytes(), target.name
+        await asyncio.to_thread(slim_backup, target)
+        data, name = target.read_bytes(), target.name
     finally:
         target.unlink(missing_ok=True)
+    if len(data) > BACKUP_MAX_BYTES:
+        data, name = await asyncio.to_thread(_zip_backup, data, name)
+    return data, name
+
+
+async def _notify_backup_failed(bot: Bot, chat_ids: list[int], text: str) -> None:
+    for chat_id in chat_ids:
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_message(chat_id, text)
 
 
 async def send_backup(bot: Bot, db: Database, db_path: Path, chat_ids: list[int], timezone: str, *, reason: str) -> bool:
@@ -88,9 +155,19 @@ async def send_backup(bot: Bot, db: Database, db_path: Path, chat_ids: list[int]
     except Exception:  # noqa: BLE001
         log.exception("Zaxira nusxa olishda xato")
         return False
+    size_mb = len(data) / (1024 * 1024)
+    if len(data) > BACKUP_MAX_BYTES:
+        log.warning("Zaxira juda katta: %.1f MB", size_mb)
+        await _notify_backup_failed(
+            bot, chat_ids,
+            f"⚠️ {reason}: zaxira Telegram'ga sig'madi ({size_mb:.0f} MB, chegara 50 MB). "
+            f"Bazani serverdan o'zingiz ko'chirib oling: {db_path}",
+        )
+        return False
+    restore_hint = "zip ichidagi faylni" if name.endswith(".zip") else "faylni"
     caption = (
         f"💾 {reason}: {now:%d.%m.%Y %H:%M}\n"
-        f"Hajmi: {len(data) / 1024:.0f} KB. Tiklash: faylni serverdagi data/bot.db o'rniga qo'ying."
+        f"Hajmi: {len(data) / 1024:.0f} KB. Tiklash: {restore_hint} serverdagi data/bot.db o'rniga qo'ying."
     )
     sent = False
     for chat_id in chat_ids:
@@ -99,6 +176,7 @@ async def send_backup(bot: Bot, db: Database, db_path: Path, chat_ids: list[int]
             sent = True
         except TelegramAPIError as exc:
             log.warning("Zaxira yuborilmadi (%s): %s", chat_id, exc)
+            await _notify_backup_failed(bot, [chat_id], f"⚠️ {reason}: zaxira yuborilmadi ({exc}).")
     if sent:
         await db.set_config(BACKUP_STAMP_KEY, now.strftime("%Y-%m-%d"))
     return sent

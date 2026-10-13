@@ -51,6 +51,7 @@ INIT_DATA_MAX_AGE = 24 * 3600
 LINK_TTL = 15 * 60
 STATS_DAYS = 30
 ASK_LIMIT = 8000
+ECHO_LIMIT = 3500  # chatdagi savol nusxasi: Telegram 4096 (UTF-16) chegarasiga sig'sin
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 UID = web.RequestKey("uid", int) if hasattr(web, "RequestKey") else "uid"  # type: ignore[assignment]
@@ -129,11 +130,22 @@ def _message_preview(content: Any) -> tuple[str, list[str]]:
     return "\n".join(texts).strip(), attachments
 
 
+def _echo_preview(text: str, limit: int = ECHO_LIMIT) -> str:
+    """Matn boshini Telegram hisobida (UTF-16 birlik) limit'gacha qoldiradi."""
+    units = 0
+    for i, char in enumerate(text):
+        units += 2 if ord(char) > 0xFFFF else 1
+        if units > limit:
+            return text[:i].rstrip() + "…"
+    return text
+
+
 class WebApp:
     def __init__(self, ctx: AppContext, bot: Bot) -> None:
         self.ctx = ctx
         self.bot = bot
         self.tz = ZoneInfo(ctx.settings.timezone)
+        self._tasks: set[asyncio.Task] = set()  # /api/ask fon vazifalari (GC yig'ib olmasin)
         self.app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[self.auth_middleware])
         self._routes()
 
@@ -346,8 +358,12 @@ class WebApp:
             conv_id = int(request.match_info["conv_id"])
         except ValueError:
             return _error("Suhbat raqami noto'g'ri", 404, "not_found")
+        current = (await self.ctx.user_settings(uid)).conv_id
         conversation = await self.ctx.db.conversation(uid, conv_id)
         if conversation is None:
+            if conv_id == current:  # joriy suhbat hali bo'sh (yangi foydalanuvchi yoki «Yangi suhbat»dan keyin)
+                return _json({"conversation": {"conv_id": conv_id, "title": "Yangi suhbat", "turns": 0, "updated_at": ""},
+                              "messages": [], "current": current})
             return _error("Suhbat topilmadi", 404, "not_found")
         history = await self.ctx.db.history(uid, conv_id, 0)
         messages = []
@@ -357,7 +373,7 @@ class WebApp:
         return _json({
             "conversation": {"conv_id": conv_id, "title": conversation.title, "turns": conversation.turns,
                              "updated_at": _when(conversation.updated_at, self.tz)},
-            "messages": messages,
+            "messages": messages, "current": current,
         })
 
     async def resume_conversation(self, request: web.Request) -> web.Response:
@@ -381,16 +397,26 @@ class WebApp:
         if not text:
             return _error("Savol matni bo'sh")
         if len(text) > ASK_LIMIT:
-            return _error(f"Savol juda uzun ({ASK_LIMIT} belgigacha)")
+            return _error(f"Savol juda uzun: {len(text)} belgi, ko'pi bilan {ASK_LIMIT} ta bo'lsin.")
         if self.ctx.lock_for(uid).locked():
-            return _error("Oldingi javob hali yozilmoqda — tugashini kuting.", 409, "busy")
-        echo = await self._notify(uid, f"📨 <b>Ilovadan savol:</b>\n{html.escape(text)}")
+            return _error("Oldingi xabar hali ishlanmoqda — tugashini kuting.", 409, "busy")
+        # Chatga savolning boshi (Telegram 4096 belgidan uzunini qabul qilmaydi), Claude'ga — to'liq matn
+        echo = await self._notify(uid, f"📨 <b>Ilovadan savol:</b>\n{html.escape(_echo_preview(text))}")
         if echo is None:
             return _error("Chatga yozib bo'lmadi — botni ochib /start bosing.", 502, "telegram")
-        blocks = self.ctx.take_pending(uid) + [{"type": "text", "text": text}]
-        task = asyncio.create_task(run_chat_for(uid, uid, echo, self.bot, self.ctx, blocks), name=f"ask:{uid}")
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        # Kutayotgan fayllar qulf ichida olinadi va vaqtinchalik xatoda navbatga qaytadi (chat bilan bir xil)
+        blocks = [{"type": "text", "text": text}]
+        task = asyncio.create_task(
+            run_chat_for(uid, uid, echo, self.bot, self.ctx, blocks, with_pending=True), name=f"ask:{uid}"
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._ask_done)
         return _json({"ok": True, "message": "Javob chatda yoziladi."})
+
+    def _ask_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            log.error("Ilovadan kelgan savolga javob berishda xato (%s)", task.get_name(), exc_info=exc)
 
     # ------------------------------------------------------------------ fayllar
     async def files(self, request: web.Request) -> web.Response:

@@ -5,14 +5,19 @@ import io
 import re
 
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Cm, Pt
 
 _HEADER = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 _BULLET = re.compile(r"^\s*[-*+•]\s+(.*)$")
-_NUMBERED = re.compile(r"^\s*(\d+)[.)]\s+(.*)$")
+_NUMBERED = re.compile(r"^(\s*)(\d+[.)])\s+(.*)$")
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 _SEP_ROW = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
-_INLINE = re.compile(r"(\*\*.+?\*\*|__.+?__|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)")
+# Belgilar so'z chegarasida bo'lsagina formatlash (tgformat bilan bir xil): BOT_TOKEN, a_b_c, 2 * 3 * 4 tegilmaydi
+_INLINE = re.compile(
+    r"(`[^`]+`|\*\*(?=\S).+?(?<=\S)\*\*|(?<!\w)__(?=\S).+?(?<=\S)__(?!\w)"
+    r"|(?<![\w*])\*(?=[^\s*])[^*\n]+?(?<=[^\s*])\*(?![\w*])"
+    r"|(?<![\w_])_(?=[^\s_])[^_\n]+?(?<=[^\s_])_(?![\w_]))"
+)
 
 
 def _add_runs(paragraph, text: str) -> None:
@@ -88,7 +93,12 @@ def answer_to_docx(text: str, title: str | None = None) -> bytes:
         elif (m := _BULLET.match(line)):
             _add_runs(doc.add_paragraph(style="List Bullet"), m.group(1))
         elif (m := _NUMBERED.match(line)):
-            _add_runs(doc.add_paragraph(style="List Number"), m.group(2))
+            # Muallif yozgan raqam saqlanadi: «List Number» uslubi barcha ro'yxatlarni bitta sanoqqa ulaydi
+            paragraph = doc.add_paragraph()
+            level = min(len(m.group(1).expandtabs(4)) // 2, 4)
+            paragraph.paragraph_format.left_indent = Cm(0.75 + 0.6 * level)
+            paragraph.paragraph_format.first_line_indent = Cm(-0.75)
+            _add_runs(paragraph, f"{m.group(2)}\t{m.group(3)}")
         elif line.strip():
             _add_runs(doc.add_paragraph(), line.strip())
         i += 1

@@ -1,8 +1,8 @@
-🐙 v1.6.0 — GitHub'dan yangilash
-• /yangilash github — bot so'nggi versiyani GitHub'dan o'zi yuklab, odatdagi tekshiruv va tasdiq bilan o'rnatadi (zip ko'chirish shart emas)
-• /yangilash tekshir — yangi versiya bormi, faqat tekshiradi; /yangilash menyusida 🐙 va 🔍 tugmalari
-• Har kuni (zaxira vaqtida) GitHub tekshiriladi, yangisi bo'lsa egasiga bir marta xabar va ⬇️ tugma (UPDATE_CHECK=on)
-• Release bo'lmasa main tarmog'i arxivi olinadi; buzuq versiya avvalgidek avtomatik orqaga qaytadi
-• Yangilanish xulosasida endi o'zgargan fayllar ro'yxati ko'rinadi (.zip uchun ham)
-• Mini App → Admin: «GitHub'dan yangilash» qatori — tasdiq chatga keladi
-⚙️ Sozlash shart emas — o'rnatilgach /yangilash github darhol ishlaydi. Repo yopiq bo'lsagina .env ga GITHUB_TOKEN (faqat o'qish) yozib, docker compose up -d --force-recreate
+🛠 v1.6.1 — GitHub'dan yangilash va 50 dan ortiq xato tuzatildi
+• /yangilash github — bot so'nggi versiyani GitHub'dan o'zi yuklab o'rnatadi; /yangilash tekshir; yangi versiya chiqsa har kuni bir marta xabar
+• Xarajat: oraliq xato bo'lsa ham sarflangan pul /xarajat ga yoziladi; 🔄 xatoda suhbatni o'chirmaydi; fayllar vaqtinchalik xatoda yo'qolmaydi
+• Xabarlar kelgan tartibda javob oladi; kod va jadvalli uzun javoblar formatlangan holda keladi; lotin↔kirill qoidalari tuzatildi
+• Fayllar: Excel'da 25,000 va 007 buzilmaydi, Word'da _ va * saqlanadi, PDF'ga faqat kerakli rasmlar kiradi
+• Kunlik zaxira PDF/rasm ilovalarsiz (50 MB ga sig'adi); /tarix va ilovada kirill qidiruvi; iPhone apostrofi (’) bilan buyruqlar ishlaydi
+• Yangi versiya ishga tushmasa bot osilib qolmaydi — eski versiya avtomatik tiklanadi; noto'g'ri TIMEZONE yoki token — aniq xato
+⚙️ Sozlash shart emas. Bu safar /yangilash + .zip (avval sinov botida), keyingi safar — /yangilash github

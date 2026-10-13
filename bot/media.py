@@ -51,6 +51,8 @@ def image_block(data: bytes, max_edge: int) -> dict:
     except Exception as exc:
         raise MediaError("Rasmni o'qib bo'lmadi — fayl buzilgan yoki formati noma'lum.") from exc
     img = ImageOps.exif_transpose(img) or img
+    if img.mode in ("I", "I;16", "I;16B", "I;16L"):  # 16 bitli kulrang — 8 bitga (aks holda oppoq bo'ladi)
+        img = img.convert("I").point(lambda v: v * (1 / 256)).convert("L")
     has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGBA" if has_alpha else "RGB")
     if max(img.size) > max_edge:

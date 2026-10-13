@@ -142,7 +142,7 @@ def test_auto_model_and_economy(tmp_path):
             assert (await env.ctx.user_settings(OWNER)).model == "auto"
             await env.send_text("Salom")
             classify, answer = env.api.requests[0], env.api.requests[1]
-            assert classify["model"] == "claude-haiku-5-5" and classify["max_tokens"] == 5 and "Salom" in classify["messages"][0]["content"]
+            assert classify["model"] == "claude-haiku-5-5" and classify["max_tokens"] == 1024 and "Salom" in classify["messages"][0]["content"]
             assert answer["model"] == "claude-haiku-5-5"
             assert "✨ Avto → Haiku 5.5" in env.last_edit().text
             _, n = await env.db.spend(OWNER)

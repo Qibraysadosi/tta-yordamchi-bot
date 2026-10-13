@@ -17,11 +17,13 @@ yuklaydi, keyin arxiv xuddi .zip yuborilgandek stage() → tasdiq → apply() yo
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import re
 import shutil
+import tempfile
 import zipfile
 import zlib
 from dataclasses import dataclass, field
@@ -39,6 +41,9 @@ MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_UNPACKED_BYTES = 50 * 1024 * 1024
 KEEP_BACKUPS = 5
 STAMP_FORMAT = "%Y%m%d-%H%M%S"
+# launcher.py: o'rnatilgan requirements.txt belgisi va pip xatosi fayli (data/update ichida)
+REQ_STAMP_DEFAULT = "/usr/local/share/claude-bot/requirements.sha256"
+PIP_ERROR_FILE = "pip_error.json"
 
 # Zaxiraga olinadigan va tiklanadigan qismlar (launcher.py da ham xuddi shu ro'yxat)
 RELEASE_ITEMS = ("bot", "prompts", "requirements.txt", "VERSION")
@@ -127,9 +132,7 @@ class UpdateManager:
         except zipfile.BadZipFile as exc:
             raise UpdateError("Bu .zip arxiv emas yoki buzilgan.") from exc
 
-        self._clear_staging()
-        staging = self.update_dir / f"staging-{_now_stamp()}"
-        staging.mkdir(parents=True)
+        staging = self._new_staging()
         try:
             files, skipped = self._extract(zf, staging)
             self._check_structure(staging)
@@ -253,6 +256,11 @@ class UpdateManager:
     def discard(self, staged: StagedUpdate) -> None:
         shutil.rmtree(staged.path, ignore_errors=True)
 
+    def _new_staging(self, suffix: str = "") -> Path:
+        """Har tayyorlov uchun alohida papka: boshqa (yoki shu egasining oldingi) tayyorlovi o'chmaydi."""
+        self.update_dir.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f"staging-{_now_stamp()}-", suffix=suffix, dir=self.update_dir))
+
     def _clear_staging(self) -> None:
         if self.update_dir.exists():
             for old in self.update_dir.glob("staging-*"):
@@ -287,8 +295,7 @@ class UpdateManager:
             shutil.rmtree(backup, ignore_errors=True)
             raise
         self.discard(staged)
-        self.prune_backups()
-        return backup
+        return backup  # eski zaxiralar finalize() da tozalanadi — /qaytarish yoki tiklash zaxirani yo'qotmasin
 
     def _install(self, source_dir: Path) -> None:
         for source in sorted(source_dir.iterdir()):
@@ -388,9 +395,7 @@ class UpdateManager:
         if not backups:
             raise UpdateError("Qaytish uchun zaxira nusxa yo'q — oldingi versiya saqlanmagan.")
         latest = backups[0]
-        self._clear_staging()
-        staging = self.update_dir / f"staging-{_now_stamp()}-r"
-        staging.mkdir(parents=True)
+        staging = self._new_staging("-r")
         for item in RELEASE_ITEMS:
             source = latest / item
             if source.is_dir():
@@ -423,8 +428,16 @@ class UpdateManager:
                 text = f"↩️ Oldingi versiya tiklandi: v{previous} → v{version}"
             else:
                 text = f"✅ Bot yangilandi: v{previous} → v{version}"
+            self.prune_backups()
             if data.get("requirements_changed"):
-                text += "\n📦 Kerakli kutubxonalar ham o'rnatildi."
+                installed = self._requirements_installed()
+                if installed is True:
+                    text += "\n📦 Kerakli kutubxonalar ham o'rnatildi."
+                elif installed is False:
+                    text += (
+                        "\n⚠️ Yangi kutubxonalar o'rnatilmadi (pip xato) — yangi funksiyalar ishlamasligi mumkin. "
+                        "Bot har qayta ishga tushganda yana urinadi; serverda: docker compose up -d --build"
+                    )
             if data.get("notes"):
                 text += f"\n\n{data['notes']}"
             return UpdateNotice(chat_id=data.get("chat_id"), ok=True, text=text)
@@ -439,6 +452,22 @@ class UpdateManager:
                 text += f"\n\nXato (oxirgi qatorlar):\n{data['error'][-1500:]}"
             return UpdateNotice(chat_id=data.get("chat_id"), ok=False, text=text)
         return None
+
+    def _requirements_installed(self) -> bool | None:
+        """Joriy requirements.txt o'rnatilganmi (launcher belgisi bo'yicha); bilib bo'lmasa — None."""
+        requirements = self.app_dir / "requirements.txt"
+        if not requirements.is_file():
+            return None
+        digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
+        error = self._read_json(self.update_dir / PIP_ERROR_FILE)
+        if error.get("sha256") == digest:
+            return False
+        stamp = Path(os.environ.get("REQ_STAMP", REQ_STAMP_DEFAULT))
+        try:
+            installed = stamp.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return installed == digest
 
     @staticmethod
     def _read_json(path: Path) -> dict:

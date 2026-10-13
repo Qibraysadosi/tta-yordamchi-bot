@@ -14,7 +14,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Shablonlar:** `/shablon` — tez-tez yuboriladigan so'rovlar bir tugmada
 - **Havolalarni o'qish:** maqola yoki PDF havolasi yuborilsa, bot uni o'qib chiqadi
 - **Byudjet nazorati:** kredit 50/80/100% ga yetganda egasiga xabar; 90% dan keyin hamma tejamkor modelga o'tadi
-- **Kunlik zaxira:** `data/bot.db` nusxasi har kuni egasiga yuboriladi (`/zaxira` — hozir)
+- **Kunlik zaxira:** `data/bot.db` nusxasi har kuni egasiga yuboriladi (`/zaxira` — hozir). Nusxaga suhbatlardagi PDF/rasm baytlari kirmaydi (Telegram 50 MB chegarasiga sig'sin); baribir katta bo'lsa `.zip` qilinadi yoki bot to'liq bazani serverdan olishni aytadi
 - **Lotin ↔ kirill:** `/kirill`, `/lotin`
 - **Fikrlash darajasi:** `/effort` (low … max)
 - **Fayllar:** rasm, PDF, Word (.docx), Excel (.xlsx), matn/kod fayllari. Albom (bir nechta rasm) ham bo'ladi

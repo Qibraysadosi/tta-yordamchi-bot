@@ -8,32 +8,42 @@ VOWELS_LATIN = set("aeiouAEIOU")
 VOWELS_CYR = set("аеёиоуўэюяАЕЁИОУЎЭЮЯ")
 
 # Lotin → kirill: uzun birikmalar birinchi tekshiriladi
-_LAT_PAIRS = [
-    ("tsiya", "ция"), ("tsion", "цион"),
-    ("yo'", "йў"), ("yo’", "йў"), ("yoʻ", "йў"),
-    ("o'", "ў"), ("o’", "ў"), ("oʻ", "ў"), ("o`", "ў"), ("o‘", "ў"),
-    ("g'", "ғ"), ("g’", "ғ"), ("gʻ", "ғ"), ("g`", "ғ"), ("g‘", "ғ"),
-    ("sh", "ш"), ("ch", "ч"), ("ya", "я"), ("yu", "ю"), ("yo", "ё"), ("ye", "е"),
-]
+_LAT_PAIRS = [("tsiya", "ция"), ("tsion", "цион")]
+# Barcha tutuq belgilari bir xil ishlaydi: yo‘q, o`g`il, oʻzbek
+_LAT_PAIRS += [(lat + a, cyr) for lat, cyr in (("yo", "йў"), ("o", "ў"), ("g", "ғ")) for a in APOSTROPHES]
+_LAT_PAIRS += [("sh", "ш"), ("ch", "ч"), ("ya", "я"), ("yu", "ю"), ("yo", "ё"), ("ye", "е")]
 _LAT_SINGLE = {
     "a": "а", "b": "б", "d": "д", "e": "е", "f": "ф", "g": "г", "h": "ҳ", "i": "и", "j": "ж", "k": "к",
     "l": "л", "m": "м", "n": "н", "o": "о", "p": "п", "q": "қ", "r": "р", "s": "с", "t": "т", "u": "у",
     "v": "в", "x": "х", "y": "й", "z": "з", "c": "ц", "w": "в",
 }
 _CYR_PAIRS = {
-    "ў": "o'", "ғ": "g'", "ш": "sh", "ч": "ch", "я": "ya", "ю": "yu", "ё": "yo", "ц": "ts", "щ": "sh",
+    "ў": "o'", "ғ": "g'", "ш": "sh", "ч": "ch", "я": "ya", "ю": "yu", "ё": "yo", "щ": "sh",
     "э": "e", "ъ": "'", "ь": "", "й": "y", "ж": "j", "х": "x", "ҳ": "h", "қ": "q",
 }
 _CYR_SINGLE = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "з": "z", "и": "i", "к": "k", "л": "l",
     "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u", "ф": "f", "ы": "i",
 }
-_CODE = re.compile(r"(```.*?```|`[^`\n]+`|https?://\S+|@\w+|#\w+)", re.DOTALL)
+# O'zgarmaydigan qismlar: kod, havola, e-pochta, sayt nomi, @nom, #teg.
+# Harfga yopishgan ` — tutuq belgisi (O`zbekiston), kod emas.
+_CODE = re.compile(
+    r"(```.*?```|(?<![^\W\d_])`[^`\n]+`|https?://\S+"
+    r"|(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
+    r"|(?<![\w.-])[\w-]+(?:\.[\w-]+)*\.(?:uz|com|ru|org|net|io|info)\b(?:/[^\s,;)]*)?"
+    r"|www\.[\w-]+(?:\.[\w-]+)+(?:/[^\s,;)]*)?|@\w+|#\w+)",
+    re.DOTALL,
+)
+_A = re.escape(APOSTROPHES)
+# So'z oxiridagi tutuq faqat g dan keyin so'zga qo'shiladi (tog' → тоғ, 'radio' esa o'zgarmaydi)
+_WORD = re.compile(rf"[^\W\d_]+(?:[{_A}]+[^\W\d_]+)*(?:(?<=[gG])[{_A}])?|[{_A}]")
 
 
-def _case(sample: str, out: str, next_char: str = "") -> str:
-    """Natijaga manba harfining registrini beradi (SH → Ш, Sh → Ш, sh → ш)."""
-    if sample.isupper() and (len(sample) > 1 or next_char.isupper() or not next_char.isalpha()):
+def _case(sample: str, out: str, next_char: str = "", prev_char: str = "") -> str:
+    """Natijaga manba harfining registrini beradi (SH → Ш, Sh → Ш, sh → ш; Ш. → Sh., АҚШ → AQSH)."""
+    if sample.isupper() and (
+        len(sample) > 1 or next_char.isupper() or (not next_char.isalpha() and prev_char.isupper())
+    ):
         return out.upper()
     if sample[:1].isupper():
         return out[:1].upper() + out[1:]
@@ -80,6 +90,9 @@ def _cyrillic_word_to_latin(word: str) -> str:
         if lower == "е":
             prev = word[i - 1].lower() if i else ""
             lat = "ye" if (i == 0 or prev in "аеёиоуўэюяъь") else "e"
+        elif lower == "ц":
+            # So'z boshida va undoshdan keyin — s (sirk, aksiya), unlidan keyin — ts (politsiya)
+            lat = "ts" if i and word[i - 1].lower() in "аеёиоуўэюяы" else "s"
         elif lower in _CYR_PAIRS:
             lat = _CYR_PAIRS[lower]
         elif lower in _CYR_SINGLE:
@@ -87,15 +100,22 @@ def _cyrillic_word_to_latin(word: str) -> str:
         else:
             out.append(ch)
             continue
-        out.append(_case(ch, lat, word[i + 1 : i + 2]))
+        out.append(_case(ch, lat, word[i + 1 : i + 2], word[i - 1] if i else ""))
     return "".join(out)
 
 
 def _apply(text: str, convert) -> str:
     """Kod bloklari, havolalar, @nomlar va #teglar o'zgarmaydi; qolgan matn so'zma-so'z o'giriladi."""
+    def word(m: re.Match) -> str:
+        w = m.group(0)
+        # 'pedagog' — oxirgi belgi yopuvchi qo'shtirnoq, tutuq emas
+        if len(w) > 1 and w[-1] in "'’`‘" and m.start() and m.string[m.start() - 1] in "'’`‘":
+            return convert(w[:-1]) + w[-1]
+        return convert(w)
+
     parts = _CODE.split(text)
     for idx in range(0, len(parts), 2):
-        parts[idx] = re.sub(r"[^\W\d_]+(?:['’ʻʼ`‘][^\W\d_]+)*|['’ʻʼ`‘]", lambda m: convert(m.group(0)), parts[idx])
+        parts[idx] = _WORD.sub(word, parts[idx])
     return "".join(parts)
 
 

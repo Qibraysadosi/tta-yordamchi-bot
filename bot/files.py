@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from .export import answer_to_docx
 FONTS = Path(__file__).resolve().parent / "assets" / "fonts"
 PALETTE = ["#4F46E5", "#06B6D4", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#64748B", "#EC4899"]
 MAX_ROWS = 5000
+MAX_BULLETS = 12  # bitta slaydga sig'adigan bandlar
 
 
 class FileError(Exception):
@@ -36,14 +38,29 @@ def build_text(content: str) -> bytes:
 
 
 # ------------------------------------------------------------------ Excel
+_EXCEL_DIGITS = 15  # Excel shundan ortiq raqamni yaxlitlaydi (hisob, karta raqamlari buziladi)
+_INT_TEXT = re.compile(r"-?(0|[1-9]\d{0,14})")
+_DOT_TEXT = re.compile(r"-?(0|[1-9]\d{0,14})\.\d+")
+_COMMA_TEXT = re.compile(r"-?(0|[1-9]\d{0,14}),\d+")
+_GROUPED_TEXT = re.compile(r"-?[1-9]\d{0,2}[.,]\d{3}")  # 1.500 / 25,000 — ming ajratuvchisi bo'lishi mumkin
+
+
 def _cell_value(value: Any) -> Any:
+    """Matndagi oddiy sonni songa aylantiradi; ID, hisob raqami va noaniq yozuvlar matn bo'lib qoladi."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and abs(value) >= 10**_EXCEL_DIGITS:
+        return str(value)
     if isinstance(value, str):
         text = value.strip()
-        if text and re.fullmatch(r"-?\d+", text):
+        if _GROUPED_TEXT.fullmatch(text):
+            return value
+        if _INT_TEXT.fullmatch(text):
             return int(text)
-        if text and re.fullmatch(r"-?\d+[.,]\d+", text):
+        if _DOT_TEXT.fullmatch(text):
+            return float(text)
+        if _COMMA_TEXT.fullmatch(text):
             return float(text.replace(",", "."))
-        return value
     return value
 
 
@@ -93,6 +110,8 @@ def build_xlsx(sheets: list[dict]) -> bytes:
 def build_csv(sheets: list[dict]) -> bytes:
     if not sheets:
         raise FileError("Kamida bitta varaq kerak.")
+    if len(sheets) > 1:
+        raise FileError("CSV faqat bitta jadval saqlaydi — xlsx tanlang yoki har jadvalni alohida CSV qiling.")
     sheet = sheets[0]
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -111,7 +130,19 @@ def build_pptx(slides: list[dict], title: str | None = None) -> bytes:
 
     if not slides:
         raise FileError("Kamida bitta slayd kerak.")
-    if len(slides) > 60:
+    pages: list[dict] = []  # 12 tadan ortiq band «(davomi)» slaydiga o'tadi — kesilmaydi
+    for item in slides:
+        if not isinstance(item, dict):
+            raise FileError("Har slayd {title, bullets} ko'rinishida bo'lsin.")
+        bullets = [str(b) for b in (item.get("bullets") or [])]
+        heading = str(item.get("title") or "")
+        for start in range(0, max(len(bullets), 1), MAX_BULLETS):
+            pages.append({
+                "title": heading if start == 0 else f"{heading} (davomi)".strip(),
+                "bullets": bullets[start:start + MAX_BULLETS],
+                "notes": item.get("notes") if start == 0 else None,
+            })
+    if len(pages) > 60:
         raise FileError("Slaydlar 60 tadan oshmasin.")
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
@@ -140,17 +171,15 @@ def build_pptx(slides: list[dict], title: str | None = None) -> bytes:
         if subtitle:
             add_box(slide, Inches(0.8), Inches(3.9), Inches(11.5), Inches(1.0), str(subtitle), 22, color=RGBColor(0xC7, 0xD2, 0xFE))
 
-    for item in slides:
-        if not isinstance(item, dict):
-            raise FileError("Har slayd {title, bullets} ko'rinishida bo'lsin.")
+    for item in pages:
         slide = prs.slides.add_slide(blank)
         header = slide.shapes.add_shape(1, 0, 0, prs.slide_width, Inches(1.25))
         header.fill.solid(); header.fill.fore_color.rgb = dark; header.line.fill.background()
-        add_box(slide, Inches(0.6), Inches(0.28), Inches(12), Inches(0.9), str(item.get("title") or ""), 30, bold=True)
-        bullets = [str(b) for b in (item.get("bullets") or [])]
+        add_box(slide, Inches(0.6), Inches(0.28), Inches(12), Inches(0.9), item["title"], 30, bold=True)
+        bullets = item["bullets"]
         body = slide.shapes.add_textbox(Inches(0.7), Inches(1.6), Inches(12), Inches(5.3)).text_frame
         body.word_wrap = True
-        for i, bullet in enumerate(bullets[:12]):
+        for i, bullet in enumerate(bullets):
             paragraph = body.paragraphs[0] if i == 0 else body.add_paragraph()
             paragraph.text = f"•  {bullet}"
             paragraph.font.size, paragraph.font.color.rgb = Pt(20 if len(bullets) <= 6 else 16), grey
@@ -168,14 +197,23 @@ _MD_BULLET = re.compile(r"^\s*[-*+•]\s+(.*)$")
 _MD_NUMBER = re.compile(r"^\s*(\d+)[.)]\s+(.*)$")
 _MD_TABLE = re.compile(r"^\s*\|.*\|\s*$")
 _MD_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
-_MD_INLINE = re.compile(r"\*\*(.+?)\*\*|`([^`]+)`")
+# Kod birinchi: `__init__.py` o'zgarmaydi; __qalin__ faqat so'z chegarasida (tgformat bilan bir xil)
+_MD_INLINE = re.compile(r"`([^`]+)`|\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)")
 
 
 def _plain(text: str) -> str:
-    return _MD_INLINE.sub(lambda m: m.group(1) or m.group(2), text).replace("__", "")
+    return _MD_INLINE.sub(lambda m: m.group(1) or m.group(2) or m.group(3), text)
+
+
+# DejaVu'da yo'q, lekin ko'p ishlatiladigan belgilar — o'xshash glif bilan (✅/❌ ma'nosi yo'qolmasin)
+_PDF_SUBSTITUTES = str.maketrans({
+    "✅": "✔", "❌": "✘", "❎": "✘", "⭐": "★", "❗": "!", "❓": "?", "👉": "➜", "\ufe0f": None, "\u200d": None,
+})
 
 
 def build_pdf(content: str, title: str | None = None) -> bytes:
+    import unicodedata
+
     from fpdf import FPDF
 
     pdf = FPDF(format="A4")
@@ -185,11 +223,26 @@ def build_pdf(content: str, title: str | None = None) -> bytes:
     pdf.add_font("Sans", "B", str(FONTS / "DejaVuSans-Bold.ttf"))
     pdf.add_page()
     width = pdf.w - pdf.l_margin - pdf.r_margin
+    glyphs = pdf.fonts["sans"].cmap
+
+    # Shriftda yo'q harf (xitoycha, hindcha …) jimgina tushib qolmasin — Claude docx'ni tanlaydi
+    missing = {
+        ch for ch in ((title or "") + content).translate(_PDF_SUBSTITUTES)
+        if ord(ch) not in glyphs and unicodedata.category(ch)[0] in "LN"
+    }
+    if missing:
+        sample = "".join(sorted(missing)[:10])
+        raise FileError(f"PDF shriftida bu harflar yo'q: {sample} — bu matn uchun docx formatini tanlang.")
+
+    def clean(text: str) -> str:
+        # Tab — bo'sh joy (shriftda glifi yo'q, kod chekinishi yo'qolardi); qolgan emoji olib tashlanadi
+        text = text.expandtabs(4).translate(_PDF_SUBSTITUTES)
+        return "".join(ch for ch in text if ord(ch) in glyphs or ch == "\n")
 
     def paragraph(text: str, size: float = 11, bold: bool = False, indent: float = 0, after: float = 2.5) -> None:
         pdf.set_font("Sans", "B" if bold else "", size)
         pdf.set_x(pdf.l_margin + indent)
-        pdf.multi_cell(width - indent, size * 0.55, _plain(text))
+        pdf.multi_cell(width - indent, size * 0.55, clean(_plain(text)))
         pdf.ln(after)
 
     if title:
@@ -206,14 +259,14 @@ def build_pdf(content: str, title: str | None = None) -> bytes:
         if in_code:
             pdf.set_font("Sans", "", 9)
             pdf.set_x(pdf.l_margin + 4)
-            pdf.multi_cell(width - 4, 5, line or " ")
+            pdf.multi_cell(width - 4, 5, clean(line) or " ")
             i += 1
             continue
         if _MD_TABLE.match(line):
             rows = []
             while i < len(lines) and _MD_TABLE.match(lines[i]):
                 if not _MD_SEP.match(lines[i]):
-                    rows.append([_plain(c.strip()) for c in lines[i].strip().strip("|").split("|")])
+                    rows.append([clean(_plain(c.strip())) for c in lines[i].strip().strip("|").split("|")])
                 i += 1
             if rows:
                 cols = max(len(r) for r in rows)
@@ -305,47 +358,63 @@ def build_chart(spec: dict) -> bytes:
             raise FileError("Qiymatlar son bo'lishi kerak.") from exc
     if len(labels) > 60:
         raise FileError("60 tadan ko'p nuqta — ko'rinmaydi; qisqartiring.")
-
-    fig, ax = plt.subplots(figsize=(10, 5.6), dpi=150)
-    fig.patch.set_facecolor("white")
     if kind == "pie":
-        values = series[0]["values"]
-        ax.pie(values, labels=labels, autopct="%1.0f%%", colors=PALETTE[: len(values)], startangle=90,
-               wedgeprops={"linewidth": 1.5, "edgecolor": "white"}, textprops={"fontsize": 10})
-        ax.axis("equal")
-    else:
-        x = range(len(labels))
-        if kind == "line":
-            for i, s in enumerate(series):
-                ax.plot(list(x), s["values"], marker="o", linewidth=2.2, color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
-        elif kind == "barh":
-            for i, s in enumerate(series):
-                ax.barh([p + i * 0.8 / len(series) for p in x], s["values"], height=0.8 / len(series), color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
-            ax.set_yticks([p + 0.4 - 0.4 / len(series) for p in x])
-            ax.set_yticklabels(labels)
-        else:
-            n = len(series)
-            w = 0.8 / n
-            for i, s in enumerate(series):
-                bars = ax.bar([p + i * w - 0.4 + w / 2 for p in x], s["values"], width=w, color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
-                if len(labels) <= 15 and n <= 2:
-                    ax.bar_label(bars, fmt="%g", fontsize=8, padding=2)
-        if kind != "barh":
-            ax.set_xticks(list(x))
-            ax.set_xticklabels(labels, rotation=30 if max(len(l) for l in labels) > 8 else 0, ha="right" if max(len(l) for l in labels) > 8 else "center")
-        ax.grid(axis="x" if kind == "barh" else "y", alpha=0.25)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
-        if len(series) > 1 or series[0].get("name"):
-            ax.legend(frameon=False)
-    if spec.get("title"):
-        ax.set_title(str(spec["title"]), fontsize=14, fontweight="bold", pad=14)
-    if spec.get("x_label"):
-        ax.set_xlabel(str(spec["x_label"]))
-    if spec.get("y_label"):
-        ax.set_ylabel(str(spec["y_label"]))
-    fig.tight_layout()
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png")
-    plt.close(fig)
+        pie_values = series[0]["values"]
+        if any(not math.isfinite(v) or v < 0 for v in pie_values) or not any(pie_values):
+            raise FileError("Doira grafik qiymatlari manfiy bo'lmasin va hammasi 0 bo'lmasin.")
+
+    from matplotlib.ticker import FuncFormatter
+
+    def number(value: float, _position: Any = None) -> str:
+        # 15 000 000 — ilmiy ko'rinishsiz (1.5e+07 emas), ming xonalari bo'sh joy bilan;
+        # .15g: 12 500 000 000 so'mgacha butun yoziladi, 0.1+0.2 shovqini esa 0.3 bo'ladi
+        return f"{value:,.15g}".replace(",", " ")
+
+    # parse_math o'chiq: sarlavhadagi «$» matematik formula deb o'qilmaydi
+    with matplotlib.rc_context({"text.parse_math": False}):
+        fig, ax = plt.subplots(figsize=(10, 5.6), dpi=150)
+        try:
+            fig.patch.set_facecolor("white")
+            if kind == "pie":
+                values = series[0]["values"]
+                ax.pie(values, labels=labels, autopct="%1.0f%%", colors=PALETTE[: len(values)], startangle=90,
+                       wedgeprops={"linewidth": 1.5, "edgecolor": "white"}, textprops={"fontsize": 10})
+                ax.axis("equal")
+            else:
+                x = range(len(labels))
+                if kind == "line":
+                    for i, s in enumerate(series):
+                        ax.plot(list(x), s["values"], marker="o", linewidth=2.2, color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
+                elif kind == "barh":
+                    for i, s in enumerate(series):
+                        ax.barh([p + i * 0.8 / len(series) for p in x], s["values"], height=0.8 / len(series), color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
+                    ax.set_yticks([p + 0.4 - 0.4 / len(series) for p in x])
+                    ax.set_yticklabels(labels)
+                else:
+                    n = len(series)
+                    w = 0.8 / n
+                    for i, s in enumerate(series):
+                        bars = ax.bar([p + i * w - 0.4 + w / 2 for p in x], s["values"], width=w, color=PALETTE[i % len(PALETTE)], label=str(s.get("name") or f"{i + 1}"))
+                        if len(labels) <= 15 and n <= 2:
+                            ax.bar_label(bars, fmt=number, fontsize=8, padding=2)
+                if kind != "barh":
+                    ax.set_xticks(list(x))
+                    ax.set_xticklabels(labels, rotation=30 if max(len(l) for l in labels) > 8 else 0, ha="right" if max(len(l) for l in labels) > 8 else "center")
+                (ax.xaxis if kind == "barh" else ax.yaxis).set_major_formatter(FuncFormatter(number))
+                ax.grid(axis="x" if kind == "barh" else "y", alpha=0.25)
+                for side in ("top", "right"):
+                    ax.spines[side].set_visible(False)
+                if len(series) > 1 or series[0].get("name"):
+                    ax.legend(frameon=False)
+            if spec.get("title"):
+                ax.set_title(str(spec["title"]), fontsize=14, fontweight="bold", pad=14)
+            if spec.get("x_label"):
+                ax.set_xlabel(str(spec["x_label"]))
+            if spec.get("y_label"):
+                ax.set_ylabel(str(spec["y_label"]))
+            fig.tight_layout()
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format="png")
+        finally:
+            plt.close(fig)  # xato bo'lsa ham rasm xotirada qolmasin
     return buffer.getvalue()

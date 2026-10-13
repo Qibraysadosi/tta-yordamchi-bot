@@ -82,6 +82,7 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="kod", description="💾 Botning joriy kodi (.zip)"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
+BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
 PASSWORD_KEY = "password_hash"
 
 EFFORT_CHOICES = [
@@ -241,6 +242,7 @@ class AppContext:
     staged: dict[int, StagedUpdate] = field(default_factory=dict)
     github_busy: set[int] = field(default_factory=set)  # GitHub'dan yuklash davom etayotgan egalar
     github_cancelled: set[int] = field(default_factory=set)  # yuklash paytida /bekor bosganlar
+    busy: dict[int, str] = field(default_factory=dict)  # qulf nima uchun band: «file» — fayl yuklanmoqda
     staging_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # arxivlar bir vaqtda ochilmasin (data/update)
     restart_requested: bool = False
     restart_delay: float = 1.0
@@ -711,6 +713,14 @@ def _short(text: str, limit: int = 24) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+_APOSTROPHES = str.maketrans({c: "'" for c in translit.APOSTROPHES})
+
+
+def _keyword(text: str) -> str:
+    """Buyruq so'zini solishtirish uchun: kichik harf, ’ ʻ ‘ kabi apostroflar → '."""
+    return text.strip().lower().translate(_APOSTROPHES)
+
+
 async def cmd_password(message: Message, command: CommandObject, ctx: AppContext) -> None:
     if not await _owner_only(message, ctx):
         return
@@ -719,7 +729,7 @@ async def cmd_password(message: Message, command: CommandObject, ctx: AppContext
         status = "o'rnatilgan ✅" if await ctx.db.get_config(PASSWORD_KEY) else "o'rnatilmagan"
         await message.answer(PASSWORD_HELP.format(status=status), parse_mode=ParseMode.HTML)
         return
-    if value.lower() in ("off", "ochir", "o'chir", "yoq", "yo'q"):
+    if _keyword(value) in ("off", "ochir", "o'chir", "yoq", "yo'q"):
         await ctx.db.delete_config(PASSWORD_KEY)
         await message.answer("🔓 Parol o'chirildi: yangi odamlar kira olmaydi. Avval kirganlar qoladi — /foydalanuvchilar")
         return
@@ -1173,12 +1183,16 @@ async def cb_mode(callback: CallbackQuery, ctx: AppContext) -> None:
             )
 
 
+# Mini App bilan bir xil qisqartmalar (iyun/iyul farqlanadi)
+MONTHS_SHORT = ("yan", "fev", "mar", "apr", "may", "iyn", "iyl", "avg", "sen", "okt", "noy", "dek")
+
+
 def _when(stamp: str, tz: ZoneInfo) -> str:
     try:
         moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(tz)
     except ValueError:
         return stamp
-    return f"{moment.day}-{MONTHS[moment.month - 1][:3]} {moment:%H:%M}"
+    return f"{moment.day}-{MONTHS_SHORT[moment.month - 1]} {moment:%H:%M}"
 
 
 HISTORY_PAGE = 8
@@ -1249,13 +1263,16 @@ async def cb_history(callback: CallbackQuery, ctx: AppContext) -> None:
             await message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+TEMPLATES_SHOWN = 25  # ro'yxat Telegram'ning 4096 belgilik chegarasiga sig'sin
+
+
 async def templates_view(ctx: AppContext, uid: int) -> tuple[str, InlineKeyboardMarkup | None]:
     items = await ctx.db.templates(uid)
     if not items:
         return TEMPLATE_HELP, None
     lines = ["📌 <b>Shablonlar</b> — tugmani bossangiz, matn savol sifatida yuboriladi.", ""]
     rows = []
-    for t in items:
+    for t in items[:TEMPLATES_SHOWN]:
         lines.append(f"<b>{html.escape(t.name, quote=False)}</b>: {html.escape(_short(t.text, 80), quote=False)}")
         rows.append(
             [
@@ -1263,6 +1280,9 @@ async def templates_view(ctx: AppContext, uid: int) -> tuple[str, InlineKeyboard
                 InlineKeyboardButton(text="🗑", callback_data=f"tpl:d:{t.id}"),
             ]
         )
+    if len(items) > TEMPLATES_SHOWN:
+        more = f"… va yana {len(items) - TEMPLATES_SHOWN} ta"
+        lines.append(more + (" — to'liq ro'yxat Mini App'da" if ctx.settings.webapp_url else ""))
     lines += ["", "Qo'shish: <code>/shablon qo'sh Nomi</code> + keyingi qatorda matn"]
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1272,7 +1292,7 @@ async def cmd_templates(message: Message, command: CommandObject, ctx: AppContex
     args = (command.args or "").strip()
     first, _, rest = args.partition("\n")
     verb, _, name = first.strip().partition(" ")
-    verb = verb.lower()
+    verb = _keyword(verb)
     if verb in ("qo'sh", "qosh", "add", "+"):
         name, body = name.strip(), rest.strip()
         if not name or not body:
@@ -1284,8 +1304,8 @@ async def cmd_templates(message: Message, command: CommandObject, ctx: AppContex
         await message.answer(f"✅ Shablon saqlandi: <b>{html.escape(name[:40])}</b>", parse_mode=ParseMode.HTML)
         return
     if verb in ("o'chir", "ochir", "del", "delete", "-"):
-        target = name.strip().lower()
-        match = next((t for t in await ctx.db.templates(uid) if t.name.lower() == target), None)
+        target = _keyword(name)
+        match = next((t for t in await ctx.db.templates(uid) if _keyword(t.name) == target), None)
         if match is None:
             await message.answer("Bunday shablon yo'q. Ro'yxat: /shablon")
             return
@@ -1319,7 +1339,7 @@ async def cb_template(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> Non
     if message:
         sent = await message.answer(f"📌 <b>{html.escape(template.name)}</b>\n{html.escape(template.text)}", parse_mode=ParseMode.HTML)
         await run_chat_for(
-            uid, message.chat.id, sent.message_id, bot, ctx, ctx.take_pending(uid) + [{"type": "text", "text": template.text}]
+            uid, message.chat.id, sent.message_id, bot, ctx, [{"type": "text", "text": template.text}], with_pending=True
         )
 
 
@@ -1412,6 +1432,9 @@ async def quick_task(bot: Bot, ctx: AppContext, uid: int, chat_id: int, reply_to
             await live.finish(format_answer(live.text.strip(), [], ["⏹ To'xtatildi."], None))
         except ClaudeError as exc:
             await live.fail(exc.user_message)
+        except Exception:
+            log.exception("Kutilmagan xato (tez ish)")
+            await live.fail("⚠️ Kutilmagan xato yuz berdi. Qayta urinib ko'ring; takrorlansa, serverdagi loglarni tekshiring.")
         finally:
             await live.stop_ticker()
 
@@ -1440,21 +1463,25 @@ async def cb_answer(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
             await message.edit_reply_markup(reply_markup=translate_keyboard(answer_id))
         return
     if ctx.lock_for(uid).locked():
-        await callback.answer("Oldingi javob tugashini kuting", show_alert=True)
+        await callback.answer("Oldingi xabar hali ishlanmoqda — tugashini kuting", show_alert=True)
         return
     if action == "re":
         s = await ctx.user_settings(uid)
         if s.conv_id != conv_id:
             await callback.answer("Bu javob boshqa suhbatdan — avval /tarix orqali o'sha suhbatga qayting", show_alert=True)
             return
-        user_blocks = await ctx.db.pop_last_turn(uid, conv_id, answer_id)
-        if user_blocks is None:
+        turn = await ctx.db.last_turn(uid, conv_id, answer_id)
+        if turn is None:
             await callback.answer("Faqat suhbatning oxirgi javobini qayta olish mumkin", show_alert=True)
             return
         await callback.answer("🔄 Qayta yozilmoqda…")
         with contextlib.suppress(TelegramBadRequest):
             await message.edit_reply_markup(reply_markup=None)
-        await run_chat_for(uid, message.chat.id, message.message_id, bot, ctx, user_blocks)
+        # Eski savol-javob faqat yangi javob saqlanganda o'chadi
+        new_id = await run_chat_for(uid, message.chat.id, message.message_id, bot, ctx, turn[1], replace=answer_id)
+        if new_id is None:  # yangi javob chiqmadi — eski javob tarixda qoldi, tugmalari qaytadi
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_reply_markup(reply_markup=answer_keyboard(answer_id))
     elif action == "short":
         await callback.answer("✂️ Qisqartirilmoqda…")
         await quick_task(
@@ -1536,32 +1563,42 @@ async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
             return
         group = sorted(collected, key=lambda m: m.message_id)
     uid = message.from_user.id
-    blocks: list[dict] = []
-    raws: list[RawFile] = []
-    errors: list[str] = []
-    for item in group:
-        try:
-            item_blocks, item_raws = await read_attachment(bot, item, ctx.settings.image_max_edge)
-            blocks.extend(item_blocks)
-            raws.extend(item_raws)
-        except media.MediaError as exc:
-            errors.append(f"⚠️ {exc}")
-        except TelegramAPIError as exc:
-            log.warning("Faylni yuklab bo'lmadi: %s", exc)
-            errors.append("⚠️ Faylni Telegram'dan yuklab bo'lmadi.")
-    if errors:
-        await message.answer("\n".join(errors))
-    if not blocks:
-        return
-    ctx.raw.add(uid, raws)
     caption = "\n".join(item.caption for item in group if item.caption).strip()
-    if not caption:
-        count = ctx.add_pending(uid, blocks)
-        await message.answer(
-            f"📎 Qabul qilindi ({count} ta fayl). Endi savolingizni yozing — masalan: «qisqacha mazmunini ayt»."
+    # Qulf yuklashdan oldin olinadi: keyin kelgan xabar shu fayldan oldin javob olib ketmasin
+    async with await _user_lock(ctx, bot, uid, message.chat.id, quiet_behind_file=not caption):
+        blocks: list[dict] = []
+        raws: list[RawFile] = []
+        errors: list[str] = []
+        ctx.busy[uid] = "file"
+        try:
+            for item in group:
+                try:
+                    item_blocks, item_raws = await read_attachment(bot, item, ctx.settings.image_max_edge)
+                    blocks.extend(item_blocks)
+                    raws.extend(item_raws)
+                except media.MediaError as exc:
+                    errors.append(f"⚠️ {exc}")
+                except TelegramAPIError as exc:
+                    log.warning("Faylni yuklab bo'lmadi: %s", exc)
+                    errors.append("⚠️ Faylni Telegram'dan yuklab bo'lmadi.")
+        finally:
+            ctx.busy.pop(uid, None)
+        if errors:
+            await message.answer("\n".join(errors))
+        if not blocks:
+            return
+        ctx.raw.add(uid, raws)
+        if not caption:
+            count = ctx.add_pending(uid, blocks)
+            await message.answer(
+                f"📎 Qabul qilindi ({count} ta fayl). Endi savolingizni yozing — masalan: «qisqacha mazmunini ayt»."
+            )
+            return
+        pending = ctx.take_pending(uid)
+        await _chat(
+            uid, message.chat.id, group[-1].message_id, bot, ctx,
+            pending + blocks + [{"type": "text", "text": caption}], restore=pending + blocks,
         )
-        return
-    await run_chat(group[-1], bot, ctx, ctx.take_pending(uid) + blocks + [{"type": "text", "text": caption}])
 
 
 def _quoted(message: Message, bot_id: int) -> str | None:
@@ -1588,16 +1625,20 @@ async def on_text(message: Message, bot: Bot, ctx: AppContext) -> None:
         text = f"[Iqtibos]\n{quote}\n[/Iqtibos]\n\n{text}"
     if not text:
         return
-    link_blocks: list[dict] = []
-    if ctx.settings.link_reading and links.find_links(text):
-        with contextlib.suppress(TelegramAPIError):
-            await bot.send_chat_action(message.chat.id, "typing")
-        link_blocks, errors = await links.read_links(text, ctx.settings.link_max_bytes)
-        if errors:
-            await message.answer("\n".join(errors) + "\n\nSavolga havolasiz javob beraman.")
-    await run_chat(
-        collected[-1], bot, ctx, ctx.take_pending(uid) + link_blocks + [{"type": "text", "text": text}]
-    )
+    # Qulf havolalarni o'qishdan oldin olinadi: xabarlar kelgan tartibda javob oladi
+    async with await _user_lock(ctx, bot, uid, message.chat.id):
+        link_blocks: list[dict] = []
+        if ctx.settings.link_reading and links.find_links(text):
+            with contextlib.suppress(TelegramAPIError):
+                await bot.send_chat_action(message.chat.id, "typing")
+            link_blocks, errors = await links.read_links(text, ctx.settings.link_max_bytes)
+            if errors:
+                await message.answer("\n".join(errors) + "\n\nSavolga havolasiz javob beraman.")
+        pending = ctx.take_pending(uid)
+        await _chat(
+            uid, message.chat.id, collected[-1].message_id, bot, ctx,
+            pending + link_blocks + [{"type": "text", "text": text}], restore=pending,
+        )
 
 
 # ------------------------------------------------------------------ suhbat jarayoni
@@ -1683,6 +1724,15 @@ async def _generate(
         ctx.active[uid] = task
         try:
             return await task
+        except ClaudeError as exc:
+            # Xatogacha tugagan qadamlar (vosita, pause_turn) ham pul — yozib qo'yamiz
+            if exc.cost:
+                await ctx.db.log_usage(uid, model, exc.numbers, exc.cost)
+            raise
+        except Exception:
+            if live.completed_cost:
+                await ctx.db.log_usage(uid, model, {}, live.completed_cost, estimated=True)
+            raise
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if task.cancelled() and not (current is not None and current.cancelling()):
@@ -1707,19 +1757,33 @@ async def _generate(
     return result
 
 
-async def run_chat(message: Message, bot: Bot, ctx: AppContext, user_blocks: list[dict]) -> None:
-    await run_chat_for(message.from_user.id, message.chat.id, message.message_id, bot, ctx, user_blocks)
+async def _user_lock(
+    ctx: AppContext, bot: Bot, uid: int, chat_id: int, *, quiet_behind_file: bool = False
+) -> asyncio.Lock:
+    """Foydalanuvchi qulfi; band bo'lsa, xabar navbatga qo'yilgani aytiladi (qulf qayta kirmaydi).
+
+    quiet_behind_file — izohsiz fayl boshqa fayl yuklanishini kutsa, xabar yuborilmaydi («📎 Qabul qilindi» keladi)."""
+    lock = ctx.lock_for(uid)
+    if lock.locked():
+        if ctx.busy.get(uid) == "file":
+            if quiet_behind_file:
+                return lock
+            text = "⏳ Oldingi fayl hali yuklanmoqda — bu xabar undan keyin ko'riladi."
+        else:
+            text = BUSY_QUEUED_TEXT
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_message(chat_id=chat_id, text=text)
+    return lock
 
 
 async def run_chat_for(
-    uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict]
-) -> None:
-    lock = ctx.lock_for(uid)
-    if lock.locked():
-        with contextlib.suppress(TelegramAPIError):
-            await bot.send_message(chat_id=chat_id, text="⏳ Oldingi javob hali yozilmoqda — bu xabar navbatga qo'yildi.")
-    async with lock:
-        await _chat(uid, chat_id, reply_to, bot, ctx, user_blocks)
+    uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict],
+    *, with_pending: bool = False, replace: int | None = None,
+) -> int | None:
+    """Navbat bilan javob; with_pending — kutayotgan fayllar qulf ichida qo'shiladi. Yangi javob id'si yoki None."""
+    async with await _user_lock(ctx, bot, uid, chat_id):
+        pending = ctx.take_pending(uid) if with_pending else []
+        return await _chat(uid, chat_id, reply_to, bot, ctx, pending + user_blocks, restore=pending, replace=replace)
 
 
 async def pick_model(ctx: AppContext, uid: int, user_blocks: list[dict]) -> str:
@@ -1770,8 +1834,18 @@ async def check_budget(ctx: AppContext, bot: Bot) -> None:
                 await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
 
 
-async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict]) -> None:
+async def _chat(
+    uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict],
+    *, restore: list[dict] | None = None, replace: int | None = None,
+) -> int | None:
+    """Javob yozadi va saqlaydi; yangi javob id'si yoki None (xato, rad, bo'sh ⏹).
+    restore — vaqtinchalik xatoda kutish navbatiga qaytadigan fayllar; replace — 🔄 almashtiriladigan javob."""
     s = await ctx.user_settings(uid)
+    replaced = await ctx.db.last_turn(uid, s.conv_id, replace) if replace is not None else None
+    if replace is not None and replaced is None:
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_message(chat_id=chat_id, text="🔄 Bu javob endi suhbatning oxirgisi emas — qayta yozilmadi.")
+        return None
     model = s.active_model
     # Zaxira model ishlayotganda effort yuborilmaydi (u modelning standarti bilan ishlaydi)
     effort = None if s.model_override else s.effort
@@ -1790,6 +1864,8 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
         model = ctx.settings.economy_model
 
     history = await ctx.db.history(uid, s.conv_id, s.history_start_id)
+    if replaced is not None:  # 🔄: eski savol-javob so'rovga kirmaydi, o'chirish — yangi javob saqlanganda
+        history = [m for m in history if m.id < replaced[0]]
     limit = ctx.settings.history_max_messages
     if len(history) >= limit:
         # Eskilarini bir yo'la chiqaramiz: boshlanish nuqtasi barqaror qolsa, kesh ishlayveradi
@@ -1818,6 +1894,15 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
         bot=bot, chat_id=chat_id, reply_to=reply_to, uid=uid, files=ctx.raw.recent(uid), model=model,
         claude=ctx.claude, live=live, log_usage=log_tool_usage, on_file=remember_file,
     )
+
+    async def save_turn(answer: str) -> int:
+        if replace is not None:
+            await ctx.db.pop_last_turn(uid, s.conv_id, replace)
+        answer_id = await ctx.db.add_turn(uid, s.conv_id, user_blocks, answer)
+        if restore:  # shu navbat yangi fayllarni ishlatdi — keyingilari yangi to'plam
+            ctx.raw.close_batch(uid)
+        return answer_id
+
     try:
         result = await _generate(
             ctx, uid, live, model=model, system=system, messages=messages,
@@ -1844,29 +1929,33 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
                 )
         if result.refused:
             await live.fail(refusal_message(result))
-            return
+            return None
 
         text = result.text
         if not text.strip() and tool_ctx.sent:
             text = "📎 Fayl yuborildi: " + ", ".join(tool_ctx.sent)
-        answer_id = await ctx.db.add_turn(uid, s.conv_id, user_blocks, text or "(bo'sh javob)")
+        answer_id = await save_turn(text or "(bo'sh javob)")
         notes.extend(_stop_notes(result, ctx.settings.long_context_tokens))
         footer = await _footer(ctx, uid, s, model, effort, result, shown_model, tool_ctx)
         await live.finish(format_answer(text, result.sources, notes, footer), answer_keyboard(answer_id))
         await check_budget(ctx, bot)
+        return answer_id
     except Cancelled:
         partial = live.text.strip()
         if partial:
-            answer_id = await ctx.db.add_turn(
-                uid, s.conv_id, user_blocks, partial + "\n\n[javob foydalanuvchi tomonidan to'xtatildi]"
-            )
+            answer_id = await save_turn(partial + "\n\n[javob foydalanuvchi tomonidan to'xtatildi]")
             notes.append("⏹ Javob to'xtatildi.")
             await live.finish(format_answer(partial, [], notes, None), answer_keyboard(answer_id))
-        else:
-            notes.append("⏹ Javob to'xtatildi.")
-            await live.finish(format_answer(partial, [], notes, None))
+            return answer_id
+        notes.append("⏹ Javob to'xtatildi.")
+        await live.finish(format_answer(partial, [], notes, None))
     except ClaudeError as exc:
-        await live.fail(exc.user_message)
+        message = exc.user_message
+        if restore and exc.retryable:
+            # Vaqtinchalik xato: fayllar yo'qolmasin — keyingi savolga qo'shiladi
+            ctx.add_pending(uid, restore)
+            message += "\n\n📎 Fayl(lar) saqlab qolindi — savolni qayta yozing."
+        await live.fail(message)
     except Exception:
         log.exception("Kutilmagan xato")
         await live.fail(
@@ -1875,6 +1964,7 @@ async def _chat(uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext
         )
     finally:
         await live.stop_ticker()
+    return None
 
 
 # ------------------------------------------------------------------ yo'naltirish

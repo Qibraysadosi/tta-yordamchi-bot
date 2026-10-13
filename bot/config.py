@@ -5,6 +5,9 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from aiogram.utils.token import TokenValidationError, validate_token
 
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS
 
@@ -111,6 +114,13 @@ def load_settings() -> Settings:
     ]
     if missing:
         raise ConfigError(".env faylida to'ldirilmagan: " + ", ".join(missing))
+    try:
+        validate_token(token)
+    except TokenValidationError as exc:
+        raise ConfigError(
+            "TELEGRAM_BOT_TOKEN ko'rinishi noto'g'ri — @BotFather bergan tokenni to'liq, bo'shliqsiz yozing "
+            "(masalan 123456789:AAH...)"
+        ) from exc
 
     try:
         owner_ids = frozenset(int(x) for x in owners_raw.replace(" ", "").split(",") if x)
@@ -168,6 +178,12 @@ def load_settings() -> Settings:
     if cache_ttl not in ("5m", "1h"):
         raise ConfigError("CACHE_TTL faqat 5m yoki 1h bo'lishi mumkin")
 
+    tz_name = _env("TIMEZONE", "Asia/Tashkent")
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"TIMEZONE noto'g'ri: {tz_name!r} (masalan Asia/Tashkent)") from exc
+
     github_repo: str | None = _env("GITHUB_REPO", DEFAULT_GITHUB_REPO)
     if github_repo.lower() in OFF_WORDS:
         github_repo = None
@@ -208,7 +224,7 @@ def load_settings() -> Settings:
         webapp_url=webapp_url,
         webapp_port=_int("WEBAPP_PORT", 8091, 1, 65535),
         files_max_bytes=_int("FILES_MAX_MB", 300, 10, 10_000) * 1024 * 1024,
-        timezone=_env("TIMEZONE", "Asia/Tashkent"),
+        timezone=tz_name,
         db_path=Path(_env("DB_PATH", "data/bot.db")),
         system_prompt_path=Path(_env("SYSTEM_PROMPT_FILE", "prompts/system.md")),
         modes_dir=Path(_env("MODES_DIR", "prompts/modes")),

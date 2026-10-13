@@ -200,6 +200,31 @@ class Member:
         return " ".join(parts)
 
 
+def _fold(value: Any) -> Any:
+    """Qidiruv uchun Unicode kichik harf (SQLite LOWER faqat ASCII'ni o'zgartiradi)."""
+    return value.casefold() if isinstance(value, str) else value
+
+
+def _search_text(content: Any) -> str:
+    """Xabar JSON'idan qidiriladigan matn: matn bloklari va hujjat nomi/matni (base64 va kalitlarsiz)."""
+    try:
+        blocks = json.loads(content)
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    parts: list[Any] = []
+    for block in blocks if isinstance(blocks, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            parts.append(block.get("text"))
+        elif block.get("type") == "document":
+            parts.append(block.get("title"))
+            source = block.get("source")
+            if isinstance(source, dict) and source.get("type") == "text":
+                parts.append(source.get("data"))
+    return "\n".join(p for p in parts if isinstance(p, str)).casefold()
+
+
 class Database:
     _SETTINGS_FIELDS = frozenset(
         {"model", "effort", "web_search", "show_cost", "conv_id", "history_start_id", "model_override", "mode"}
@@ -212,12 +237,19 @@ class Database:
     async def open(cls, path: Path) -> "Database":
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(path)
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.executescript(SCHEMA)
-        await conn.commit()
-        db = cls(conn)
-        await db._migrate()
+        try:
+            conn.row_factory = aiosqlite.Row
+            await conn.create_function("ufold", 1, _fold, deterministic=True)
+            await conn.create_function("search_text", 1, _search_text, deterministic=True)
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.executescript(SCHEMA)
+            await conn.commit()
+            db = cls(conn)
+            await db._migrate()
+        except BaseException:
+            # yopilmagan ulanish oqimi jarayonni to'xtatmay qo'yadi (launcher orqaga qaytara olmaydi)
+            await conn.close()
+            raise
         return db
 
     async def _migrate(self) -> None:
@@ -329,11 +361,13 @@ class Database:
         return [self._conversation(row) for row in rows], int(total)
 
     async def search_conversations(self, user_id: int, query: str, limit: int = 8) -> list[Conversation]:
-        """Sarlavha yoki xabarlar matnida qidiradi (katta-kichik harf farqsiz)."""
-        pattern = f"%{query.lower()}%"
+        """Sarlavha yoki xabarlar matnida qidiradi (katta-kichik harf farqsiz, % va _ oddiy belgi)."""
+        escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         async with self._conn.execute(
-            "SELECT c.* FROM conversations c WHERE c.user_id = ? AND (LOWER(c.title) LIKE ?"
-            " OR c.conv_id IN (SELECT conv_id FROM messages WHERE user_id = ? AND LOWER(content) LIKE ?))"
+            "SELECT c.* FROM conversations c WHERE c.user_id = ? AND (ufold(c.title) LIKE ? ESCAPE '\\'"
+            " OR c.conv_id IN (SELECT conv_id FROM messages WHERE user_id = ? AND conv_id > 0"
+            " AND search_text(content) LIKE ? ESCAPE '\\'))"
             " ORDER BY c.updated_at DESC LIMIT ?",
             (user_id, pattern, user_id, pattern, limit),
         ) as cur:
@@ -401,8 +435,8 @@ class Database:
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         return int(row["user_id"]), int(row["conv_id"]), text
 
-    async def pop_last_turn(self, user_id: int, conv_id: int, answer_id: int) -> list[dict] | None:
-        """Qayta javob olish uchun: oxirgi savol-javobni o'chirib, savol matnini qaytaradi.
+    async def last_turn(self, user_id: int, conv_id: int, answer_id: int) -> tuple[int, list[dict]] | None:
+        """Oxirgi savol-javob (o'chirmaydi): (savol yozuvi id'si, savol bloklari).
         answer_id suhbatning oxirgi javobi bo'lmasa — None."""
         async with self._conn.execute(
             "SELECT id, role, content FROM messages WHERE user_id = ? AND conv_id = ? ORDER BY id DESC LIMIT 2",
@@ -411,12 +445,20 @@ class Database:
             rows = await cur.fetchall()
         if len(rows) != 2 or rows[0]["id"] != answer_id or rows[0]["role"] != "assistant" or rows[1]["role"] != "user":
             return None
-        await self._conn.execute("DELETE FROM messages WHERE id IN (?, ?)", (rows[0]["id"], rows[1]["id"]))
+        return int(rows[1]["id"]), json.loads(rows[1]["content"])
+
+    async def pop_last_turn(self, user_id: int, conv_id: int, answer_id: int) -> list[dict] | None:
+        """Qayta javob saqlanganda: oxirgi savol-javobni o'chirib, savol bloklarini qaytaradi.
+        answer_id suhbatning oxirgi javobi bo'lmasa — None."""
+        turn = await self.last_turn(user_id, conv_id, answer_id)
+        if turn is None:
+            return None
+        await self._conn.execute("DELETE FROM messages WHERE id IN (?, ?)", (answer_id, turn[0]))
         await self._conn.execute(
             "UPDATE conversations SET turns = MAX(turns - 1, 0) WHERE user_id = ? AND conv_id = ?", (user_id, conv_id)
         )
         await self._conn.commit()
-        return json.loads(rows[1]["content"])
+        return turn[1]
 
     # --- shablonlar ---
     async def templates(self, user_id: int) -> list[Template]:

@@ -26,12 +26,12 @@ def _walk(container):
     for paragraph in container.paragraphs:
         yield paragraph
     for table in container.tables:
+        seen = set()  # birlashtirilgan katak (eniga ham, bo'yiga ham) bir marta — har qatorda qayta kelmasin
         for row in table.rows:
-            previous = None
             for cell in row.cells:
-                if cell._tc is previous:  # birlashtirilgan kataklar bir marta
+                if cell._tc in seen:
                     continue
-                previous = cell._tc
+                seen.add(cell._tc)
                 yield from _walk(cell)
 
 

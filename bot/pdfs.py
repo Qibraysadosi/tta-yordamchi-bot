@@ -131,6 +131,12 @@ def images_to_pdf(images: list[bytes]) -> bytes:
         except Exception as exc:  # noqa: BLE001
             raise PdfError("Rasmlardan biri o'qilmadi.") from exc
         img = ImageOps.exif_transpose(img) or img
+        if img.mode in ("I", "I;16", "I;16B", "I;16L"):  # 16 bitli kulrang skaner — 8 bitga o'tkaziladi (oq bo'lmasin)
+            img = img.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+        if img.has_transparency_data:  # shaffof fon qora emas, oq bo'lsin
+            rgba = img.convert("RGBA")
+            img = Image.new("RGB", rgba.size, "white")
+            img.paste(rgba, mask=rgba.getchannel("A"))
         frames.append(img.convert("RGB"))
     buffer = io.BytesIO()
     frames[0].save(buffer, format="PDF", save_all=True, append_images=frames[1:], resolution=150.0)

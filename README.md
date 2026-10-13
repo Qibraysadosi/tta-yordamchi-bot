@@ -72,6 +72,8 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 
 Ilova botning o'zida ishlaydi (alohida server kerak emas): konteyner ichida `WEBAPP_PORT` (8091) portida HTTP server turadi, docker-compose uni faqat `127.0.0.1` ga ochadi. Telegram ilovani faqat **HTTPS** manzildan ochadi, shuning uchun serverdagi Caddy (yoki Nginx) orqali tashqariga chiqariladi. Kirish: Telegram imzosi (initData) bot tokeni bilan tekshiriladi, ilovaga faqat egasi va parol bilan kirganlar kiradi.
 
+**Tez yo'l (bitta buyruq, serverda):** `cd /root/claude-telegram-bot && bash install.sh miniapp` — Caddy'ga `/yordamchi` yo'lini qo'shadi, `.env` ga `WEBAPP_URL=https://bepulkurs.uz/yordamchi/` yozadi, konteynerni qayta yaratadi va tekshiradi. Boshqa manzil kerak bo'lsa: `bash install.sh miniapp https://DOMEN/yol/` (subdomen bo'lsa, avval DNS'da A yozuv). Qo'lda qilmoqchi bo'lsangiz — quyidagi 3 qadam.
+
 **1. Manzil tanlang.** Eng oson yo'l — serverda allaqachon HTTPS bilan ishlayotgan domenga papka qo'shish, masalan `https://bepulkurs.uz/yordamchi/`. Caddyfile'ga (`/etc/caddy/Caddyfile`) shu domen blokiga qo'shing:
 
 ```

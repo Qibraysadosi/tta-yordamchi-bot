@@ -32,7 +32,7 @@ PREFIX = "claude-telegram-bot"
 FOLDERS = ("bot", "prompts")
 FILES = (
     "requirements.txt", "VERSION", "launcher.py", "Dockerfile", "docker-compose.yml", ".dockerignore",
-    ".env.example", "install.sh", "install-test.sh", "README.md",
+    ".env.example", "install.sh", "install-test.sh", "install-miniapp.sh", "README.md",
 )
 SKIP_PARTS = {"__pycache__", ".pytest_cache"}
 SECRET_PATTERNS = [

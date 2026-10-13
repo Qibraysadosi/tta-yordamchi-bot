@@ -51,7 +51,7 @@ RELEASE_ITEMS = ("bot", "prompts", "requirements.txt", "VERSION")
 ALLOWED_TOP = frozenset(
     {
         "bot", "prompts", "requirements.txt", "VERSION", "UPDATE_NOTES.md", "README.md", ".env.example",
-        "install.sh", "install-test.sh", "docker-compose.yml",
+        "install.sh", "install-test.sh", "install-miniapp.sh", "docker-compose.yml",
     }
 )
 REPLACED_DIRS = frozenset({"bot"})  # butunlay almashtiriladi — eski versiyadagi ortiqcha fayllar qolmaydi

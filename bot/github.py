@@ -148,6 +148,15 @@ class GitHubClient:
             version = await self._get(
                 client, f"{API}/repos/{self.repo}/contents/VERSION", accept=RAW_ACCEPT, ref=self.branch
             )
+            if version.status_code == 404:
+                # Repo ko'rinadimi? Ko'rinsa — muammo tarmoq nomida yoki VERSION faylida, token emas
+                repo = await self._get(client, f"{API}/repos/{self.repo}")
+                if repo.status_code == 200:
+                    raise GitHubError(
+                        f"GitHub'da release yo'q, «{self.branch}» tarmog'i yoki undagi VERSION fayli ham topilmadi — "
+                        ".env dagi GITHUB_BRANCH ni tekshiring (standart main)."
+                    )
+                raise self._error(repo)
             if version.status_code != 200:
                 raise self._error(version)
             text = version.text.strip().splitlines()
@@ -168,7 +177,8 @@ class GitHubClient:
 
     def _release_from(self, data: dict) -> Release:
         tag = str(data.get("tag_name") or "")
-        assets = [a for a in data.get("assets") or [] if isinstance(a, dict) and str(a.get("name", "")).endswith(".zip")]
+        # Faqat bot arxivi (claude-telegram-bot-vX.Y.Z.zip); boshqa .zip aktivlar e'tiborsiz — manba arxivi olinadi
+        assets = [a for a in data.get("assets") or [] if isinstance(a, dict) and ASSET_RE.match(str(a.get("name", "")))]
         parsed = parse_version(tag)
         if parsed is None:
             for asset in assets:
@@ -179,7 +189,7 @@ class GitHubClient:
             raise GitHubError(f"Release tegida versiya raqami yo'q (vX.Y.Z kutilgan): {tag or '—'}")
         version = ".".join(str(x) for x in parsed)
         chosen = next((a for a in assets if a.get("name") == f"claude-telegram-bot-v{version}.zip"), None)
-        chosen = chosen or next((a for a in assets if ASSET_RE.match(str(a.get("name", "")))), None) or (assets[0] if assets else None)
+        chosen = chosen or (assets[0] if assets else None)
         if chosen is not None:
             download_url, asset_name, size = str(chosen.get("url") or ""), str(chosen.get("name")), int(chosen.get("size") or 0)
         else:

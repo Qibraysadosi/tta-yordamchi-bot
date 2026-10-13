@@ -221,12 +221,13 @@ async def main() -> None:
     await site.start()
     port = site._server.sockets[0].getsockname()[1]
 
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    # Haqiqiy GitHub'ga murojaat qilinmasin va dasturchining tokeni bot jarayoniga o'tmasin
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "GITHUB_TOKEN", "GH_TOKEN")}
     env.update(
         FAKE_TG=f"http://127.0.0.1:{port}", APP_DIR=str(app_dir), REQ_STAMP=str(stamp),
         BOT_COMMAND=f"{sys.executable} {HERE / 'wrapper.py'}", TELEGRAM_BOT_TOKEN=TOKEN,
         ANTHROPIC_API_KEY="sk-ant-api03-test", OWNER_IDS=str(OWNER), PYTHONUNBUFFERED="1", BACKUP_TIME="off",
-        PYTHONDONTWRITEBYTECODE="1",
+        PYTHONDONTWRITEBYTECODE="1", GITHUB_REPO="off", UPDATE_CHECK="off",
     )
     log_file = open(work / "launcher.log", "w")
     proc = await asyncio.create_subprocess_exec(

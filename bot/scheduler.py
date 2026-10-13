@@ -35,31 +35,39 @@ class DailyJob:
         self.run = run
         self.catch_up = catch_up
         self._task: asyncio.Task | None = None
+        self.catch_up_task: asyncio.Task | None = None  # ishga tushganda o'tkazib yuborilgan ishni bajaradi
 
     def next_run(self, now: datetime) -> datetime:
         planned = now.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
         return planned if planned > now else planned + timedelta(days=1)
 
-    def start(self) -> None:
+    def start(self, catch_up: Callable[[], Awaitable[None]] | None = None) -> None:
         self._task = asyncio.create_task(self._loop(), name=f"job:{self.name}")
+        if catch_up is not None and self.catch_up:
+            self.catch_up_task = asyncio.create_task(self._safe(catch_up), name=f"job:{self.name}:catch-up")
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        for task in (self.catch_up_task, self._task):
+            if task is not None and not task.done():
+                task.cancel()
+            if task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _safe(self, run: Callable[[], Awaitable[None]]) -> None:
+        try:
+            await run()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — bitta xato jadvalni to'xtatmasin
+            log.exception("Kechikkan vazifa xato bilan tugadi: %s", self.name)
 
     async def _loop(self) -> None:
         while True:
             now = datetime.now(self.tz)
             wait = (self.next_run(now) - now).total_seconds()
             await asyncio.sleep(wait)
-            try:
-                await self.run()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 — bitta xato jadvalni to'xtatmasin
-                log.exception("Rejalashtirilgan vazifa xato bilan tugadi: %s", self.name)
+            await self._safe(self.run)
 
 
 async def make_backup(db: Database, db_path: Path, label: str) -> tuple[bytes, str]:

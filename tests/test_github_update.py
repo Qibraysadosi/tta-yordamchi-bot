@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import httpx2
 import pytest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from bot import app as bot_app
 from bot import scheduler
@@ -13,7 +14,7 @@ from bot.github import GitHubClient, GitHubError, Release, is_newer, parse_versi
 from bot.updater import CALLBACK_GITHUB_CHECK, CALLBACK_GITHUB_INSTALL, UpdateManager, fetch_release
 from test_admin import release_zip
 from test_flow import OWNER, Env, make_app_dir, run
-from test_webapp import App
+from test_webapp import MEMBER, App
 
 REPO = "Qibraysadosi/tta-yordamchi-bot"
 TOKEN = "test_token_0123456789"  # soxta token (GitHub formatiga o'xshamaydi — maxfiy satr tekshiruvi uchun)
@@ -43,6 +44,9 @@ class FakeGitHub:
         self.branch_zip = branch_zip
         self.rate_limited = False
         self.down = False
+        self.branch_exists = True  # False — GITHUB_BRANCH tarmog'i (yoki undagi VERSION) yo'q
+        self.gate: asyncio.Event | None = None  # o'rnatilsa, aktiv yuklash shu hodisani kutadi
+        self.api_gate: asyncio.Event | None = None  # o'rnatilsa, API so'rovlari shu hodisani kutadi
         self.requests: list[httpx2.Request] = []
 
     def _authorized(self, request: httpx2.Request) -> bool:
@@ -54,8 +58,12 @@ class FakeGitHub:
         if host in ("objects.githubusercontent.com", "codeload.github.com"):
             if "authorization" in request.headers:  # S3 ikki xil autentifikatsiyani rad etadi
                 return httpx2.Response(400, text="Only one auth mechanism allowed")
+            if self.gate is not None:
+                await self.gate.wait()
             return httpx2.Response(200, content=self.asset if host.startswith("objects") else self.branch_zip)
         assert host == "api.github.com", host
+        if self.api_gate is not None:
+            await self.api_gate.wait()
         if self.down:
             return httpx2.Response(503, json={"message": "Service Unavailable"})
         if self.rate_limited:
@@ -73,7 +81,11 @@ class FakeGitHub:
             return httpx2.Response(302, headers={"location": "https://objects.githubusercontent.com/r/1/asset.zip?X-Amz-Signature=x"})
         if path == f"/repos/{REPO}/contents/VERSION":
             assert request.url.params["ref"] == "main"
+            if not self.branch_exists:
+                return httpx2.Response(404, json={"message": "No commit found for the ref main"})
             return httpx2.Response(200, content=f"{self.branch_version}\n".encode())
+        if path == f"/repos/{REPO}":
+            return httpx2.Response(200, json={"full_name": REPO, "private": self.private})
         if path.startswith(f"/repos/{REPO}/zipball/"):
             return httpx2.Response(302, headers={"location": f"https://codeload.github.com/{REPO}/legacy.zip/main"})
         return httpx2.Response(404, json={"message": "Not Found"})
@@ -116,6 +128,10 @@ def test_client_release_asset_and_errors():
         gh.release = release_json("1.4.0", asset="boshqa.zip")
         gh.release["assets"].append({"name": "claude-telegram-bot-v1.4.0.zip", "url": ASSET_URL, "size": 5})
         assert (await client.latest()).asset_name == "claude-telegram-bot-v1.4.0.zip"
+        # faqat begona .zip aktiv (masalan skrinshotlar) — bot arxivi emas, manba arxivi olinadi
+        gh.release = release_json("1.4.0", asset="screens.zip")
+        release = await client.latest()
+        assert release.asset_name is None and release.download_url.endswith("/zipball/v1.4.0")
         # aktivsiz release — teg manba arxivi
         gh.release = release_json("1.4.0")
         release = await client.latest()
@@ -150,6 +166,14 @@ def test_client_release_asset_and_errors():
         small = gh.client(max_bytes=4)
         with pytest.raises(GitHubError, match="juda katta"):
             await small.download(await small.latest())
+        # manba arxivi (zipball) hajmi oldindan noma'lum — chegarani oqim paytida ushlaydi
+        gh.release, gh.branch_zip = None, b"x" * 16
+        branch = await small.latest()
+        assert branch.size == 0
+        with pytest.raises(GitHubError, match="juda katta"):
+            await small.download(branch)
+        assert any(r.url.host == "codeload.github.com" for r in gh.requests)
+        gh.release = release_json("1.4.0", asset="claude-telegram-bot-v1.4.0.zip")
 
         async def broken(request):
             raise httpx2.ConnectError("yo'q")
@@ -185,6 +209,13 @@ def test_branch_fallback_and_changed_files(tmp_path):
         gh.branch_version = "nomalum"
         with pytest.raises(GitHubError, match="VERSION fayli tushunarsiz"):
             await gh.client().latest()
+        # release yo'q, tarmoq yo'q — token emas, GITHUB_BRANCH ni tekshirish so'raladi
+        gh.branch_exists = False
+        with pytest.raises(GitHubError, match="GITHUB_BRANCH") as info:
+            await gh.client().latest()
+        assert "GITHUB_TOKEN" not in str(info.value)
+        with pytest.raises(GitHubError, match="GITHUB_TOKEN"):  # yopiq repo tokensiz — baribir token haqida
+            await gh.client(token=None).latest()
     run(go())
 
 
@@ -195,8 +226,10 @@ def test_github_update_flow(tmp_path):
     async def go():
         env = await Env().start(tmp_path, github_repo=REPO)
         app, upd = env.app_dir, env.ctx.updater
-        asset = release_zip(app, "1.2.0", marker="gh12", extra={"UPDATE_NOTES.md": "Yangi: GitHub orqali yangilash"})
-        gh = FakeGitHub(release=release_json("1.2.0", asset="claude-telegram-bot-v1.2.0.zip", size=len(asset)), asset=asset)
+        asset = release_zip(app, "1.2.0", marker="gh12",
+                            extra={"UPDATE_NOTES.md": "Yangi: GitHub orqali yangilash", "tests/test_x.py": "x = 1\n"})
+        gh = FakeGitHub(release=release_json("1.2.0", asset="claude-telegram-bot-v1.2.0.zip", size=len(asset),
+                                             notes="GitHub izohi"), asset=asset)
         env.ctx.github = gh.client()
 
         def sent():
@@ -217,6 +250,15 @@ def test_github_update_flow(tmp_path):
             await env.db.add_member(GUEST, "Ali", None)
             await env.send_text("/yangilash github", user_id=GUEST)
             assert "faqat bot egasi" in sent().text
+            before = len(gh.requests)
+            for data in (CALLBACK_GITHUB_INSTALL, CALLBACK_GITHUB_CHECK):
+                await env.press(data, user_id=GUEST)
+                assert env.session.of("AnswerCallbackQuery")[-1].text == "⛔ Ruxsat yo'q"
+            assert len(gh.requests) == before and GUEST not in env.ctx.staged
+
+            env.ctx.awaiting_update.clear()
+            await env.send_text("/yangilash gitub")
+            assert sent().text.startswith("Tushunarsiz parametr") and OWNER not in env.ctx.awaiting_update
 
             await env.send_text("/yangilash github")
             assert "GitHub'dan yuklanmoqda" in sent().text
@@ -227,6 +269,7 @@ def test_github_update_flow(tmp_path):
             assert "Manba: GitHub Release v1.2.0 (claude-telegram-bot-v1.2.0.zip)" in summary.text
             assert "O'zgargan fayllar (2): VERSION, bot/models.py" in summary.text
             assert "Yangi: GitHub orqali yangilash" in summary.text and "launcher.py" in summary.text
+            assert "GitHub izohi" not in summary.text  # arxivdagi UPDATE_NOTES ustun
             ok_data, no_data = (b.callback_data for b in summary.reply_markup.inline_keyboard[0])
             assert ok_data.startswith("up:ok:") and no_data.startswith("up:no:")
             assert env.ctx.staged[OWNER].source.startswith("GitHub Release")
@@ -286,6 +329,41 @@ def test_github_update_flow(tmp_path):
             assert "davom etmoqda" in env.last_edit().text
             env.ctx.github_busy.clear()
 
+            # yuklash paytida /bekor — yuklangan arxiv tashlab yuboriladi, tasdiq tugmasi chiqmaydi
+            good = release_zip(app, "1.3.0", marker="gh13")
+            gh.release, gh.asset = release_json("1.3.0", asset="claude-telegram-bot-v1.3.0.zip", size=len(good)), good
+            gh.gate = asyncio.Event()
+            task = asyncio.create_task(env.send_text("/yangilash github"))
+
+            async def downloading():
+                while not any(r.url.host == "objects.githubusercontent.com" for r in gh.requests[-3:]):
+                    await asyncio.sleep(0.01)
+
+            await asyncio.wait_for(downloading(), timeout=10)
+            await env.send_text("/bekor")
+            gh.gate.set()
+            await asyncio.wait_for(task, timeout=10)
+            gh.gate = None
+            assert "Bekor qilindi" in env.last_edit().text and env.last_edit().reply_markup is None
+            assert OWNER not in env.ctx.staged and not env.ctx.github_busy and not env.ctx.github_cancelled
+            assert not list((tmp_path / "data" / "update").glob("staging-*"))
+
+            # holat xabarini tahrirlab bo'lmasa (o'chirilgan) — xulosa yangi xabar bo'lib keladi
+            original = env.session.make_request
+
+            async def gone(bot, method, timeout=None):
+                if type(method).__name__ == "EditMessageText" and method.reply_markup is not None:
+                    raise TelegramBadRequest(method=method, message="Bad Request: message to edit not found")
+                return await original(bot, method, timeout)
+
+            env.session.make_request = gone
+            await env.send_text("/yangilash github")
+            env.session.make_request = original
+            fallback = sent()
+            assert "v1.2.0 → <b>v1.3.0</b>" in fallback.text and fallback.reply_markup.inline_keyboard[0][0].callback_data.startswith("up:ok:")
+            assert env.ctx.staged[OWNER].version == "1.3.0"
+            await env.send_text("/bekor")
+
             # GitHub o'chiq
             env.ctx.github = None
             await env.send_text("/yangilash github")
@@ -308,7 +386,9 @@ def test_daily_check_notifies_once(tmp_path):
         gh = FakeGitHub(release=release_json("1.2.0", asset="claude-telegram-bot-v1.2.0.zip", size=len(asset), notes="Izoh qatori"), asset=asset)
         env.ctx.github = gh.client()
         tz = "Asia/Tashkent"
-        today = datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
+
+        def today():  # yarim tunda ham to'g'ri bo'lsin — har safar qayta hisoblanadi
+            return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
 
         async def check(version="1.1.0"):
             return await scheduler.check_update(env.bot, env.db, env.ctx.github, version, [OWNER], tz)
@@ -321,7 +401,7 @@ def test_daily_check_notifies_once(tmp_path):
             install, link = notice.reply_markup.inline_keyboard[0]
             assert install.callback_data == CALLBACK_GITHUB_INSTALL and link.url.endswith("/releases/tag/v1.2.0")
             assert await env.db.get_config("update:notified") == "1.2.0"
-            assert await env.db.get_config("update:last_check") == today
+            assert await env.db.get_config("update:last_check") == today()
             assert not await scheduler.missed_update_check(env.db, tz, "00:00")
 
             # xuddi shu versiya haqida qayta aytilmaydi
@@ -338,10 +418,28 @@ def test_daily_check_notifies_once(tmp_path):
             assert await scheduler.missed_update_check(env.db, tz, "00:00")
             gh.down = False
 
-            # xabardagi tugma odatdagi tasdiq oqimini ochadi
+            # xabardagi tugma odatdagi tasdiq oqimini ochadi; arxivda izoh yo'q — release izohi ko'rsatiladi
             await env.press(CALLBACK_GITHUB_INSTALL)
             assert "v1.1.0 → <b>v1.2.0</b>" in env.last_edit().text and env.ctx.staged[OWNER].version == "1.2.0"
+            assert "Izoh qatori" in env.last_edit().text
             await env.send_text("/bekor")
+
+            # Telegram xabarni qabul qilmasa — «aytildi» deb belgilanmaydi, keyingi tekshiruvda yana urinadi
+            gh.release = release_json("1.2.5", asset="claude-telegram-bot-v1.2.5.zip", size=5)
+            original = env.session.make_request
+
+            async def refuse(bot, method, timeout=None):
+                if type(method).__name__ == "SendMessage":
+                    raise TelegramForbiddenError(method=method, message="Forbidden: bot was blocked by the user")
+                return await original(bot, method, timeout)
+
+            env.session.make_request = refuse
+            assert (await check()).version == "1.2.5"
+            assert await env.db.get_config("update:notified") == "1.2.0"
+            env.session.make_request = original
+            assert (await check()).version == "1.2.5"
+            assert env.session.of("SendMessage")[-1].text.startswith("🆕 GitHub'da yangi versiya: v1.2.5")
+            assert await env.db.get_config("update:notified") == "1.2.5"
 
             # yanada yangisi chiqsa — yana bir marta
             gh.release = release_json("1.3.0", asset="claude-telegram-bot-v1.3.0.zip", size=5)
@@ -350,7 +448,7 @@ def test_daily_check_notifies_once(tmp_path):
             assert await env.db.get_config("update:notified") == "1.3.0"
 
             # kunlik ish: zaxira vaqtida; zaxira o'chiq bo'lsa 03:30; UPDATE_CHECK=off — yo'q
-            await env.db.set_config("update:last_check", today)  # bugun tekshirilgan — kechikkan tekshiruv yo'q
+            await env.db.set_config("update:last_check", today())  # bugun tekshirilgan — kechikkan tekshiruv yo'q
             job = bot_app.start_update_check_job(env.bot, env.ctx)
             assert job is not None and job.name == "update-check" and (job.hour, job.minute) == (3, 30)
             await job.stop()
@@ -370,10 +468,20 @@ def test_daily_check_notifies_once(tmp_path):
             await env.db.set_config("update:last_check", "2000-01-01")
             env.ctx.settings = env.ctx.settings.__class__(**{**env.ctx.settings.__dict__, "backup_time": "00:00"})
             job = bot_app.start_update_check_job(env.bot, env.ctx)
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(job.catch_up_task, timeout=10)
             await job.stop()
             assert env.session.of("SendMessage")[-1].text.startswith("🆕 GitHub'da yangi versiya: v1.4.0")
-            assert await env.db.get_config("update:last_check") == today
+            assert await env.db.get_config("update:last_check") == today()
+
+            # to'xtatilganda kechikkan tekshiruv ham bekor qilinadi (bot yopilgandan keyin ishlamaydi)
+            await env.db.set_config("update:last_check", "2000-01-01")
+            gh.api_gate = asyncio.Event()  # GitHub javob bermay turibdi
+            job = bot_app.start_update_check_job(env.bot, env.ctx)
+            await asyncio.sleep(0.05)
+            assert not job.catch_up_task.done()
+            await job.stop()
+            assert job.catch_up_task.cancelled()
+            gh.api_gate = None
         finally:
             await env.close()
     run(go())
@@ -407,7 +515,20 @@ def test_miniapp_admin_github(tmp_path):
             gh.rate_limited = True
             err = await app.post("/api/admin/github", {}, status=409)
             assert "chegarasi" in err["message"]
+            gh.rate_limited = False
+
+            bad = release_zip(env.app_dir, "1.3.0", extra={"bot/broken.py": "def x(:\n"})
+            gh.release, gh.asset = release_json("1.3.0", asset="claude-telegram-bot-v1.3.0.zip", size=len(bad)), bad
+            err = await app.post("/api/admin/github", {}, status=409)
+            assert "Sintaksis xatosi: bot/broken.py" in err["message"]
+            env.ctx.github_busy.add(OWNER)
+            err = await app.post("/api/admin/github", {}, status=409)
+            assert "davom etmoqda" in err["message"]
+            env.ctx.github_busy.clear()
+
             await app.post("/api/admin/github", {}, user_id=777, status=403)
+            await env.db.add_member(MEMBER, "A'zo", None)  # parol bilan kirgan a'zo — admin emas
+            await app.post("/api/admin/github", {}, user_id=MEMBER, status=403)
         finally:
             await app.close()
     run(go())

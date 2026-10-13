@@ -217,9 +217,10 @@ def test_publish_without_token_fails(release, tmp_path, monkeypatch, capsys):
 class FakeGh:
     """subprocess.run o'rnida: gh buyruqlarini yozib boradi."""
 
-    def __init__(self, *, exists: bool = False, fail: str | None = None):
+    def __init__(self, *, exists: bool = False, fail: str | None = None, logged_in: bool = True):
         self.exists = exists
         self.fail = fail  # shu kichik buyruq (create/upload/edit) xato bilan tugaydi
+        self.logged_in = logged_in  # False — `gh auth status` xato (gh bor, lekin kirilmagan)
         self.calls: list[list[str]] = []
 
     def __call__(self, argv, **kwargs):
@@ -228,7 +229,7 @@ class FakeGh:
         assert argv[0] == "gh"
         sub = argv[2] if len(argv) > 2 else argv[1]
         if argv[1] == "auth":
-            return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.CompletedProcess(argv, 0 if self.logged_in else 1, "", "You are not logged into any GitHub hosts")
         if sub == "view":
             return subprocess.CompletedProcess(argv, 0 if self.exists else 1, "", "release not found")
         if sub == self.fail:
@@ -285,6 +286,31 @@ def test_publish_gh_failure_shows_stderr(release, gh_cli, tmp_path, monkeypatch,
     assert run_main(mod, monkeypatch, tmp_path, notes, "--publish", "--repo", REPO) == 1
     out = capsys.readouterr().out
     assert "❌" in out and "HTTP 403" in out
+
+
+def test_publish_gh_not_logged_in_falls_back_to_rest(release, gh_cli, tmp_path, monkeypatch, capsys):
+    mod, notes = release
+    monkeypatch.setenv("GITHUB_TOKEN", TOKEN)
+    fake_gh = FakeGh(logged_in=False)
+    monkeypatch.setattr(mod.subprocess, "run", fake_gh)
+    api = FakeGitHub()
+    monkeypatch.setattr(mod.urllib.request, "urlopen", api)
+    assert run_main(mod, monkeypatch, tmp_path, notes, "--publish", "--repo", REPO) == 0
+    assert fake_gh.calls == [["gh", "auth", "status"]]  # faqat holat tekshirildi, release REST orqali
+    assert [c[1] for c in api.calls if c[0] == "POST"] == [
+        f"https://api.github.com/repos/{REPO}/releases",
+        f"https://uploads.github.com/repos/owner/name/releases/501/assets?name={zip_name()}",
+    ]
+    assert TOKEN not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("token", [
+    "ghp_" + "A1b2C3d4" * 5, "gho_" + "A1b2C3d4" * 5, "ghu_" + "A1b2C3d4" * 5,
+    "ghs_" + "A1b2C3d4" * 5, "ghr_" + "A1b2C3d4" * 5, "github_pat_" + "A1b2C3d4_" * 6,
+])
+def test_secret_scan_catches_github_tokens(release, token):
+    mod, _ = release
+    assert mod.scan_secrets(PROJECT / "README.md", f"token: {token}\n".encode()) is not None
 
 
 # ----------------------------------------------------------------------------- repo aniqlash

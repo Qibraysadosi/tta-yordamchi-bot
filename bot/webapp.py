@@ -32,6 +32,7 @@ from .github import GitHubError
 from .handlers import (
     PASSWORD_KEY,
     AppContext,
+    UpdateCancelled,
     _confirm_keyboard,
     billing_cycle_start,
     github_check_text,
@@ -639,7 +640,8 @@ class WebApp:
         if ctx.updater is None:
             return _error("Yangilash tizimi ulanmagan", 500, "failed")
         try:
-            staged = await asyncio.to_thread(ctx.updater.stage_restore)
+            async with ctx.staging_lock:
+                staged = await asyncio.to_thread(ctx.updater.stage_restore)
         except UpdateError as exc:
             return _error(str(exc), 409, "nothing")
         old = ctx.staged.pop(uid, None)
@@ -670,6 +672,8 @@ class WebApp:
             return _json({"ok": True, "message": await github_check_text(ctx), "current": ctx.updater.version})
         try:
             staged = await stage_from_github(ctx, uid)
+        except UpdateCancelled:
+            return _error("Bekor qilindi. Joriy versiya o'zgarmadi.", 409, "cancelled")
         except (GitHubError, UpdateError) as exc:
             return _error(str(exc), 409, "github")
         except Exception:

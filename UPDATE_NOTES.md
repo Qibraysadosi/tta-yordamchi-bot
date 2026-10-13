@@ -5,4 +5,4 @@
 • Release bo'lmasa main tarmog'i arxivi olinadi; buzuq versiya avvalgidek avtomatik orqaga qaytadi
 • Yangilanish xulosasida endi o'zgargan fayllar ro'yxati ko'rinadi (.zip uchun ham)
 • Mini App → Admin: «GitHub'dan yangilash» qatori — tasdiq chatga keladi
-⚙️ Serverdagi .env ga GITHUB_TOKEN (faqat o'qish huquqi) yozib, docker compose up -d --force-recreate (README → Yangilash → GitHub)
+⚙️ Sozlash shart emas — o'rnatilgach /yangilash github darhol ishlaydi. Repo yopiq bo'lsagina .env ga GITHUB_TOKEN (faqat o'qish) yozib, docker compose up -d --force-recreate

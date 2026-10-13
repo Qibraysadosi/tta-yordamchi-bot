@@ -128,9 +128,8 @@ def start_backup_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
         if await scheduler.missed_backup(ctx.db, ctx.settings.timezone, at):
             await run_backup("Kunlik zaxira (kechikkan)")
 
-    asyncio.create_task(catch_up(), name="backup:catch-up")
     job = scheduler.DailyJob("backup", at, ctx.settings.timezone, run_backup)
-    job.start()
+    job.start(catch_up)
     return job
 
 
@@ -148,9 +147,8 @@ def start_update_check_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | No
         if await scheduler.missed_update_check(ctx.db, ctx.settings.timezone, at):
             await run_check()
 
-    asyncio.create_task(catch_up(), name="update-check:catch-up")
     job = scheduler.DailyJob("update-check", at, ctx.settings.timezone, run_check)
-    job.start()
+    job.start(catch_up)
     return job
 
 

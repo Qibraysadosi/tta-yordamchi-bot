@@ -39,7 +39,7 @@ SECRET_PATTERNS = [
     re.compile(rb"sk-ant-[A-Za-z0-9_-]{30,}"),  # Anthropic kaliti
     re.compile(rb"\b\d{8,11}:[A-Za-z0-9_-]{30,}\b"),  # Telegram bot tokeni
     re.compile(rb"sk-[A-Za-z0-9]{40,}"),  # OpenAI va o'xshash kalitlar
-    re.compile(rb"ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}"),  # GitHub tokeni
+    re.compile(rb"gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}"),  # GitHub tokenlari (PAT, OAuth, App)
     re.compile(rb"-----BEGIN (RSA |EC )?PRIVATE KEY-----"),
 ]
 API = "https://api.github.com"

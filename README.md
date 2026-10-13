@@ -110,7 +110,7 @@ Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savo
 - `CLAUDE.md` — loyiha qoidalari va kod xaritasi (Claude Code avtomatik o'qiydi); `docs/TZ.md` — keyingi funksiyalarning texnik topshirig'i (32 ta paket).
 - Testlar: `pip install -r requirements-dev.txt && python -m pytest` (soxta Telegram va Anthropic bilan, ~30 s); `python tests/e2e/e2e.py` — haqiqiy launcher bilan yangilanish/qaytarish sinovi.
 - Chiqarish: `VERSION` + `UPDATE_NOTES.md` → testlar → `git push` → `python scripts/build_release.py --publish` → `dist/claude-telegram-bot-v….zip` (maxfiy satrlar tekshiriladi) + GitHub Release `v<VERSION>` shu zip bilan → egasi botda `/yangilash github`. `--publish`siz faqat zip yig'iladi (botga `/yangilash` + .zip).
-- `--publish`: `gh` CLI (kirilgan bo'lsa) yoki REST orqali — muhitdagi `GITHUB_TOKEN`/`GH_TOKEN` (fine-grained, Contents: Read and write); ixtiyoriy `--repo owner/name`, `--branch main`. Release chiqarilmasa ham bot `main` tarmog'i arxividan o'rnata oladi (oddiy push'dan keyin `/yangilash github` ishlaydi, faqat release izohlari bo'lmaydi).
+- `--publish`: `gh` CLI (kirilgan bo'lsa) yoki REST orqali — muhitdagi `GITHUB_TOKEN`/`GH_TOKEN` (fine-grained, Contents: Read and write); ixtiyoriy `--repo owner/name`, `--branch main`. Repo'da hali birorta Release bo'lmasa, bot `main` tarmog'i arxividan o'rnatadi (versiya undagi `VERSION` dan, release izohlarisiz). Birinchi Release chiqqach bot doim so'nggi Release'ni oladi — har paketda `--publish` kerak, oddiy push yetarli emas.
 - Claude Code ish tartibi: paket tayyor → `VERSION` + `UPDATE_NOTES.md` → testlar → push → `build_release.py --publish` → egasi botda `/yangilash github`.
 - Mini App skrinshotlari: `python scripts/miniapp_shots.py` (Playwright) → `docs/screens/`.
 
@@ -170,7 +170,7 @@ Buyruqlar (faqat egasi):
 - `/yangilash` — avvalgidek .zip kutadi; `GITHUB_REPO` sozlangan bo'lsa javob ostida «🐙 GitHub'dan yangilash» va «🔍 Yangi versiya bormi?» tugmalari chiqadi.
 - Mini App → Admin panel → «GitHub'dan yangilash» — arxivni yuklab, tasdiqni chatga yuboradi.
 
-Xatolar: `GITHUB_REPO` yo'q yoki `off` — «GitHub'dan yangilash o'chiq»; yopiq repo tokensiz yoki token noto'g'ri — `.env` ga `GITHUB_TOKEN` yozish so'raladi; GitHub so'rovlar chegarasi (rate limit) — biroz kuting yoki token qo'shing; tarmoq xatosi — keyinroq qayta urinib ko'ring. Xato bo'lganda joriy versiya o'zgarmaydi.
+Xatolar: `GITHUB_REPO=off` — «GitHub'dan yangilash o'chiq» (sozlama yozilmagan bo'lsa standart repo ishlatiladi); yopiq repo tokensiz yoki token noto'g'ri — `.env` ga `GITHUB_TOKEN` yozish so'raladi; release yo'q va `GITHUB_BRANCH` noto'g'ri — tarmoqni tekshirish so'raladi; GitHub so'rovlar chegarasi (rate limit) — biroz kuting yoki token qo'shing; tarmoq xatosi — keyinroq qayta urinib ko'ring. Xato bo'lganda joriy versiya o'zgarmaydi.
 
 ## O'rnatish (Hostinger VPS, Docker)
 
@@ -241,5 +241,5 @@ Botning xulq-atvori `prompts/system.md` faylida. Uni tahrirlasangiz, keyingi xab
 | «🔑 ANTHROPIC_API_KEY noto'g'ri» | `.env` dagi kalitni tekshiring |
 | «💸 xarajat limitiga yetildi» | Console → workspace limitini oshiring |
 | Bot umuman javob bermaydi | `docker compose logs`: token xato bo'lsa log aytadi; shu token bilan boshqa joyda bot ishlamayotganini tekshiring |
-| «GitHub'da … topilmadi yoki yopiq» | Repo yopiq (private) yoki `GITHUB_REPO` noto'g'ri. Faqat o'qish huquqli fine-grained token yarating (yuqorida «GitHub'dan yangilash») → `.env` ga `GITHUB_TOKEN=` → `docker compose up -d --force-recreate` |
+| «GitHub'da … topilmadi yoki yopiq» | Repo yopiq (private) yoki `GITHUB_REPO` noto'g'ri (`Qibraysadosi/tta-yordamchi-bot` repo'si ochiq — token kerak emas). Faqat o'qish huquqli fine-grained token yarating (yuqorida «GitHub'dan yangilash») → `.env` ga `GITHUB_TOKEN=` → `docker compose up -d --force-recreate` |
 | «GitHub so'rovlar chegarasi» (rate limit) | Bir oz kuting (odatda 1 soatgacha) yoki `.env` ga `GITHUB_TOKEN` qo'shing — token bilan chegara ancha yuqori |

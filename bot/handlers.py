@@ -240,6 +240,8 @@ class AppContext:
     awaiting_update: dict[int, float] = field(default_factory=dict)
     staged: dict[int, StagedUpdate] = field(default_factory=dict)
     github_busy: set[int] = field(default_factory=set)  # GitHub'dan yuklash davom etayotgan egalar
+    github_cancelled: set[int] = field(default_factory=set)  # yuklash paytida /bekor bosganlar
+    staging_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # arxivlar bir vaqtda ochilmasin (data/update)
     restart_requested: bool = False
     restart_delay: float = 1.0
     dispatcher: Dispatcher | None = None
@@ -830,8 +832,19 @@ def update_summary(staged: StagedUpdate) -> str:
 
 
 GITHUB_OFF_TEXT = (
-    "🐙 GitHub'dan yangilash o'chiq: serverdagi .env faylida GITHUB_REPO ko'rsatilmagan (README → Yangilash → GitHub)."
+    "🐙 GitHub'dan yangilash o'chiq: serverdagi .env faylida GITHUB_REPO=off. Yoqish uchun qatorni olib tashlang "
+    "(yoki owner/repo yozing) va docker compose up -d --force-recreate (README → GitHub'dan yangilash)."
 )
+UPDATE_USAGE_TEXT = (
+    "Tushunarsiz parametr. Ishlating:\n"
+    "/yangilash — .zip arxiv yuborish\n"
+    "/yangilash github — so'nggi versiyani GitHub'dan o'rnatish\n"
+    "/yangilash tekshir — yangi versiya bormi"
+)
+
+
+class UpdateCancelled(Exception):
+    """Egasi yuklash paytida /bekor bosdi."""
 GITHUB_INSTALL_WORDS = ("github", "git", "gh")
 GITHUB_CHECK_WORDS = ("tekshir", "tekshirish", "check")
 
@@ -859,6 +872,9 @@ async def cmd_update(message: Message, command: CommandObject, bot: Bot, ctx: Ap
         return
     if args in GITHUB_CHECK_WORDS:
         await message.answer(await github_check_text(ctx))
+        return
+    if args:
+        await message.answer(UPDATE_USAGE_TEXT)
         return
     ctx.awaiting_update[message.from_user.id] = time.monotonic()
     text = f"📦 Joriy versiya: v{ctx.updater.version}\nYangilanish arxivini (.zip) shu chatga yuboring. Bekor qilish: /bekor"
@@ -895,13 +911,21 @@ async def stage_from_github(ctx: AppContext, uid: int, progress: Callable[[str],
     if uid in ctx.github_busy:
         raise GitHubError("GitHub'dan yuklash hali davom etmoqda — biroz kuting.")
     ctx.github_busy.add(uid)
+    ctx.github_cancelled.discard(uid)
     try:
         release, data = await fetch_release(ctx.github)
+        if uid in ctx.github_cancelled:
+            raise UpdateCancelled
         if progress is not None:
             await progress(f"🔍 {release.label} tekshirilmoqda…")
-        staged = await asyncio.to_thread(ctx.updater.stage, data)
+        async with ctx.staging_lock:
+            staged = await asyncio.to_thread(ctx.updater.stage, data)
+        if uid in ctx.github_cancelled:
+            ctx.updater.discard(staged)
+            raise UpdateCancelled
     finally:
         ctx.github_busy.discard(uid)
+        ctx.github_cancelled.discard(uid)
     describe_release(staged, release)
     old = ctx.staged.pop(uid, None)
     if old is not None and old.path != staged.path:
@@ -923,6 +947,9 @@ async def github_update(bot: Bot, chat_id: int, uid: int, ctx: AppContext) -> No
 
     try:
         staged = await stage_from_github(ctx, uid, progress)
+    except UpdateCancelled:
+        await progress("❌ Bekor qilindi. Joriy versiya o'zgarmadi.")
+        return
     except (GitHubError, UpdateError) as exc:
         await progress(f"❌ GitHub'dan yangilab bo'lmadi: {exc}\n\nJoriy versiya o'zgarmadi.")
         return
@@ -930,8 +957,12 @@ async def github_update(bot: Bot, chat_id: int, uid: int, ctx: AppContext) -> No
         log.exception("GitHub'dan yangilanishni tayyorlashda xato")
         await progress("❌ GitHub'dan yangilanishni tayyorlab bo'lmadi. Joriy versiya o'zgarmadi.")
         return
-    with contextlib.suppress(TelegramBadRequest):
-        await status.edit_text(update_summary(staged), parse_mode=ParseMode.HTML, reply_markup=_confirm_keyboard(staged))
+    summary, keyboard = update_summary(staged), _confirm_keyboard(staged)
+    try:
+        await status.edit_text(summary, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    except TelegramBadRequest:
+        # holat xabari o'chirilgan bo'lishi mumkin — tasdiq tugmalari baribir egasiga yetsin
+        await bot.send_message(chat_id, summary, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 async def cb_github(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
@@ -952,6 +983,8 @@ async def cb_github(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
 async def cmd_cancel(message: Message, ctx: AppContext) -> None:
     uid = message.from_user.id
     ctx.awaiting_update.pop(uid, None)
+    if uid in ctx.github_busy:
+        ctx.github_cancelled.add(uid)  # yuklash tugagach natija tashlab yuboriladi
     staged = ctx.staged.pop(uid, None)
     if staged is not None and ctx.updater is not None:
         ctx.updater.discard(staged)
@@ -982,7 +1015,8 @@ async def handle_update_upload(message: Message, bot: Bot, ctx: AppContext) -> N
     status = await message.answer("🔍 Arxiv tekshirilmoqda…")
     try:
         data = await _download(bot, document.file_id)
-        staged = await asyncio.to_thread(ctx.updater.stage, data)
+        async with ctx.staging_lock:
+            staged = await asyncio.to_thread(ctx.updater.stage, data)
     except UpdateError as exc:
         await status.edit_text(f"❌ Yangilanish rad etildi: {exc}\n\nJoriy versiya o'zgarmadi.")
         return
@@ -1037,7 +1071,8 @@ async def cmd_restore(message: Message, ctx: AppContext) -> None:
     if not await _owner_only(message, ctx):
         return
     try:
-        staged = await asyncio.to_thread(ctx.updater.stage_restore)
+        async with ctx.staging_lock:
+            staged = await asyncio.to_thread(ctx.updater.stage_restore)
     except UpdateError as exc:
         await message.answer(f"⚠️ {exc}")
         return
@@ -1083,7 +1118,8 @@ async def cb_update(callback: CallbackQuery, ctx: AppContext) -> None:
         return
     ctx.staged.pop(uid, None)
     try:
-        await asyncio.to_thread(ctx.updater.apply, staged, chat_id=uid)
+        async with ctx.staging_lock:  # boshqa arxiv ochilayotganda staging papkasi o'chib ketmasin
+            await asyncio.to_thread(ctx.updater.apply, staged, chat_id=uid)
     except Exception as exc:  # noqa: BLE001 — har qanday xatoni egasiga ko'rsatamiz
         log.exception("Yangilanishni o'rnatib bo'lmadi")
         await callback.answer()

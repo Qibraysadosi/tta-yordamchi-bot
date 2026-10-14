@@ -41,7 +41,7 @@ def make_settings(tmp_path, **over) -> Settings:
         telegram_token="123456:TESTTOKEN", anthropic_api_key="sk-test", owner_ids=frozenset({OWNER}),
         default_model="claude-opus-5-5", fallback_model="claude-opus-4-8", max_tokens=32000,
         web_search_default=True, web_search_tool="web_search_20250305", web_search_max_uses=5,
-        search_city="Tashkent", search_country="UZ", cache_ttl="5m", history_max_messages=40,
+        search_city="Tashkent", search_country="", cache_ttl="5m", history_max_messages=40,
         long_context_tokens=80000, image_max_edge=1568, monthly_budget=100.0, budget_reset_day=1,
         timezone="Asia/Tashkent", db_path=tmp_path / "bot.db", system_prompt_path=PROMPT,
         budget_economy_percent=90, economy_model="claude-haiku-5-5",
@@ -185,7 +185,7 @@ def test_basic_chat(tmp_path):
         assert "output_config" not in req and "thinking" not in req and "temperature" not in req
         tool = req["tools"][0]
         assert tool["type"] == "web_search_20250305" and tool["name"] == "web_search" and tool["max_uses"] == 5
-        assert tool["user_location"] == {"type": "approximate", "city": "Tashkent", "country": "UZ", "timezone": "Asia/Tashkent"}
+        assert tool["user_location"] == {"type": "approximate", "city": "Tashkent", "timezone": "Asia/Tashkent"}  # UZ kodi yuborilmaydi
         assert "Shohrux" in req["system"] and "{sana}" not in req["system"] and "-yil" in req["system"]
         assert req["messages"] == [{"role": "user", "content": [{"type": "text", "text": "Salom"}]}]
 

@@ -1,4 +1,4 @@
-🔧 v1.6.2 — Mini App'ni ulash bitta buyruq bilan
-• Serverda: cd /root/claude-telegram-bot && bash install.sh miniapp — Caddy, .env va konteynerni o'zi sozlaydi
-• Boshqa manzil uchun: bash install.sh miniapp https://DOMEN/yol/
-• Ulangach botda /ilova va menyu tugmasi «Ilova» ishlaydi
+🔎 v1.6.3 — Internet qidiruvi tuzatildi
+• Sabab: API qidiruv joylashuvidagi «UZ» mamlakat kodini qabul qilmas edi — har qidiruvli so'rov rad etilib, javob qidiruvsiz berilardi
+• Endi mamlakat kodi yuborilmaydi (shahar Toshkent va vaqt zonasi qoladi); kerak bo'lsa .env da SEARCH_COUNTRY=US kabi berish mumkin
+• Hech qanday sozlama shart emas — o'rnatgach qidiruv darhol ishlaydi

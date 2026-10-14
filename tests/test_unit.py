@@ -228,3 +228,17 @@ def test_config(monkeypatch):
     monkeypatch.setenv("DEFAULT_MODEL", "gpt-5")
     with pytest.raises(ConfigError):
         load_settings()
+
+
+def test_search_location_omits_unsupported_country():
+    """API «Country code UZ is not supported» deydi — mamlakat faqat berilsa yuboriladi, shahar va vaqt zonasi doim."""
+    from bot.claude import ClaudeService
+
+    service = ClaudeService(api_key="x", max_tokens=100, web_search_tool="web_search_20250305", web_search_max_uses=3,
+                            cache_ttl="5m", search_city="Tashkent", timezone="Asia/Tashkent")
+    params = service.build_params(model="claude-opus-5-5", system="s", messages=[], effort=None, web_search=True)
+    assert params["tools"][0]["user_location"] == {"type": "approximate", "city": "Tashkent", "timezone": "Asia/Tashkent"}
+    with_country = ClaudeService(api_key="x", max_tokens=100, web_search_tool="web_search_20250305", web_search_max_uses=3,
+                                 cache_ttl="5m", search_city="", search_country="US", timezone="Asia/Tashkent")
+    params = with_country.build_params(model="claude-opus-5-5", system="s", messages=[], effort=None, web_search=True)
+    assert params["tools"][0]["user_location"] == {"type": "approximate", "country": "US", "timezone": "Asia/Tashkent"}

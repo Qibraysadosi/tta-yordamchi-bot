@@ -207,7 +207,7 @@ def load_settings() -> Settings:
         web_search_tool=web_search_tool,
         web_search_max_uses=_int("WEB_SEARCH_MAX_USES", 5, 1, 20),
         search_city=_env("SEARCH_CITY", "Tashkent"),
-        search_country=_env("SEARCH_COUNTRY", "UZ"),
+        search_country=_env("SEARCH_COUNTRY", "") or "",
         cache_ttl=cache_ttl,
         history_max_messages=_int("HISTORY_MAX_MESSAGES", 40, 4, 1000),
         long_context_tokens=_int("LONG_CONTEXT_WARN_TOKENS", 80000, 1000, 1_000_000),

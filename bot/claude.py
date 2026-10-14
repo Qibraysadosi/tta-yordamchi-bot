@@ -168,7 +168,7 @@ class ClaudeService:
         web_search_max_uses: int,
         cache_ttl: str,
         search_city: str = "Tashkent",
-        search_country: str = "UZ",
+        search_country: str = "",
         timezone: str = "Asia/Tashkent",
         client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
@@ -181,12 +181,15 @@ class ClaudeService:
         self.web_search_tool = web_search_tool
         self.web_search_max_uses = web_search_max_uses
         self.cache_ttl = cache_ttl
-        self.user_location = {
-            "type": "approximate",
-            "city": search_city,
-            "country": search_country,
-            "timezone": timezone,
-        }
+        # Qidiruv uchun joylashuv: country — ISO kodi, lekin API ba'zi mamlakatlarni (UZ ham) qabul qilmaydi
+        # («Country code UZ is not supported»), shuning uchun standartda yuborilmaydi; shahar va vaqt zonasi yetarli
+        self.user_location = {"type": "approximate"}
+        if search_city:
+            self.user_location["city"] = search_city
+        if search_country:
+            self.user_location["country"] = search_country
+        if timezone:
+            self.user_location["timezone"] = timezone
 
     def build_params(
         self,

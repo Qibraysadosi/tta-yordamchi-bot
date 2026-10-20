@@ -382,6 +382,38 @@ class ClaudeService:
             level = "medium"
         return level, numbers, cost_usd(model, numbers)
 
+    async def complete_json(
+        self, model: str, system: str, payload: str, max_tokens: int = 4000
+    ) -> tuple[Any, dict[str, int], float]:
+        """Bitta oqimsiz so'rov, javobdan JSON (massiv yoki obyekt) ajratiladi. JSON bo'lmasa — None.
+
+        Hisobot tahlili uchun (izohlarni tasniflash): fikrlash o'chiq (Haiku), effort past."""
+        extra: dict[str, Any] = {"thinking": {"type": "disabled"}} if model in CLASSIFY_NO_THINKING else {}
+        try:
+            response = await self.client.messages.create(
+                model=model, max_tokens=max_tokens, system=system, output_config={"effort": "low"},
+                messages=[{"role": "user", "content": payload}], **extra,
+            )
+        except anthropic.APIStatusError as exc:
+            raise translate_error(exc, False) from exc
+        except (anthropic.APITimeoutError, httpx2.TimeoutException) as exc:
+            raise ClaudeError("⏱ Claude javob berishga ulgurmadi.", retryable=True) from exc
+        except (anthropic.APIConnectionError, httpx2.TransportError) as exc:
+            raise ClaudeError("🌐 Anthropic serveriga ulanib bo'lmadi.", retryable=True) from exc
+        numbers = usage_numbers(response.usage, self.cache_ttl)
+        cost = cost_usd(model, numbers)
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", blocks_to_text(response.content).strip())
+        starts = [i for i in (text.find("["), text.find("{")) if i >= 0]
+        if not starts:
+            return None, numbers, cost
+        start = min(starts)
+        end = text.rfind("]" if text[start] == "[" else "}")
+        try:
+            parsed = json.loads(text[start : end + 1]) if end > start else None
+        except json.JSONDecodeError:
+            parsed = None
+        return parsed, numbers, cost
+
     async def translate_items(
         self, model: str, target: str, glossary: str | None, items: list[str]
     ) -> tuple[list[str], dict[str, int], float]:

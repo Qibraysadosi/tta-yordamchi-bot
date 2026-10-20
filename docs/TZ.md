@@ -66,7 +66,7 @@ Ustuvorlik: P1 — birinchi navbatda, P2 — keyin, P3 — imkon bo'lganda. Hajm
 | TZ-14 | Kanalga avto-post (tasdiq bilan) | P2 | M | bot kanalga admin |
 | TZ-15 | Google Sheets / Drive / Calendar | P1 | L | service account JSON |
 | TZ-16 | Notion | P3 | M | Notion integration token |
-| TZ-17 | Lidlar kanali tahlili | P2 | M | bot kanalga admin |
+| TZ-17 | Lidlar kanali tahlili → call center hisobotlari (v1.7.0 ✅, davomi pastda) | P1 | L | bot izohlar guruhiga admin |
 | TZ-18 | Guruh va kanal rejimi | P2 | M | — |
 | TZ-19 | Mini App: ilova ichida chat (oqim) | P2 | L | — |
 | TZ-20 | Mini App: kontent-reja kalendari | P2 | M | — |
@@ -236,6 +236,23 @@ Umumiy asos (TZ-11 da quriladi, qolganlari shundan foydalanadi): `bot/scheduler.
 **Talablar.** Bot kanalga admin qilinadi (`LEADS_CHANNEL_ID`); har post (ikki format: «Ism/Telefon/Yoshi/tuman/kurs» va «YANGI ARIZA: …») Claude Haiku bilan JSON'ga ajratiladi (ism, telefonlar, yosh, tuman, kurs, manba) → `leads` jadvali (telefon — faqat oxirgi 4 raqami ochiq ko'rsatiladi, eksportda to'liq, faqat egasiga). Reaksiya statuslari (👍 👎 💔 🆒) `message_reaction` yangilanishidan o'qiladi (bot kanal admini bo'lsa). Vosita `leads_stats {period, group_by}`, `/lidlar` — bugun/hafta/oy, `/lidlar excel`. TZ-12 dayjestiga «kecha N ta ariza» qatori. Bot kanalga hech narsa yozmaydi.
 
 **Qabul.** 100 ta eski post forward qilinganda 95% to'g'ri ajratiladi (test to'plami `tests/data/leads.txt`); kunlik statistika 1 soniyada; Excel eksport ustunlari: sana, ism, telefon, yosh, tuman, kurs, status.
+
+### TZ-17 (yangilangan). Call center hisobotlari — egasi bilan kelishilgan reja (2026-10-21)
+
+**Maqsad.** O'quv markazining call center ishini kunlik nazorat qilish: qaysi operator nechta lidga qo'ng'iroq qildi, nechtasi keladi / ko'tarmadi / kelmaydi; kunlik hisobot rahbarlar guruhiga; bajarilmagan vazifalarni eslatish; kundalik. Hammasi TTA Yordamchi ichida (alohida bot emas).
+
+**TZ-17 dan farqlar.** Kanal reaksiyalari anonim (faqat sonlar) — shuning uchun statuslar kanalning **izohlar guruhidan** olinadi: kanal posti u yerga avtomatik forward bo'ladi, operatorlar shu nusxaga reaksiya va izoh qoldiradi (bot guruhda admin, reaksiyalar `message_reaction` bilan keladi). Lid kartochkasi Claude'siz, qoidalar bilan ajratiladi (`bot/reports/leads.py`); Claude faqat izohlarni tahlil qiladi (Haiku, `REPORT_MODEL`, telefonlar yashiriladi). TZ-18 (guruhda savol-javob) bilan aloqasi yo'q: hisobot uchun guruhlarda bot jim.
+
+**Kelishilgan qarorlar.** Status manbai — reaksiya va izoh; mos kelmasa eng so'nggisi olinadi va «⚠️ ziddiyat» sanaladi. Operatorlar — egasi kiritgan username'lar; ro'yxatda yo'q odam qo'ng'iroq qilsa «➕ ro'yxatda yo'q» qatorida. Bir odam bir lidni bir marta sanaydi. Hisobot 19:00, du–sha, davr — oldingi hisobot vaqtidan (dam kuni keyingisiga qo'shiladi), kurslar kesimida; rahbarlar guruhiga (savol-javobsiz). Belgilanmagan lid — 30 daqiqadan keyin operatorlarga lichkada eslatma (ish vaqti 09:00–19:00). «Keladi» → «keldi» kuzatuvi hozircha kerak emas. Barcha sozlamalar (operatorlar, xodimlar, guruhlar, statuslar, istisnolar) — Mini App'da. Mini App ikki bo'lim: AI va Hisobotlar (ochilganda tanlov); Hisobotlarga egasi va rahbarlar kiradi (rahbarlar faqat ko'radi). Operatorlarga AI berilmaydi.
+
+**Bosqichlar.**
+
+| Versiya | Tarkib | Holat |
+| --- | --- | --- |
+| v1.7.0 | Guruh rejimi (jim yozib borish), lid kartochkasi, reaksiya + izoh statuslari (AI tahlil), kunlik hisobot, belgilanmagan lid eslatmasi, `/hisobot`, `/guruhlar`; Mini App: bo'lim tanlovi, Hisobotlar → Bugun / Operatorlar / Sozlamalar (kirish ham) | ✅ |
+| v1.8.0 | Vazifalar: egasi guruhdagi xabari yoki botga lichkada beradi (muddat bo'lmasa tugma bilan so'raladi, ✍️ — qabul qilindi, takroriy vazifalar); muddatda guruhda ijrochini @username bilan belgilab «Bajardingizmi?» — «Ha» → egasiga xabar, «Yo'q» → 3 soatdan keyin qayta so'raladi, javob bo'lmasa 2 soatdan keyin; 3 marta javobsiz — egasiga xabar; faqat ish vaqtida; tugmalarni faqat ijrochi bosa oladi | navbatda |
+| v1.9.0 | Kundalik (20:00, faqat egasiga lichkada); haftalik (dushanba 09:00) va oylik (1-kun 09:00) Excel hisobot — guruhga telefonlari yashirilgan, egasiga to'liq nusxa; Mini App «Arxiv» | navbatda |
+| keyin | Mini App'da grafikli dashboard | — |
 
 ### TZ-18. Guruh va kanal rejimi
 

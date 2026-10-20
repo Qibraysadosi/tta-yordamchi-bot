@@ -93,6 +93,7 @@ class Settings:
     github_token: str | None = None  # yopiq repo uchun faqat o'qish huquqli token (ixtiyoriy)
     github_branch: str = "main"  # release bo'lmasa shu tarmoqning arxivi olinadi
     update_check: bool = True  # har kuni (zaxira vaqtida) GitHub'da yangi versiya bormi tekshirish
+    report_model: str = "claude-haiku-5-5"  # hisobot: lid izohlarini tahlil qiluvchi arzon model
 
 
 OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
@@ -140,7 +141,8 @@ def load_settings() -> Settings:
 
     quick_model = _env("QUICK_MODEL", "claude-haiku-5-5")
     economy_model = _env("ECONOMY_MODEL", "claude-haiku-5-5")
-    for name, value in (("QUICK_MODEL", quick_model), ("ECONOMY_MODEL", economy_model)):
+    report_model = _env("REPORT_MODEL", "claude-haiku-5-5")
+    for name, value in (("QUICK_MODEL", quick_model), ("ECONOMY_MODEL", economy_model), ("REPORT_MODEL", report_model)):
         if value not in MODELS:
             raise ConfigError(f"{name} quyidagilardan biri bo'lsin: {', '.join(MODELS)}")
 
@@ -232,4 +234,5 @@ def load_settings() -> Settings:
         github_token=github_token,
         github_branch=github_branch,
         update_check=_bool("UPDATE_CHECK", True),
+        report_model=report_model,
     )

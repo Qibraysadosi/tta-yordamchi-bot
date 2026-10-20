@@ -24,7 +24,8 @@ python scripts/miniapp_shots.py       # Mini App skrinshotlari (playwright kerak
 - `bot/tools.py` — Claude vositalari: JSON schema (`specs()`) + bajaruvchi (`run`) + `TOOLS_GUIDE`; yangi vosita shu yerga
 - `bot/files.py`, `bot/pdfs.py`, `bot/doctrans.py`, `bot/export.py` — fayl yaratish/amallar; `bot/media.py` — kiruvchi fayllar
 - `bot/db.py` — SQLite (`SCHEMA` + `MIGRATIONS`), `bot/filestore.py` — yaratilgan fayllar galereyasi
-- `bot/webapp.py` + `bot/miniapp/` — Mini App API (Telegram `initData` imzosi) va frontend (framework'siz JS, `app.css` tokenlar, `icons.js`)
+- `bot/webapp.py` + `bot/miniapp/` — Mini App API (Telegram `initData` imzosi) va frontend (framework'siz JS, `app.css` tokenlar, `icons.js`); ikki bo'lim: AI (`app.js`) va Hisobotlar (`report.js`, `window.TTAReport`), kirish `request[ACCESS]` = {ai, report, owner}
+- `bot/reports/` — call center hisobotlari: `service.py` (guruhlarni jim yozib borish, kunlik hisobot, eslatmalar, 30 s sikl), `store.py` (`rp_*` jadvallari), `stats.py` (davr va `build_overview`), `analysis.py` (izoh tahlili, `REPORT_MODEL`, xarajat `user_id=0`), `render.py` (hisobot matni), `api.py` (`/api/report/*`), `handlers.py` (guruh yangilanishlari, `/hisobot`, `/guruhlar`); testlar `tests/test_reports*.py`
 - `bot/updater.py`, `launcher.py` — yangilanish, zaxira, orqaga qaytish; `bot/github.py` — GitHub REST mijozi (`GitHubClient`: so'nggi release/aktiv yoki tarmoq arxivi)
 - `bot/scheduler.py` — kunlik ishlar: zaxira, yangi versiya tekshiruvi (`UPDATE_CHECK`)
 - `bot/config.py` — `.env` sozlamalari (hujjati `.env.example`); `prompts/system.md`, `prompts/modes/*.md` — ko'rsatmalar

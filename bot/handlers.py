@@ -39,6 +39,8 @@ from .live import LiveMessage
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
+from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
+from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
 from .tgformat import format_answer
 from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
@@ -80,6 +82,8 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="parol", description="🔐 Kirish paroli"),
     BotCommand(command="foydalanuvchilar", description="👥 Foydalanuvchilar"),
     BotCommand(command="kod", description="💾 Botning joriy kodi (.zip)"),
+    BotCommand(command="hisobot", description="📊 Call center hisoboti (hozirgi holat)"),
+    BotCommand(command="guruhlar", description="👥 Kuzatiladigan guruhlar"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -133,6 +137,10 @@ APP_TEXT = (
     "Sozlamalar, suhbatlar tarixi, yaratilgan fayllar, xarajat grafigi — bir ekranda. "
     "Tugmani bosing yoki chatning pastki chap burchagidagi menyu tugmasidan oching."
 )
+APP_REPORT_TEXT = (
+    "\n\n📊 Ochilganda bo'lim tanlanadi: <b>AI yordamchi</b> yoki <b>Hisobotlar</b> (call center natijalari, "
+    "operatorlar, guruhlar va hisobot vaqti)."
+)
 APP_DISABLED_TEXT = (
     "📱 Ilova hali ulanmagan: serverdagi .env faylida WEBAPP_URL ko'rsatilmagan (README → Mini App)."
 )
@@ -146,7 +154,9 @@ ADMIN_HELP = (
     "🔐 /parol — kirish parolini o'rnatish yoki o'zgartirish\n"
     "👥 /foydalanuvchilar — parol bilan kirganlar, chiqarib yuborish\n"
     "💾 /zaxira — bazaning zaxira nusxasini hozir olish (har kuni avtomatik ham keladi)\n"
-    "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz"
+    "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz\n"
+    "📊 /hisobot — call center hisoboti: hozirgi holat va rahbarlarga yuborish\n"
+    "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar) va ularning turi"
 )
 
 MODE_TEXT = (
@@ -247,6 +257,7 @@ class AppContext:
     restart_requested: bool = False
     restart_delay: float = 1.0
     dispatcher: Dispatcher | None = None
+    reports: Any = None  # bot/reports/service.py: ReportService (call center hisobotlari)
 
     def is_owner(self, user_id: int) -> bool:
         return user_id in self.settings.owner_ids
@@ -286,7 +297,10 @@ class AppContext:
 
 
 class AccessMiddleware(BaseMiddleware):
-    """Kirish nazorati: egasi (OWNER_IDS) va parol bilan kirgan a'zolar o'tadi, qolganlardan parol so'raladi."""
+    """Kirish nazorati: egasi (OWNER_IDS) va parol bilan kirgan a'zolar o'tadi, qolganlardan parol so'raladi.
+
+    Guruh xabarlari hisobot uchun jim yozib boriladi (javob berilmaydi); hisobotga qo'shilgan rahbar va
+    operatorlarga shaxsiy chatda AI o'rniga qisqa yo'riqnoma ko'rsatiladi."""
 
     async def __call__(
         self,
@@ -295,14 +309,26 @@ class AccessMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         ctx: AppContext = data["ctx"]
+        if isinstance(event, Message) and event.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return await handler(event, data)  # faqat hisobot yozuvchisi ishlaydi (bot/reports), u hech narsa yozmaydi
         user = data.get("event_from_user")
         if user is None:
             return None
+        role = None
+        if isinstance(event, Message) and event.chat.type == ChatType.PRIVATE and ctx.reports is not None:
+            try:  # ro'yxatdagi xodim botga yozdi: ID bog'lanadi, operator eslatma oladi (egasi/a'zo bo'lsa ham)
+                role = await ctx.reports.staff_role(user)
+            except Exception:  # noqa: BLE001 — hisobot xatosi suhbatni to'xtatmasin
+                log.exception("Xodim rolini aniqlashda xato")
         if ctx.is_owner(user.id):
             return await handler(event, data)
         member = await ctx.db.member(user.id)
         if member is not None and member.active:
             return await handler(event, data)
+        if role is not None and not await is_password(event, ctx, user):  # parol yozsa — odatdagidek kiradi
+            with contextlib.suppress(TelegramAPIError):
+                await ctx.reports.staff_message(event, role)
+            return None
         with contextlib.suppress(TelegramAPIError):
             if isinstance(event, CallbackQuery):
                 await event.answer("⛔ Ruxsat yo'q")
@@ -312,6 +338,21 @@ class AccessMiddleware(BaseMiddleware):
                 else:
                     await password_gate(event, data["bot"], ctx, user)
         return None
+
+
+async def is_password(message: Message, ctx: AppContext, user: User) -> bool:
+    """Xodim (operator, rahbar) botga yozgan matn kirish paroli bo'lsa True — odatdagidek a'zo bo'ladi.
+
+    Parolga o'xshash (kamida MIN_PASSWORD_LENGTH belgi) noto'g'ri matn ham urinishlar chegarasiga kiradi:
+    xodim yo'li parolni cheksiz taxmin qilish uchun ishlatilmasin. Bloklansa ham yo'riqnoma xabari chiqaveradi."""
+    stored = await ctx.db.get_config(PASSWORD_KEY)
+    attempt = (message.text or "").strip()
+    if not stored or len(attempt) < MIN_PASSWORD_LENGTH or attempt.startswith("/") or ctx.limiter.locked_for(user.id):
+        return False
+    if await asyncio.to_thread(verify_password, attempt, stored):
+        return True
+    ctx.limiter.fail(user.id)
+    return False
 
 
 async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User) -> None:
@@ -446,9 +487,8 @@ async def cmd_app(message: Message, ctx: AppContext) -> None:
     if button is None:
         await message.answer(APP_DISABLED_TEXT)
         return
-    await message.answer(
-        APP_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
-    )
+    text = APP_TEXT + (APP_REPORT_TEXT if ctx.is_owner(message.from_user.id) else "")
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]))
 
 
 async def cmd_help(message: Message, ctx: AppContext) -> None:
@@ -650,6 +690,7 @@ async def cost_report(ctx: AppContext, user_id: int) -> tuple[str, InlineKeyboar
         by_user = await ctx.db.spend_by_user(cycle_start)
         if any(uid != user_id for uid, _, _ in by_user):
             names = {m.user_id: m.display for m in await ctx.db.members()}
+            names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
             lines.append("<b>Joriy davr, foydalanuvchilar bo'yicha:</b>")
             for uid, cost, count in by_user[:10]:
                 who = "Siz" if uid == user_id else html.escape(names.get(uid, f"ID {uid}"))

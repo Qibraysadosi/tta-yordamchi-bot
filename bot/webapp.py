@@ -42,6 +42,9 @@ from .handlers import (
 )
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import MODES
+from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
+from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
+from .reports.api import ReportAPI
 from .updater import UpdateError
 
 log = logging.getLogger(__name__)
@@ -56,6 +59,9 @@ ECHO_LIMIT = 3500  # chatdagi savol nusxasi: Telegram 4096 (UTF-16) chegarasiga 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 UID = web.RequestKey("uid", int) if hasattr(web, "RequestKey") else "uid"  # type: ignore[assignment]
 USER = web.RequestKey("user", dict) if hasattr(web, "RequestKey") else "user"  # type: ignore[assignment]
+# Bo'limlarga kirish: {"ai": a'zo yoki egasi, "report": rahbar yoki egasi, "owner": egasi}
+ACCESS = web.RequestKey("access", dict) if hasattr(web, "RequestKey") else "access"  # type: ignore[assignment]
+REPORT_PREFIX = "/api/report"
 
 
 class AuthError(Exception):
@@ -146,6 +152,7 @@ class WebApp:
         self.bot = bot
         self.tz = ZoneInfo(ctx.settings.timezone)
         self._tasks: set[asyncio.Task] = set()  # /api/ask fon vazifalari (GC yig'ib olmasin)
+        self.reports = ReportAPI(ctx, bot, UID, USER, ACCESS) if ctx.reports is not None else None
         self.app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[self.auth_middleware])
         self._routes()
 
@@ -176,6 +183,8 @@ class WebApp:
         add("POST", "/api/admin/backup", self.admin_backup)
         add("POST", "/api/admin/restore", self.admin_restore)
         add("POST", "/api/admin/github", self.admin_github)
+        if self.reports is not None:
+            self.reports.routes(add)
         add("GET", "/files/{file_id}/download", self.download)
         self.app.router.add_static("/static", STATIC_DIR, show_index=False)
 
@@ -194,17 +203,30 @@ class WebApp:
             return _error(f"Kirish tekshiruvi o'tmadi: {exc}", 401, "unauthorized")
         user = fields["user"]
         uid = int(user["id"])
-        if not self.ctx.is_owner(uid):
-            member = await self.ctx.db.member(uid)
-            if member is None:
-                return _error("Avval botda parol bilan kiring, keyin ilovani oching.", 403, "no_access")
-            if not member.active:
+        owner = self.ctx.is_owner(uid)
+        member = None if owner else await self.ctx.db.member(uid)
+        ai = owner or (member is not None and member.active)
+        # Hisobot bo'limi: egasi va Mini App'da «Kirish» ro'yxatiga qo'shilgan rahbarlar (parolsiz)
+        report = owner or (self.ctx.reports is not None and await self.ctx.reports.is_leader(uid, user.get("username")))
+        if not ai and not report:
+            if member is not None and not member.active:
                 return _error("Bot egasi sizning kirishingizni yopgan.", 403, "no_access")
+            return _error("Avval botda parol bilan kiring, keyin ilovani oching.", 403, "no_access")
         request[UID] = uid
         request[USER] = user
-        if request.path.startswith("/api/admin") and not self.ctx.is_owner(uid):
+        request[ACCESS] = {"ai": ai, "report": report, "owner": owner}
+        path = request.path
+        if path.startswith("/api/admin") and not owner:
             return _error("Faqat bot egasi uchun.", 403, "forbidden")
-        await self.ctx.user_settings(uid)  # sozlamalar qatori bo'lmasa — yaratiladi (UPDATE'lar ishlashi uchun)
+        if path.startswith(REPORT_PREFIX):
+            if not report:
+                return _error("Hisobotlar bo'limi siz uchun yopiq.", 403, "forbidden")
+            if not owner and (request.method != "GET" or path.startswith(REPORT_PREFIX + "/settings")):
+                return _error("Buni faqat bot egasi o'zgartira oladi.", 403, "forbidden")
+        elif path != "/api/me" and not ai:
+            return _error("AI bo'limi siz uchun yopiq — Hisobotlar bo'limidan foydalaning.", 403, "forbidden")
+        if ai:
+            await self.ctx.user_settings(uid)  # sozlamalar qatori bo'lmasa — yaratiladi (UPDATE'lar ishlashi uchun)
         return await handler(request)
 
     async def _body(self, request: web.Request) -> dict:
@@ -241,10 +263,31 @@ class WebApp:
             "mode": s.mode or "oddiy", "conv_id": s.conv_id, "model_override": s.model_override,
         }
 
+    async def _report_glance(self) -> dict | None:
+        if self.reports is None:
+            return None
+        try:
+            return await self.reports.glance()
+        except Exception:  # noqa: BLE001 — bosh ekran hisobot xatosi tufayli ochilmay qolmasin
+            log.exception("Hisobot ko'rsatkichlarini hisoblashda xato")
+            return None
+
     async def me(self, request: web.Request) -> web.Response:
         uid: int = request[UID]
         user: dict = request[USER]
+        access: dict = request[ACCESS]
         ctx = self.ctx
+        access_payload = {"ai": access["ai"], "report": access["report"]}
+        user_payload = {
+            "id": uid, "name": user.get("first_name") or user.get("username") or "Foydalanuvchi",
+            "username": user.get("username"), "is_owner": ctx.is_owner(uid),
+        }
+        report_glance = await self._report_glance() if access["report"] else None
+        if not access["ai"]:  # faqat Hisobotlar bo'limi (rahbar)
+            return _json({
+                "user": user_payload, "version": ctx.updater.version if ctx.updater else None,
+                "access": access_payload, "report": report_glance, "webapp_url": ctx.settings.webapp_url,
+            })
         settings = await self._settings_payload(uid)
         now = ctx.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -257,10 +300,9 @@ class WebApp:
         files, files_total = await ctx.db.files(uid, limit=1)
         _, conv_total = await ctx.db.conversations(uid, limit=1)
         return _json({
-            "user": {
-                "id": uid, "name": user.get("first_name") or user.get("username") or "Foydalanuvchi",
-                "username": user.get("username"), "is_owner": ctx.is_owner(uid),
-            },
+            "user": user_payload,
+            "access": access_payload,
+            "report": report_glance,
             "version": ctx.updater.version if ctx.updater else None,
             "settings": settings,
             "models": [{"id": AUTO_MODEL, "label": "Avto", "note": "savolga qarab arzon yoki kuchli model"}]
@@ -558,6 +600,7 @@ class WebApp:
             all_today, _ = await ctx.db.spend_all(day_start)
             all_cycle, _ = await ctx.db.spend_all(cycle_start)
             names = {m.user_id: m.display for m in await ctx.db.members()}
+            names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
             by_user = [
                 {"user_id": user_id, "name": "Siz" if user_id == uid else names.get(user_id, f"ID {user_id}"),
                  "cost": round(cost, 4), "count": count}

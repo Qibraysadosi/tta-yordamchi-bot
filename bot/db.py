@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS rp_groups (
     asked     INTEGER NOT NULL DEFAULT 0,
     last_seen TEXT
 );
+CREATE TABLE IF NOT EXISTS rp_seen (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+) WITHOUT ROWID;  -- lidlar guruhida bot ko'rgan, lekin lid ham, izoh ham bo'lmagan xabarlar (e'lon, savol)
 CREATE TABLE IF NOT EXISTS rp_people (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL,

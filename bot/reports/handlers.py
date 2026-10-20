@@ -19,6 +19,7 @@ from aiogram.types import (
     MessageReactionUpdated,
 )
 
+from .render import split_message
 from .service import ROLE_LABELS, ReportService
 from .stats import current_day
 
@@ -135,7 +136,10 @@ async def cmd_report(message: Message, ctx) -> None:
     _, text, _ = await service.compose(current_day(now, await service.schedule()), now, interim=True)
     with contextlib.suppress(TelegramAPIError):
         await wait.delete()
-    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard())
+    parts = split_message(text)
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        await message.answer(part, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard() if last else None)
 
 
 async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
@@ -150,15 +154,29 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
         await callback.answer("Yuborilmoqda…")
         sent = await service.send_report(bot, day, now, interim=True)
         targets = await service.store.groups_with("leaders")
-        where = "rahbarlar guruhiga" if targets else "sizga (rahbarlar guruhi belgilanmagan)"
+        if not sent:
+            note = "⚠️ Oraliq hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring."
+        elif service.last_fallback:
+            note = "⚠️ Rahbarlar guruhiga yuborib bo'lmadi — hisobot sizga yuborildi (yuqorida)."
+        else:
+            where = "rahbarlar guruhiga" if targets else "sizga (rahbarlar guruhi belgilanmagan)"
+            note = f"📤 Oraliq hisobot {where} yuborildi ({sent} ta chat)."
         if isinstance(callback.message, Message):
-            await callback.message.answer(f"📤 Oraliq hisobot {where} yuborildi ({sent} ta chat).")
+            with contextlib.suppress(TelegramAPIError):
+                await callback.message.answer(note)
         return
     await callback.answer("Yangilanmoqda…")
     _, text, _ = await service.compose(day, now, interim=True)
     if isinstance(callback.message, Message):
+        parts = split_message(text)
         with contextlib.suppress(TelegramBadRequest):
-            await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard())
+            if len(parts) == 1:
+                await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_report_keyboard())
+            else:  # bitta xabarga sig'maydi — yangidan yuboriladi
+                for index, part in enumerate(parts):
+                    last = index == len(parts) - 1
+                    await callback.message.answer(part, parse_mode=ParseMode.HTML,
+                                                  reply_markup=_report_keyboard() if last else None)
 
 
 async def cmd_groups(message: Message, ctx) -> None:

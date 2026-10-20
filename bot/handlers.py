@@ -314,17 +314,21 @@ class AccessMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user is None:
             return None
+        role = None
+        if isinstance(event, Message) and event.chat.type == ChatType.PRIVATE and ctx.reports is not None:
+            try:  # ro'yxatdagi xodim botga yozdi: ID bog'lanadi, operator eslatma oladi (egasi/a'zo bo'lsa ham)
+                role = await ctx.reports.staff_role(user)
+            except Exception:  # noqa: BLE001 — hisobot xatosi suhbatni to'xtatmasin
+                log.exception("Xodim rolini aniqlashda xato")
         if ctx.is_owner(user.id):
             return await handler(event, data)
         member = await ctx.db.member(user.id)
         if member is not None and member.active:
             return await handler(event, data)
-        if isinstance(event, Message) and event.chat.type == ChatType.PRIVATE and ctx.reports is not None:
-            role = await ctx.reports.staff_role(user)
-            if role is not None:
-                with contextlib.suppress(TelegramAPIError):
-                    await ctx.reports.staff_message(event, role)
-                return None
+        if role is not None and not await is_password(event, ctx, user):  # parol yozsa — odatdagidek kiradi
+            with contextlib.suppress(TelegramAPIError):
+                await ctx.reports.staff_message(event, role)
+            return None
         with contextlib.suppress(TelegramAPIError):
             if isinstance(event, CallbackQuery):
                 await event.answer("⛔ Ruxsat yo'q")
@@ -334,6 +338,15 @@ class AccessMiddleware(BaseMiddleware):
                 else:
                     await password_gate(event, data["bot"], ctx, user)
         return None
+
+
+async def is_password(message: Message, ctx: AppContext, user: User) -> bool:
+    """Xabar to'g'ri kirish paroli bo'lsa True (xato urinish hisoblanmaydi)."""
+    stored = await ctx.db.get_config(PASSWORD_KEY)
+    attempt = (message.text or "").strip()
+    if not stored or not attempt or attempt.startswith("/") or ctx.limiter.locked_for(user.id):
+        return False
+    return await asyncio.to_thread(verify_password, attempt, stored)
 
 
 async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User) -> None:

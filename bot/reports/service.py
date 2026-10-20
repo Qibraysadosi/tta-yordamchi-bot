@@ -29,7 +29,7 @@ from aiogram.types import (
 from ..claude import ClaudeError
 from . import analysis
 from .leads import message_link, parse_lead
-from .render import render_report
+from .render import render_report, split_message
 from .stats import (
     SCHEDULE_KEY,
     Overview,
@@ -53,6 +53,8 @@ TICK_SECONDS = 30
 API_BACKOFF = 300  # Claude xatosidan keyin tahlil shuncha soniya kutadi
 LATE_AFTER = timedelta(minutes=15)
 MAX_LATE = timedelta(hours=36)
+REPORT_RETRY = timedelta(minutes=5)  # kunlik hisobot hech qayerga bormasa — shuncha vaqtdan keyin qayta urinish
+REMIND_GAP = timedelta(minutes=15)  # operatorlarga eslatmalar orasidagi eng kam vaqt (yangi lidlar yig'ilib boradi)
 FLUSH_BATCHES = 5
 REMIND_SHOWN = 10
 ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar"}
@@ -83,6 +85,11 @@ class ReportService:
         self._task: asyncio.Task | None = None
         self._backoff_until = 0.0
         self._known: dict[str, str] | None = None  # normallashgan emoji → status emoji (kesh)
+        self._analysis_lock = asyncio.Lock()  # fon sikli va /hisobot bir to'plamni ikki marta yubormasin
+        self._retry_after: datetime | None = None  # kunlik hisobot yuborilmay qolsa — qayta urinish vaqti
+        self._remind_after: datetime | None = None
+        self._reasons_cache: tuple[str, tuple, list] | None = None  # (davr, xom sabablar, guruhlangan)
+        self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -162,8 +169,13 @@ class ReportService:
             "Bot guruhga hech narsa yozmaydi — faqat o'qiydi."
         )
 
-    async def ask_roles(self, bot: Bot, group: Group, by: User | None = None) -> None:
-        await self.store.mark_group_asked(group.chat_id)
+    async def ask_roles(self, bot: Bot, group: Group, by: User | None = None, *, force: bool = False) -> None:
+        """Egasidan guruh turini so'raydi. force=False — har guruh uchun bir marta (bir vaqtda kelgan xabarlar
+        ikkita savol yubormasin); force=True — bot guruhga qayta qo'shilganda."""
+        if force:
+            await self.store.mark_group_asked(group.chat_id)
+        elif not await self.store.claim_ask(group.chat_id):
+            return
         await self._tell_owners(bot, self.role_prompt(group, by), self.role_keyboard(group))
 
     async def check_admin(self, bot: Bot, chat_id: int) -> bool | None:
@@ -221,7 +233,7 @@ class ReportService:
             active=True if joined else None,
         )
         if joined and not group.roles:
-            await self.ask_roles(bot, group, update.from_user)
+            await self.ask_roles(bot, group, update.from_user, force=True)
         elif joined:
             await self._tell_owners(bot, "🔁 Bot guruhga qaytdi.\n" + await self.group_summary(bot, group))
         elif existing is not None and existing.is_admin != is_admin and "leads" in group.roles:
@@ -237,6 +249,9 @@ class ReportService:
         if message.migrate_to_chat_id:
             await self.store.migrate_group(chat.id, message.migrate_to_chat_id)
             return
+        if message.migrate_from_chat_id:  # superguruhdagi birinchi xabar — sozlamalar eski guruhdan o'tadi
+            await self.store.migrate_group(message.migrate_from_chat_id, chat.id)
+            return
         await self.ensure()
         group = await self.store.group(chat.id)
         if group is None or (not group.asked and not group.roles):
@@ -248,8 +263,8 @@ class ReportService:
         user = message.from_user
         if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and message.sender_chat is None:
             await self.store.remember_user(user.id, user.username, user.full_name)
-        if "leads" in group.roles:
-            await self._record_lead_message(message)
+        if "leads" in group.roles and not await self._record_lead_message(message):
+            await self.store.mark_seen(chat.id, message.message_id)
 
     async def _thread_lead(self, message: Message) -> Lead | None:
         chat_id = message.chat.id
@@ -272,7 +287,8 @@ class ReportService:
                 )
         return None
 
-    async def _record_lead_message(self, message: Message) -> None:
+    async def _record_lead_message(self, message: Message) -> bool:
+        """Lid posti yoki lid ostidagi izohni yozadi; xabar ikkalasi ham bo'lmasa False."""
         text = message.text or message.caption or ""
         chat_id = message.chat.id
         if message.is_automatic_forward:
@@ -281,7 +297,7 @@ class ReportService:
                 chat_id, message.message_id, source="post", created_at=iso(message.date), name=info.name,
                 phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
             )
-            return
+            return True
         lead = await self._thread_lead(message)
         if lead is None:
             if message.reply_to_message is None:
@@ -291,14 +307,16 @@ class ReportService:
                         chat_id, message.message_id, source="post", created_at=iso(message.date), name=info.name,
                         phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
                     )
-            return
+                    return True
+            return False
         user = message.from_user
         if user is None or user.is_bot or user.id == TELEGRAM_SERVICE_ID or message.sender_chat is not None:
-            return
+            return False
         analyzable = bool(text.strip())
         if not analyzable:
             text = "[ovozli xabar]" if (message.voice or message.audio or message.video_note) else "[matnsiz xabar]"
         await self.store.add_comment(lead, message.message_id, user.id, text, iso(message.date), analyzable=analyzable)
+        return True
 
     async def record_edit(self, message: Message) -> None:
         group = await self.store.group(message.chat.id)
@@ -330,14 +348,23 @@ class ReportService:
         if lead is None:
             if status is None or await self.store.is_comment_message(update.chat.id, update.message_id):
                 return
+            if await self.store.was_seen(update.chat.id, update.message_id):
+                return  # bot ko'rgan, lekin lid bo'lmagan xabar (masalan, rahbar e'loni) — qo'ng'iroq emas
+            # bot ko'rmagan post (kuzatishdan oldingi yoki boshqa bot yozgan): mazmuni noma'lum, belgi sanaladi
             lead = await self.store.save_lead(update.chat.id, update.message_id, source="stub")
         await self.store.add_reaction(lead, user.id, emojis[0] if emojis else None, status, iso(update.date))
 
     # ------------------------------------------------------------------ xodimlar (shaxsiy chat)
     async def staff_role(self, user: User) -> str | None:
+        """Shaxsiy chatdagi har xabar uchun (egasi va a'zolar ham): ro'yxatdagi xodim ID bilan bog'lanadi,
+        operator esa eslatma oladigan bo'ladi (botga yozgani — lichkaga yozish mumkinligi)."""
         roles = await self.store.roles_of(user.id, user.username)
-        if roles:
-            await self.store.bind_user(user.id, user.username)
+        if not roles:
+            return None
+        await self.store.bind_user(user.id, user.username)
+        if "operator" in roles:
+            await self.store.remember_user(user.id, user.username, user.full_name)
+            await self.store.set_dm_ok(user.id)
         if "leader" in roles:
             return "leader"
         if "operator" in roles:
@@ -366,8 +393,6 @@ class ReportService:
             else:
                 text += "\nKunlik hisobot rahbarlar guruhiga keladi."
         else:
-            await self.store.remember_user(user.id, user.username, user.full_name)
-            await self.store.set_dm_ok(user.id)
             text = (
                 f"👋 Salom, {name}! Siz call center operatori sifatida ro'yxatdasiz.\n"
                 "Hech kim belgilamagan lidlar haqida eslatmalar shu yerga keladi."
@@ -407,57 +432,88 @@ class ReportService:
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📊 Batafsil", url=url)]])
 
     async def analyze_pending(self, max_batches: int = 1) -> int:
-        if time.monotonic() < self._backoff_until:
-            return 0
-        done = 0
-        statuses = await self.store.statuses()
-        for _ in range(max_batches):
-            batch = await self.store.pending_comments(analysis.BATCH)
-            if not batch:
-                break
-            try:
-                done += await analysis.classify_comments(
-                    self.ctx.claude, self.store, self.ctx.db, self.ctx.settings.report_model, statuses, batch
-                )
-            except ClaudeError as exc:
-                log.warning("Izohlar tahlili to'xtatildi (%s soniyadan keyin qayta): %s", API_BACKOFF, exc.user_message)
-                self._backoff_until = time.monotonic() + API_BACKOFF
-                break
-        return done
+        async with self._analysis_lock:
+            if time.monotonic() < self._backoff_until:
+                return 0
+            done = 0
+            statuses = await self.store.statuses()
+            for _ in range(max_batches):
+                batch = await self.store.pending_comments(analysis.BATCH)
+                if not batch:
+                    break
+                try:
+                    done += await analysis.classify_comments(
+                        self.ctx.claude, self.store, self.ctx.db, self.ctx.settings.report_model, statuses, batch
+                    )
+                except ClaudeError as exc:
+                    log.warning("Izohlar tahlili to'xtatildi (%s soniyadan keyin qayta): %s", API_BACKOFF, exc.user_message)
+                    self._backoff_until = time.monotonic() + API_BACKOFF
+                    break
+            return done
+
+    async def _grouped_reasons(self, overview: Overview) -> list:
+        """Rad sabablarini ma'nosi bo'yicha guruhlash (Claude); sabablar o'zgarmagan bo'lsa — qayta so'ralmaydi."""
+        key, raw = overview.end.strftime("%Y-%m-%d %H:%M"), tuple(overview.reasons)
+        cached = self._reasons_cache
+        if cached is not None and cached[0] == key and cached[1] == raw:
+            return cached[2]
+        reasons = await analysis.cluster_reasons(self.ctx.claude, self.ctx.db, self.ctx.settings.report_model, overview.reasons)
+        self._reasons_cache = (key, raw, reasons)
+        return reasons
 
     async def compose(self, day: date, now: datetime, *, interim: bool, late: bool = False) -> tuple[Overview, str, list]:
         await self.analyze_pending(FLUSH_BATCHES)
         overview = await self.overview(day, now)
-        reasons = await analysis.cluster_reasons(
-            self.ctx.claude, self.ctx.db, self.ctx.settings.report_model, overview.reasons
-        ) if overview.reasons else []
+        reasons = await self._grouped_reasons(overview) if overview.reasons else []
         text = render_report(overview, reasons, interim_at=now if interim else None, late=late)
         return overview, text, reasons
 
     async def report_targets(self) -> list[int]:
         return [g.chat_id for g in await self.store.groups_with("leaders")] or self.owners()
 
+    async def _deliver(self, bot: Bot, chat_ids: list[int], text: str,
+                       markup: InlineKeyboardMarkup | None) -> tuple[int, list[str]]:
+        """Hisobotni chatlarga yuboradi (uzun bo'lsa bo'laklab, tugma oxirgisida): (yetkazilgan chatlar, xatolar)."""
+        parts = split_message(text)
+        sent, failed = 0, []
+        for chat_id in chat_ids:
+            try:
+                for index, part in enumerate(parts):
+                    last = index == len(parts) - 1
+                    await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML, reply_markup=markup if last else None)
+                sent += 1
+            except TelegramAPIError as exc:
+                log.warning("Hisobot yuborilmadi (%s): %s", chat_id, exc)
+                failed.append(f"{chat_id}: {exc}")
+        return sent, failed
+
     async def send_report(self, bot: Bot, day: date, now: datetime, *, interim: bool = False, late: bool = False,
                           chat_ids: list[int] | None = None) -> int:
         overview, text, reasons = await self.compose(day, now, interim=interim, late=late)
         await self.refresh_bot_info(bot)
         markup = self.details_markup(None if overview.live else day)
-        sent = 0
-        failed: list[str] = []
-        for chat_id in chat_ids or await self.report_targets():
-            try:
-                await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
-                sent += 1
-            except TelegramAPIError as exc:
-                log.warning("Hisobot yuborilmadi (%s): %s", chat_id, exc)
-                failed.append(f"{chat_id}: {exc}")
+        targets = chat_ids or await self.report_targets()
+        sent, failed = await self._deliver(bot, targets, text, markup)
+        self.last_fallback = False
+        owners = [o for o in self.owners() if o not in targets]
+        if failed and owners:
+            problem = html.escape("\n".join(failed))
+            if sent:
+                await self._tell_owners(bot, "⚠️ Hisobot ba'zi chatlarga yuborilmadi:\n" + problem)
+            else:  # rahbarlar guruhiga umuman bormadi — hisobot yo'qolmasin, egasiga keladi
+                head = f"⚠️ Hisobot rahbarlar guruhiga yuborilmadi — sizga yuborildi.\n<i>{problem}</i>\n\n"
+                sent, _ = await self._deliver(bot, owners, head + text, markup)
+                self.last_fallback = bool(sent)
         if not interim:
-            await self.store.save_report(
-                overview.end.strftime("%Y-%m-%d %H:%M"), overview.start.strftime("%Y-%m-%d %H:%M"), text,
-                json.dumps(reasons, ensure_ascii=False),
-            )
-        if failed:
-            await self._tell_owners(bot, "⚠️ Kunlik hisobot ba'zi chatlarga yuborilmadi:\n" + html.escape("\n".join(failed)))
+            if sent:  # hech qayerga bormagan hisobot «yuborilgan» deb belgilanmaydi — keyinroq qayta uriniladi
+                await self.store.save_report(
+                    overview.end.strftime("%Y-%m-%d %H:%M"), overview.start.strftime("%Y-%m-%d %H:%M"), text,
+                    json.dumps(reasons, ensure_ascii=False),
+                )
+                self._retry_after = None
+            else:
+                self._retry_after = now + REPORT_RETRY
+                log.warning("Kunlik hisobot hech qayerga yetmadi — %s dan keyin qayta uriniladi", f"{self._retry_after:%H:%M}")
         return sent
 
     async def check_daily(self, bot: Bot, now: datetime) -> bool:
@@ -468,9 +524,11 @@ class ReportService:
         if day is None:
             return False
         start, end = period_bounds(day, schedule, self.tz)
-        if await self.store.report_sent(end.strftime("%Y-%m-%d %H:%M")):
+        if await self.store.report_for_day(day.isoformat()):  # vaqt o'zgartirilsa ham bir kunga bitta hisobot
             return False
         if end <= await self.since() or now - end > MAX_LATE:
+            return False
+        if self._retry_after is not None and now < self._retry_after:
             return False
         if not await self.store.groups_with("leads"):
             return False
@@ -481,7 +539,9 @@ class ReportService:
         schedule = await self.schedule()
         if schedule.remind_minutes <= 0 or not in_work_hours(now, schedule):
             return 0
-        recipients = [p for p in await self.store.people("operator") if p.dm_ok and p.user_id]
+        if self._remind_after is not None and now < self._remind_after:
+            return 0  # oldingi eslatmadan beri kam vaqt o'tdi — yangi lidlar keyingisida birga keladi
+        recipients = list({p.user_id: p for p in await self.store.people("operator") if p.dm_ok and p.user_id}.values())
         if not recipients or not await self.store.groups_with("leads"):
             return 0
         cutoff = now - timedelta(minutes=schedule.remind_minutes)
@@ -505,14 +565,24 @@ class ReportService:
             except TelegramAPIError as exc:
                 log.info("Operatorga eslatma yuborilmadi (%s): %s", person.user_id, exc)
         await self.store.mark_reminded(lead.id for lead in leads)
+        self._remind_after = now + REMIND_GAP
         return sent
 
     async def tick(self, bot: Bot, now: datetime | None = None) -> None:
         await self.ensure()
         now = now or self.now()
-        await self.analyze_pending(max_batches=2)
-        await self.check_reminders(bot, now)
-        await self.check_daily(bot, now)
+        steps = (
+            ("izohlar tahlili", lambda: self.analyze_pending(max_batches=2)),
+            ("eslatmalar", lambda: self.check_reminders(bot, now)),
+            ("kunlik hisobot", lambda: self.check_daily(bot, now)),
+        )
+        for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
+            try:
+                await step()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("Hisobot vazifasida xato (%s)", name)
 
     # ------------------------------------------------------------------ fon vazifasi
     def start(self, bot: Bot) -> None:

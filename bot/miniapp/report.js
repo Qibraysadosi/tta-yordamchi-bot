@@ -328,7 +328,7 @@
         toast('Yuborilmoqda…');
         const r = await api('api/report/send', { method: 'POST', body: {} });
         notify('success');
-        toast(r.target === 'leaders' ? 'Rahbarlar guruhiga yuborildi' : 'Sizga yuborildi (rahbarlar guruhi belgilanmagan)');
+        toast(r.target === 'leaders' ? 'Rahbarlar guruhiga yuborildi' : 'Sizga yuborildi (rahbarlar guruhi yo\'q yoki bot u yerdan chiqarilgan)');
       }),
     };
     function kindOf(p) {

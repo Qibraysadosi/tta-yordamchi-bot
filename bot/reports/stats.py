@@ -201,9 +201,11 @@ def _course_key(course: str) -> str:
 
 
 def _match(people: list[Person], user_id: int, username: str | None) -> Person | None:
+    """Ro'yxatdagi odam: ID bo'yicha; username — faqat hali ID bilan bog'lanmagan yozuvda
+    (bo'shatilgan username'ni olgan boshqa odam ro'yxatdagining o'rniga sanalmasin)."""
     uname = (username or "").lower()
     for person in people:
-        if person.user_id == user_id or (uname and person.username == uname):
+        if person.user_id == user_id or (person.user_id is None and uname and person.username == uname):
             return person
     return None
 
@@ -224,6 +226,9 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
     excluded = [p for p in people if p.kind == "excluded"]
     users = await store.users()
 
+    def is_excluded(user_id: int) -> bool:  # istisnolar (rahbarlar va h.k.) hech qayerda sanalmaydi
+        return _match(excluded, user_id, users.get(user_id, (None, ""))[0]) is not None
+
     # (lid, odam) bo'yicha harakatlar: so'nggi reaksiya va so'nggi natijali izoh
     reaction: dict[tuple[int, int], Event] = {}
     comment: dict[tuple[int, int], Event] = {}
@@ -233,6 +238,8 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
     callbacks: set[int] = set()
     comment_count = 0
     for ev in events:
+        if is_excluded(ev.user_id):
+            continue
         pair = (ev.lead_id, ev.user_id)
         if ev.kind == "reaction":
             reaction[pair] = ev
@@ -252,8 +259,6 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
     status_of: dict[tuple[int, int], str] = {}
     latest_of_lead: dict[int, tuple[str, str]] = {}  # lid → (vaqt, status) — kurslar kesimi uchun
     for pair in touched:
-        if _match(excluded, pair[1], users.get(pair[1], (None, ""))[0]):
-            continue  # istisnolar (rahbarlar va h.k.) hech qayerda sanalmaydi
         r, c = reaction.get(pair), comment.get(pair)
         r_status = r.status if r and r.status in known else None
         c_status = c.status if c and c.status in known else None

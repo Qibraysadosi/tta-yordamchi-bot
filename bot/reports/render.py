@@ -10,6 +10,39 @@ from .stats import Overview, Row
 NAME_WIDTH = 9
 EXTRAS_SHOWN = 5
 COURSES_SHOWN = 4
+MESSAGE_LIMIT = 3800  # Telegram xabari 4096 belgi (UTF-16; emoji — 2) — zaxira bilan
+
+
+def _units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
+    """Uzun hisobotni qatorlar bo'yicha bo'laklaydi; <pre> jadval bo'linsa, har bo'lak o'z tegini oladi."""
+    if _units(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    chunk: list[str] = []
+    size = 0
+    in_pre = False
+    for line in text.split("\n"):
+        cost = _units(line) + 1
+        if chunk and size + cost + 6 > limit:  # 6 — yopuvchi </pre> uchun joy
+            if in_pre:
+                chunk[-1] += "</pre>"
+                line = "<pre>" + line
+                cost += 5
+            parts.append("\n".join(chunk))
+            chunk, size = [], 0
+        chunk.append(line)
+        size += cost
+        if "</pre>" in line:
+            in_pre = False
+        elif "<pre>" in line:
+            in_pre = True
+    if chunk:
+        parts.append("\n".join(chunk))
+    return parts
 
 
 def _name(row: Row) -> str:

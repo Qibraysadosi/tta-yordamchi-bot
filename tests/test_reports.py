@@ -244,10 +244,10 @@ def test_group_flow_and_daily_report(tmp_path):
             assert leads["Bobur"].phones == "+998937654321,+998971112233" and leads["Bobur"].course == "Massaj"
             assert (await store.people("operator"))[0].user_id == MALIKA  # @username → ID bog'landi (katta-kichik harf)
 
-            pending = await store.pending_comments(50)
+            pending = await store.pending_comments(50)  # istisnoning (rahbar) izohi AI'ga yuborilmaydi
             assert [e.text for e in pending] == [
                 "2 marta qildim ko'tarmadi", "ertaga keladi", "o'ylab ko'raman dedi, juma kuni qayta qilaman",
-                "uzoqda yashar ekan, kelmaydi", "Malika, bunga ertaga yana qiling",
+                "uzoqda yashar ekan, kelmaydi",
             ]
             ids = [e.id for e in pending]
             env.api.responses += [classify(
@@ -255,11 +255,10 @@ def test_group_flow_and_daily_report(tmp_path):
                 {"id": ids[1], "call": True, "status": "👍", "reason": "", "callback": "ertaga"},
                 {"id": ids[2], "call": True, "status": "🤔", "reason": "", "callback": "juma"},
                 {"id": ids[3], "call": True, "status": "👎", "reason": "uzoq", "callback": ""},
-                {"id": ids[4], "call": False, "status": "", "reason": "", "callback": ""},
             )]
             now = local(WED, "15:00")
             ov = await env.ctx.reports.overview(WED, now)  # tahlilsiz: izohlar ham qo'ng'iroq sifatida sanaladi
-            assert ov.live and ov.pending == 5
+            assert ov.live and ov.pending == 4
 
             sent = await env.ctx.reports.send_report(env.bot, WED, now, interim=True)
             assert sent == 1
@@ -267,7 +266,8 @@ def test_group_flow_and_daily_report(tmp_path):
             assert req["model"] == "claude-haiku-5-5" and req["thinking"] == {"type": "disabled"}
             assert "👍 — keladi" in req["system"] and "99 888" not in req["messages"][0]["content"]
             sent_items = json.loads(req["messages"][0]["content"])
-            assert sent_items[0]["reaction"] == "🆒" and sent_items[4]["reaction"] is None
+            assert sent_items[0]["reaction"] == "🆒" and sent_items[3]["reaction"] == "👎" and len(sent_items) == 4
+            assert "Malika, bunga" not in req["messages"][0]["content"]
 
             ov = await env.ctx.reports.overview(WED, now)
             rows = {r.name: r for r in ov.rows}

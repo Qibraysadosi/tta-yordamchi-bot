@@ -106,7 +106,7 @@ class ReportAPI:
             if day > today:
                 day = today
         ov = await service.overview(day, now)
-        report = await service.store.report(ov.end.strftime("%Y-%m-%d %H:%M"))
+        report = await service.store.report_for_day(day.isoformat())
         reasons: list[tuple[str, int]] = ov.reasons[:5]
         clustered = False
         if report and report.get("insights"):
@@ -138,8 +138,11 @@ class ReportAPI:
         })
 
     async def people(self, request: web.Request) -> web.Response:
+        owner = bool(request[self.access_key].get("owner"))
         result: dict[str, list] = {"operator": [], "excluded": [], "leader": []}
         for person in await self.service.store.people():
+            if not owner and person.kind != "operator":
+                continue  # rahbar faqat operatorlarni ko'radi (istisnolar va rahbarlar ro'yxati — egasiga)
             result.setdefault(person.kind, []).append({
                 "id": person.id, "username": person.username, "user_id": person.user_id, "name": person.name,
                 "label": person.label, "seen": person.user_id is not None, "dm_ok": person.dm_ok,
@@ -300,6 +303,9 @@ class ReportAPI:
         allowed = {k: body[k] for k in ("time", "days", "enabled", "remind_minutes", "work_start", "work_end") if k in body}
         if not allowed:
             return _error("O'zgartiriladigan sozlama yo'q")
+        candidate = (await self.service.schedule()).updated(allowed)
+        if candidate.work_end <= candidate.work_start:
+            return _error("Ish vaqti tugashi boshlanishidan keyin bo'lsin (masalan, 09:00–19:00)")
         schedule = await self.service.save_schedule(allowed)
         return _json({"ok": True, "schedule": {
             "time": schedule.time, "days": list(schedule.days), "enabled": schedule.enabled,
@@ -314,5 +320,8 @@ class ReportAPI:
         now = service.now()
         day = current_day(now, await service.schedule())
         sent = await service.send_report(self.bot, day, now, interim=True)
+        if not sent:
+            return _error("Hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502, "send_failed")
         leaders = await service.store.groups_with("leaders")
-        return _json({"ok": True, "sent": sent, "target": "leaders" if leaders else "owner"})
+        target = "leaders" if leaders and not service.last_fallback else "owner"
+        return _json({"ok": True, "sent": sent, "target": target})

@@ -25,6 +25,21 @@ SEEDED_KEY = "report:statuses_seeded"
 TEXT_LIMIT = 1500
 
 
+def _not_excluded(alias: str) -> str:
+    """SQL sharti: harakat istisnolar ro'yxatidagi odamniki emas (istisnolar hech qayerda sanalmaydi)."""
+    return f"NOT EXISTS (SELECT 1 FROM rp_people x WHERE x.kind = 'excluded' AND x.user_id = {alias}.user_id)"
+
+
+def _marked(lead: str) -> str:
+    """SQL sharti: lidni kimdir belgilagan — izoh yozgan yoki hozir status reaksiyasi turibdi (olib tashlanmagan)."""
+    return (
+        f"(EXISTS (SELECT 1 FROM rp_events c WHERE c.lead_id = {lead}.id AND c.kind = 'comment' AND {_not_excluded('c')})"
+        f" OR EXISTS (SELECT 1 FROM rp_events r WHERE r.lead_id = {lead}.id AND r.kind = 'reaction'"
+        f" AND r.status IS NOT NULL AND {_not_excluded('r')} AND r.id = (SELECT MAX(r2.id) FROM rp_events r2"
+        f" WHERE r2.lead_id = r.lead_id AND r2.user_id = r.user_id AND r2.kind = 'reaction')))"
+    )
+
+
 def iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -177,14 +192,14 @@ class ReportStore:
 
     async def upsert_group(self, chat_id: int, title: str, *, added_by: int | None = None,
                            is_admin: bool | None = None, active: bool | None = None) -> Group:
-        existing = await self.group(chat_id)
-        if existing is None:
-            await self._run(
-                "INSERT INTO rp_groups (chat_id, title, roles, active, is_admin, added_by, added_at, last_seen)"
-                " VALUES (?, ?, '', 1, ?, ?, ?, ?)",
-                (chat_id, title or "", int(bool(is_admin)), added_by, now_iso(), now_iso()),
-            )
-        else:
+        cur = await self.conn.execute(  # bir vaqtda kelgan yangilanishlar ikkinchi marta qo'shmasin
+            "INSERT INTO rp_groups (chat_id, title, roles, active, is_admin, added_by, added_at, last_seen)"
+            " VALUES (?, ?, '', 1, ?, ?, ?, ?) ON CONFLICT(chat_id) DO NOTHING",
+            (chat_id, title or "", int(bool(is_admin)), added_by, now_iso(), now_iso()),
+        )
+        await self.conn.commit()
+        existing = None if cur.rowcount else await self.group(chat_id)
+        if existing is not None:
             fields = {"title": title or existing.title, "last_seen": now_iso()}
             if is_admin is not None:
                 fields["is_admin"] = int(is_admin)
@@ -211,13 +226,38 @@ class ReportStore:
     async def mark_group_asked(self, chat_id: int) -> None:
         await self._run("UPDATE rp_groups SET asked = 1 WHERE chat_id = ?", (chat_id,))
 
-    async def migrate_group(self, old_id: int, new_id: int) -> None:
-        """Oddiy guruh superguruhga aylanganda chat_id o'zgaradi."""
-        if await self.group(new_id) is not None:
-            return
-        for table in ("rp_groups", "rp_leads", "rp_events"):
-            await self.conn.execute(f"UPDATE {table} SET chat_id = ? WHERE chat_id = ?", (new_id, old_id))
+    async def claim_ask(self, chat_id: int) -> bool:
+        """Guruh turi egasidan bir marta so'raladi: birinchi chaqiruv True, qolganlari False."""
+        cur = await self.conn.execute("UPDATE rp_groups SET asked = 1 WHERE chat_id = ? AND asked = 0", (chat_id,))
         await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def migrate_group(self, old_id: int, new_id: int) -> None:
+        """Oddiy guruh superguruhga aylanganda chat_id o'zgaradi: guruh sozlamalari yangi ID ga o'tadi.
+
+        Eski lid va harakatlar eski ID da qoladi (superguruhda xabar raqamlari qaytadan boshlanadi)."""
+        old = await self.group(old_id)
+        if old is None:
+            return
+        new = await self.group(new_id)
+        if new is None:
+            await self._run("UPDATE rp_groups SET chat_id = ? WHERE chat_id = ?", (new_id, old_id))
+            return
+        roles = new.roles if new.roles else old.roles  # yangi guruh xabari oldin kelib, qayta yaratilgan bo'lsa
+        await self.conn.execute(
+            "UPDATE rp_groups SET roles = ?, active = ?, asked = 1, added_by = COALESCE(added_by, ?) WHERE chat_id = ?",
+            (",".join(roles), int(old.active or new.active), old.added_by, new_id),
+        )
+        await self.conn.execute("DELETE FROM rp_groups WHERE chat_id = ?", (old_id,))
+        await self.conn.commit()
+
+    async def mark_seen(self, chat_id: int, message_id: int) -> None:
+        """Bot ko'rgan, lekin lid ham, izoh ham bo'lmagan xabar (e'lon, savol): unga reaksiya — qo'ng'iroq emas."""
+        await self._run("INSERT OR IGNORE INTO rp_seen (chat_id, message_id) VALUES (?, ?)", (chat_id, message_id))
+
+    async def was_seen(self, chat_id: int, message_id: int) -> bool:
+        row = await self._one("SELECT 1 FROM rp_seen WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
+        return row is not None
 
     # ------------------------------------------------------------------ odamlar
     async def people(self, kind: str | None = None) -> list[Person]:
@@ -243,8 +283,16 @@ class ReportStore:
                     person.name = name
                 return person
         if user_id is None and username:
-            known = await self._one("SELECT user_id FROM rp_users WHERE username = ?", (username,))
+            known = await self._one(
+                "SELECT user_id FROM rp_users WHERE username = ? ORDER BY last_seen DESC LIMIT 1", (username,)
+            )
             user_id = known["user_id"] if known else None
+            same = next((p for p in await self.people(kind) if user_id and p.user_id == user_id), None)
+            if same is not None:  # shu odam ro'yxatda ID bilan bor — ikkinchi yozuv ochilmaydi
+                await self._run("UPDATE rp_people SET username = ? WHERE id = ?", (username, same.id))
+                if name and name != same.name:
+                    await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name, same.id))
+                return await self.person(same.id)  # type: ignore[return-value]
         new_id = await self._run(
             "INSERT INTO rp_people (kind, username, user_id, name, created_at) VALUES (?, ?, ?, ?, ?)",
             (kind, username, user_id, name.strip()[:40], now_iso()),
@@ -265,10 +313,14 @@ class ReportStore:
         return cur.rowcount > 0
 
     async def roles_of(self, user_id: int, username: str | None) -> set[str]:
-        """Odamning hisobotdagi turlari (operator / excluded / leader) — ID yoki username bo'yicha."""
+        """Odamning hisobotdagi turlari (operator / excluded / leader).
+
+        ID bilan bog'langan yozuv faqat ID bo'yicha topiladi: username bo'shatilib, boshqa odam olgan bo'lsa ham
+        uning huquqlari o'tmaydi. Username faqat hali bog'lanmagan (ID'siz) yozuvlarda ishlatiladi."""
         name = (username or "").lower() or None
         rows = await self._all(
-            "SELECT kind FROM rp_people WHERE user_id = ? OR (username IS NOT NULL AND username = ?)", (user_id, name)
+            "SELECT kind FROM rp_people WHERE user_id = ? OR (user_id IS NULL AND username IS NOT NULL AND username = ?)",
+            (user_id, name),
         )
         return {r["kind"] for r in rows}
 
@@ -276,7 +328,22 @@ class ReportStore:
         """@username bilan qo'shilgan odamni Telegram ID'si bilan bog'laydi (username o'zgarsa ham taniladi)."""
         name = (username or "").lower()
         if name:
-            await self._run("UPDATE rp_people SET user_id = ? WHERE user_id IS NULL AND username = ?", (user_id, name))
+            await self.conn.execute("UPDATE rp_people SET user_id = ? WHERE user_id IS NULL AND username = ?", (user_id, name))
+            # username almashgan bo'lsa — ro'yxatda yangisi ko'rinadi (eski nom boshqa odamga huquq bermaydi)
+            await self.conn.execute(
+                "UPDATE rp_people SET username = ? WHERE user_id = ? AND (username IS NULL OR username != ?)",
+                (name, user_id, name),
+            )
+            await self._dedupe(user_id)
+            await self.conn.commit()
+
+    async def _dedupe(self, user_id: int) -> None:
+        """Bir odam bir ro'yxatda ikki marta (username va ID bilan) qolmasin — eskisi saqlanadi."""
+        await self.conn.execute(
+            "DELETE FROM rp_people WHERE user_id = ? AND EXISTS (SELECT 1 FROM rp_people q"
+            " WHERE q.user_id = rp_people.user_id AND q.kind = rp_people.kind AND q.id < rp_people.id)",
+            (user_id,),
+        )
 
     async def set_dm_ok(self, user_id: int) -> None:
         await self._run("UPDATE rp_people SET dm_ok = 1 WHERE user_id = ?", (user_id,))
@@ -291,10 +358,18 @@ class ReportStore:
             (user_id, uname, name[:60], now_iso()),
         )
         if uname:
+            # Username bir vaqtda bitta odamda: eski egasining yozuvidan olib tashlanadi
+            await self.conn.execute("UPDATE rp_users SET username = NULL WHERE username = ? AND user_id != ?", (uname, user_id))
             # Ro'yxatga @username bilan qo'shilganlar birinchi ko'ringanda ID bilan bog'lanadi
             await self.conn.execute(
                 "UPDATE rp_people SET user_id = ? WHERE user_id IS NULL AND username = ?", (user_id, uname)
             )
+            # Bog'langan odam username'ini almashtirsa — ro'yxatda yangisi ko'rinadi
+            await self.conn.execute(
+                "UPDATE rp_people SET username = ? WHERE user_id = ? AND (username IS NULL OR username != ?)",
+                (uname, user_id, uname),
+            )
+            await self._dedupe(user_id)
         await self.conn.commit()
 
     async def users(self) -> dict[int, tuple[str | None, str]]:
@@ -361,15 +436,15 @@ class ReportStore:
                         name: str = "", phones: Iterable[str] = (), age: str = "", district: str = "",
                         course: str = "", text: str = "") -> Lead:
         """Yangi lid yoki mavjudini to'ldirish («stub» — faqat reaksiya ko'rilgan, mazmuni noma'lum)."""
-        existing = await self.lead_by_message(chat_id, message_id)
         phone_text = ",".join(phones)
-        if existing is None:
-            await self._run(
-                "INSERT INTO rp_leads (chat_id, message_id, source, created_at, name, phones, age, district, course, text)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (chat_id, message_id, source, created_at, name, phone_text, age, district, course, text[:TEXT_LIMIT]),
-            )
-        elif source != "stub":
+        cur = await self.conn.execute(  # bir vaqtdagi ikki yangilanish (reaksiya + izoh) — bitta lid
+            "INSERT INTO rp_leads (chat_id, message_id, source, created_at, name, phones, age, district, course, text)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, message_id) DO NOTHING",
+            (chat_id, message_id, source, created_at, name, phone_text, age, district, course, text[:TEXT_LIMIT]),
+        )
+        await self.conn.commit()
+        existing = None if cur.rowcount else await self.lead_by_message(chat_id, message_id)
+        if existing is not None and source != "stub":
             await self._run(
                 "UPDATE rp_leads SET source = CASE WHEN source = 'stub' THEN ? ELSE source END,"
                 " created_at = CASE WHEN created_at = '' THEN ? ELSE created_at END,"
@@ -400,25 +475,21 @@ class ReportStore:
         return result
 
     async def touched_lead_ids(self, lead_ids: Iterable[int]) -> set[int]:
-        """Kimdir belgilagan (status reaksiyasi yoki izoh) lidlar."""
+        """Kimdir belgilagan lidlar: izoh yoki hozir turgan status reaksiyasi (istisnolarniki sanalmaydi)."""
         ids = list(set(lead_ids))
         touched: set[int] = set()
         for i in range(0, len(ids), 500):
             chunk = ids[i : i + 500]
             marks = ",".join("?" * len(chunk))
-            rows = await self._all(
-                f"SELECT DISTINCT lead_id FROM rp_events WHERE lead_id IN ({marks})"
-                " AND ((kind = 'reaction' AND status IS NOT NULL) OR (kind = 'comment' AND is_call = 1))",
-                chunk,
-            )
-            touched.update(r["lead_id"] for r in rows)
+            rows = await self._all(f"SELECT l.id FROM rp_leads l WHERE l.id IN ({marks}) AND {_marked('l')}", chunk)
+            touched.update(r["id"] for r in rows)
         return touched
 
     async def unmarked_leads(self, created_after: str, created_before: str) -> list[Lead]:
+        """Eslatma uchun: hech kim belgilamagan va hali eslatilmagan lidlar (belgilash qoidasi — touched_lead_ids)."""
         rows = await self._all(
             "SELECT * FROM rp_leads l WHERE source != 'stub' AND reminded = 0 AND created_at >= ? AND created_at < ?"
-            " AND NOT EXISTS (SELECT 1 FROM rp_events e WHERE e.lead_id = l.id AND"
-            " ((e.kind = 'reaction' AND e.status IS NOT NULL) OR e.kind = 'comment')) ORDER BY created_at",
+            f" AND NOT {_marked('l')} ORDER BY created_at",
             (created_after, created_before),
         )
         return [_lead(r) for r in rows]
@@ -462,12 +533,14 @@ class ReportStore:
 
     async def pending_comments(self, limit: int) -> list[Event]:
         rows = await self._all(
-            "SELECT * FROM rp_events WHERE kind = 'comment' AND analyzed = 0 ORDER BY id LIMIT ?", (limit,)
+            f"SELECT * FROM rp_events e WHERE kind = 'comment' AND analyzed = 0 AND {_not_excluded('e')}"
+            " ORDER BY id LIMIT ?", (limit,)
         )
         return [_event(r) for r in rows]
 
     async def pending_count(self, start: str | None = None, end: str | None = None) -> int:
-        query, params = "SELECT COUNT(*) AS n FROM rp_events WHERE kind = 'comment' AND analyzed = 0", []
+        query = f"SELECT COUNT(*) AS n FROM rp_events e WHERE kind = 'comment' AND analyzed = 0 AND {_not_excluded('e')}"
+        params: list[str] = []
         if start and end:
             query += " AND created_at >= ? AND created_at < ?"
             params = [start, end]
@@ -531,6 +604,13 @@ class ReportStore:
     # ------------------------------------------------------------------ yuborilgan hisobotlar
     async def report_sent(self, period_end: str) -> bool:
         return await self._one("SELECT 1 FROM rp_reports WHERE period_end = ?", (period_end,)) is not None
+
+    async def report_for_day(self, day: str) -> dict | None:
+        """Shu kun («YYYY-MM-DD») uchun yuborilgan kunlik hisobot: vaqt o'zgartirilsa ham bir kunga bitta."""
+        row = await self._one(
+            "SELECT * FROM rp_reports WHERE substr(period_end, 1, 10) = ? ORDER BY sent_at DESC LIMIT 1", (day,)
+        )
+        return dict(row) if row else None
 
     async def save_report(self, period_end: str, period_start: str, text: str, insights: str | None) -> None:
         await self._run(

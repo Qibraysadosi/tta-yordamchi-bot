@@ -274,6 +274,7 @@ a { color: var(--link); }
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   background: none; border: 0; color: var(--hint); font-size: 11px; padding: 6px 2px;
 }
+.tabs:empty { display: none; } /* bo'lim tanlovi va qulf ekranida pastki menyu yo'q */
 .tab .ic { width: 23px; height: 23px; }
 .tab.active { color: var(--link); }
 .tab:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; border-radius: 8px; }
@@ -325,6 +326,91 @@ a { color: var(--link); }
 .meter-row .bar { background: color-mix(in srgb, var(--text) 10%, transparent); }
 .meter-row .bar i { background: var(--brand); }
 .date-h { font-size: 13px; color: var(--header); margin: 14px 0 6px 12px; }
+
+/* --- v1.7: bo'lim tanlovi (AI / Hisobotlar) --- */
+.chooser { padding-top: 4px; }
+.chooser-head { display: flex; align-items: center; gap: 12px; margin: 8px 4px 18px; }
+.chooser-head .mark {
+  width: 54px; height: 54px; border-radius: 16px; padding: 5px; flex: none;
+  background: linear-gradient(135deg, #1e1b4b 0%, #4f46e5 100%); box-shadow: 0 8px 18px -10px rgba(49, 46, 129, 0.8);
+}
+.chooser-head .hello { font-size: 14px; color: var(--hint); }
+.chooser-head .big { font-size: 24px; font-weight: 700; letter-spacing: -0.3px; }
+.choice {
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  border: 0; color: #fff; border-radius: 20px; padding: 18px 14px 18px 16px; margin-bottom: 12px; min-height: 118px;
+  box-shadow: 0 12px 26px -18px rgba(15, 23, 42, 0.75); transition: transform 120ms;
+}
+.choice.ai { background: linear-gradient(135deg, #1e1b4b 0%, #3730a3 55%, #4f46e5 100%); }
+.choice.report { background: linear-gradient(135deg, #053f33 0%, #047857 55%, #0d9488 100%); }
+.choice::after {
+  content: ""; position: absolute; right: -54px; top: -64px; width: 190px; height: 190px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 70%); pointer-events: none;
+}
+.choice:active { transform: scale(0.985); }
+.choice-ic {
+  width: 50px; height: 50px; border-radius: 15px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.choice-ic .ic { width: 27px; height: 27px; }
+.choice .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; position: relative; z-index: 1; }
+.choice .body b { font-size: 19px; letter-spacing: -0.2px; }
+.choice .body > span { font-size: 14px; opacity: 0.85; }
+.choice .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.choice .meta i {
+  font-style: normal; font-size: 12.5px; padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+  background: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.18); font-variant-numeric: tabular-nums;
+}
+.choice .chev { color: #fff; opacity: 0.7; position: relative; z-index: 1; }
+
+/* --- Hisobotlar --- */
+.hero.report { background: linear-gradient(135deg, #053f33 0%, #047857 55%, #0d9488 100%); box-shadow: 0 10px 24px -14px rgba(6, 78, 59, 0.75); }
+.hero.report::after { background: radial-gradient(circle at 30% 30%, rgba(52, 211, 153, 0.5), rgba(52, 211, 153, 0) 70%); }
+.hero .big small { font-size: 15px; font-weight: 500; opacity: 0.85; }
+.hero.report .foot { justify-content: flex-start; gap: 24px; }
+.hero .chip b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.live {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.16);
+}
+.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #6ee7b7; animation: pulse 1.4s ease-in-out infinite; }
+.period-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+.period-nav .pill {
+  width: 42px; height: 36px; border-radius: 12px; border: 0; background: var(--surface); box-shadow: var(--shadow);
+  color: var(--link); display: flex; align-items: center; justify-content: center; flex: none;
+}
+.period-nav .pill:disabled { opacity: 0.3; }
+.period-nav .when { font-size: 14px; color: var(--hint); font-variant-numeric: tabular-nums; text-align: center; }
+.avatar {
+  width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none;
+  color: #fff; font-weight: 700; font-size: 15px;
+}
+.row.op + .row.op::before { left: 60px; }
+.row .handle { font-size: 13px; color: var(--hint); }
+.status-line { font-size: 13px; color: var(--hint); margin-top: 2px; display: flex; flex-wrap: wrap; gap: 2px 10px; font-variant-numeric: tabular-nums; }
+.status-line span { white-space: nowrap; }
+.mini-bar { height: 4px; border-radius: 999px; margin-top: 6px; overflow: hidden; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.mini-bar i { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+.row .total { font-size: 20px; font-weight: 700; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.row .total small { display: block; font-size: 11px; font-weight: 500; color: var(--hint); }
+.tile.report { background: #059669; }
+.tile.group { background: #0d9488; }
+.tile.leader { background: #7c3aed; }
+.tile.clock { background: #0284c7; }
+.tile.bell { background: #d97706; }
+.tile.ban { background: #64748b; }
+.day-chips { display: flex; gap: 6px; margin-bottom: 14px; }
+.day-chips label { flex: 1; position: relative; }
+.day-chips input { position: absolute; opacity: 0; width: 0; height: 0; }
+.day-chips span {
+  display: block; text-align: center; padding: 11px 0; border-radius: 12px; font-weight: 600; font-size: 14px;
+  background: var(--surface); border: 1px solid var(--sep);
+}
+.day-chips input:checked + span { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.day-chips input:focus-visible + span { outline: 2px solid var(--link); outline-offset: 2px; }
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; }
+.field input[type="time"] { font-variant-numeric: tabular-nums; }
 
 /* --- toast --- */
 .toast {

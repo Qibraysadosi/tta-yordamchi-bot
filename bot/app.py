@@ -12,7 +12,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.types import BotCommandScopeChat, MenuButtonDefault, MenuButtonWebApp, User, WebAppInfo
 
-from . import branding, scheduler, webapp
+from . import branding, reports, scheduler, webapp
 from .claude import ClaudeService
 from .config import ConfigError, Settings, load_settings
 from .db import Database
@@ -42,6 +42,10 @@ def build_dispatcher(ctx: AppContext) -> Dispatcher:
     access = AccessMiddleware()
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
+    if ctx.reports is None:
+        ctx.reports = reports.ReportService(ctx)
+    # Hisobot routeri birinchi: guruh yangilanishlari va /hisobot, /guruhlar (asosiy routerdagi «noma'lum buyruq»dan oldin)
+    dp.include_router(reports.build_router())
     dp.include_router(build_router())
     ctx.dispatcher = dp
     return dp
@@ -178,6 +182,7 @@ async def run() -> bool:
         bot = Bot(settings.telegram_token, default=DefaultBotProperties(link_preview_is_disabled=True))
         dp = build_dispatcher(ctx)
         me = await connect(bot, settings.owner_ids)
+        ctx.reports.set_bot_info(me)
         log.info(
             "Bot ishga tushdi: @%s · v%s · standart model: %s · egalari: %s",
             me.username,
@@ -205,9 +210,11 @@ async def run() -> bool:
             except OSError:
                 log.exception("Mini App serveri ishga tushmadi (port %s band?)", settings.webapp_port)
         jobs = [job for job in (start_backup_job(bot, ctx), start_update_check_job(bot, ctx)) if job is not None]
+        ctx.reports.start(bot)  # izohlar tahlili, kunlik hisobot, belgilanmagan lid eslatmasi
         try:
             await dp.start_polling(bot)
         finally:
+            await ctx.reports.stop()
             for job in jobs:
                 await job.stop()
             await webapp.stop_webapp(server)

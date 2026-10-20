@@ -5,6 +5,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 ## Imkoniyatlar
 
 - **Mini App (📱 /ilova):** Telegram ichidagi ilova — sozlamalar (model, fikrlash, qidiruv, rejim), suhbatlar tarixi va qidiruv, yaratilgan fayllar galereyasi, xarajat grafiklari, egasi uchun admin panel; Telegram mavzusiga mos yorug'/qorong'i ko'rinish. Chatning menyu tugmasidan yoki /ilova bilan ochiladi (sozlash: pastda «Mini App»)
+- **Call center hisobotlari (📊 /hisobot):** bot lidlar guruhida operatorlarning reaksiya va izohlarini o'qiydi (izohni AI tahlil qiladi) va har kuni 19:00 da rahbarlar guruhiga jadval yuboradi: kim nechta lidga qo'ng'iroq qildi, nechtasi keladi / ko'tarmadi / kelmaydi, kurslar va rad sabablari. Hech kim belgilamagan lid haqida operatorlarga eslatadi. Sozlash — Mini App → Hisobotlar (pastda «Call center hisobotlari»)
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
@@ -67,10 +68,12 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/qaytarish` | Oldingi versiyaga qaytish |
 | `/kod` | Botning joriy kodi (.zip) — yangi funksiya so'raganda Claude'ga yuborish uchun |
 | `/zaxira` | Bazaning zaxira nusxasini hozir olish |
+| `/hisobot` (`/report`) | Call center hisoboti — hozirgi holat; «Rahbarlarga yuborish» tugmasi |
+| `/guruhlar` (`/groups`) | Bot kuzatayotgan guruhlar va ularning turi (lidlar / rahbarlar) |
 
 ## Mini App (Telegram ichidagi ilova)
 
-Ilova botning o'zida ishlaydi (alohida server kerak emas): konteyner ichida `WEBAPP_PORT` (8091) portida HTTP server turadi, docker-compose uni faqat `127.0.0.1` ga ochadi. Telegram ilovani faqat **HTTPS** manzildan ochadi, shuning uchun serverdagi Caddy (yoki Nginx) orqali tashqariga chiqariladi. Kirish: Telegram imzosi (initData) bot tokeni bilan tekshiriladi, ilovaga faqat egasi va parol bilan kirganlar kiradi.
+Ilova botning o'zida ishlaydi (alohida server kerak emas): konteyner ichida `WEBAPP_PORT` (8091) portida HTTP server turadi, docker-compose uni faqat `127.0.0.1` ga ochadi. Telegram ilovani faqat **HTTPS** manzildan ochadi, shuning uchun serverdagi Caddy (yoki Nginx) orqali tashqariga chiqariladi. Kirish: Telegram imzosi (initData) bot tokeni bilan tekshiriladi, ilovaga faqat egasi, parol bilan kirganlar va hisobotlar ro'yxatidagi rahbarlar kiradi.
 
 **Tez yo'l (bitta buyruq, serverda):** `cd /root/claude-telegram-bot && bash install.sh miniapp` — Caddy'ga `/yordamchi` yo'lini qo'shadi, `.env` ga `WEBAPP_URL=https://bepulkurs.uz/yordamchi/` yozadi, konteynerni qayta yaratadi va tekshiradi. Boshqa manzil kerak bo'lsa: `bash install.sh miniapp https://DOMEN/yol/` (subdomen bo'lsa, avval DNS'da A yozuv). Qo'lda qilmoqchi bo'lsangiz — quyidagi 3 qadam.
 
@@ -105,7 +108,31 @@ WEBAPP_PORT=8091
 
 Tekshirish: serverda `curl -s http://127.0.0.1:8091/health` → `{"ok": true, ...}`; brauzerda `https://bepulkurs.uz/yordamchi/` sahifasi «Faqat Telegram ichida» deb ochilsa — hammasi joyida (ilovaning o'zi faqat Telegram'dan ishlaydi).
 
-Ilova nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa, GitHub'dan yangilash va oldingi versiyaga qaytish (tasdiq chatga keladi).
+Ilova ikki bo'limdan iborat, ochilganda tanlanadi: **AI yordamchi** (egasi va parol bilan kirganlar) va **Hisobotlar** (egasi va «Kirish» ro'yxatidagi rahbarlar; quyida). Faqat bittasiga ruxsati borga tanlov chiqmaydi.
+
+AI bo'limi nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga savol yuboradi (javob chatda yoziladi), eski suhbatni davom ettiradi, bot yaratgan fayllarni qayta yuboradi yoki yuklab beradi (nusxalar `data/files/` da, har foydalanuvchi uchun `FILES_MAX_MB`), 30 kunlik sarf grafigi va modellar bo'yicha taqsimot; egasi uchun — parol, foydalanuvchilar, zaxira nusxa, GitHub'dan yangilash va oldingi versiyaga qaytish (tasdiq chatga keladi).
+
+## Call center hisobotlari
+
+Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorlarning unga qo'ygan reaksiyasini va izohini yozib boradi. Guruhlarga hech narsa yozmaydi — faqat o'qiydi.
+
+**Sozlash (bir marta):**
+
+1. **Lidlar guruhi.** Botni kanalning izohlar guruhiga (masalan, «KOMMENTARIYA TA LIDLAR») qo'shing va **admin** qiling — huquq belgilash shart emas, lekin admin bo'lmasa bot reaksiyalarni ko'rmaydi. Bot sizga lichkada «Bu guruh nima uchun?» deb so'raydi → **📥 Lidlar** → **✅ Tayyor**.
+2. **Rahbarlar guruhi.** Botni rahbarlar guruhiga qo'shing (admin shart emas) → **👔 Rahbarlar** → **✅ Tayyor**. Kunlik hisobot shu guruhga keladi; bunday guruh bo'lmasa — sizga lichkada.
+3. **Operatorlar.** Mini App → Hisobotlar → Operatorlar → «+ Qo'shish»: Telegram username (yoki ID) va ism. Ro'yxatda yo'q odam qo'ng'iroq qilsa, hisobotda «➕ Ro'yxatda yo'q» qatorida ko'rinadi (bir bosishda operator yoki istisno qilinadi). Har operator botga bir marta `/start` bossin — belgilanmagan lidlar haqida eslatma oladi (AI bo'limi ochilmaydi).
+4. **Rahbarlar kirishi.** Mini App → Hisobotlar → Sozlamalar → «Kirish · rahbarlar»: qo'shilgan rahbar botni ochganda «📊 Hisobotlar» tugmasini oladi va faqat shu bo'limni ko'radi, sozlamalarni o'zgartira olmaydi. Parol kerak emas.
+5. **«📊 Batafsil» tugmasi (ixtiyoriy).** Kunlik hisobot ostida Mini App'ni o'sha kun bilan ochadigan tugma: @BotFather → botingiz → Bot Settings → Configure Mini App → Enable Mini App → `WEBAPP_URL` manzili. Bot buni o'zi aniqlaydi (10 daqiqagacha), qayta ishga tushirish shart emas.
+
+**Statuslar** (Mini App → Sozlamalar'da qo'shiladi va o'zgartiriladi): 👍 keladi · 👎 kelmaydi · 🆒 ko'tarmadi · 🤔 o'ylayapti · 🤝 Telegram'dan yozadi · 💔 umuman yo'q. Operator lid postiga shu emojini bosadi yoki izoh yozadi. Izohni AI (`REPORT_MODEL`, standart Haiku 5.5) o'qib, statusni, rad sababini va qayta qo'ng'iroq vaqtini ajratadi; telefon raqamlar AI'ga yuborilmaydi. Reaksiya va izoh mos kelmasa, eng so'nggisi olinadi (hisobotda «⚠️ Ziddiyat»). Bir odam bir lidni bir marta sanaydi.
+
+**Kunlik hisobot:** standart 19:00, dushanba–shanba. Davr — oldingi hisobot vaqtidan shu vaqtgacha (yakshanba dushanba hisobotiga qo'shiladi). Ichida: operatorlar jadvali (jami lid va har status soni), ro'yxatda yo'qlar, yangi va belgilanmagan lidlar, kurslar bo'yicha 👍, izohlardan rad sabablari va qayta qo'ng'iroq so'raganlar. Bot o'chiq paytda o'tib ketgan hisobot ishga tushgach «kechikib yuborildi» belgisi bilan keladi (36 soatgacha). Vaqt, kunlar, eslatma va ish vaqti — Mini App → Hisobotlar → Sozlamalar.
+
+**Eslatma:** yangi lidni 30 daqiqa ichida hech kim belgilamasa, `/start` bosgan operatorlarga lichkada havolalar bilan eslatma boradi — faqat ish vaqtida (09:00–19:00) va hisobot kunlarida.
+
+**Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish»; `/guruhlar` — guruhlar turini o'zgartirish.
+
+**Xarajat:** izoh tahlili arzon modelda (100 ta izoh ≈ $0.01 dan kam), `/xarajat` da «📊 Guruh tahlili» qatorida ko'rinadi.
 
 ## Ishlab chiquvchilar uchun
 
@@ -244,4 +271,6 @@ Botning xulq-atvori `prompts/system.md` faylida. Uni tahrirlasangiz, keyingi xab
 | «💸 xarajat limitiga yetildi» | Console → workspace limitini oshiring |
 | Bot umuman javob bermaydi | `docker compose logs`: token xato bo'lsa log aytadi; shu token bilan boshqa joyda bot ishlamayotganini tekshiring |
 | «GitHub'da … topilmadi yoki yopiq» | Repo yopiq (private) yoki `GITHUB_REPO` noto'g'ri (`Qibraysadosi/tta-yordamchi-bot` repo'si ochiq — token kerak emas). Faqat o'qish huquqli fine-grained token yarating (yuqorida «GitHub'dan yangilash») → `.env` ga `GITHUB_TOKEN=` → `docker compose up -d --force-recreate` |
+| Hisobotda qo'ng'iroqlar 0, lekin operatorlar belgilagan | Bot lidlar guruhida admin emas: guruh sozlamalari → Administratorlar → botni qo'shing. `/guruhlar` da guruh turi «📥 Lidlar» ekanini tekshiring |
+| Kunlik hisobot kelmadi | Mini App → Hisobotlar → Sozlamalar: «Kunlik hisobot» yoqiqmi, lidlar guruhi ulanganmi. Rahbarlar guruhida botni chiqarib yuborishgan bo'lsa, xato haqida sizga xabar keladi |
 | «GitHub so'rovlar chegarasi» (rate limit) | Bir oz kuting (odatda 1 soatgacha) yoki `.env` ga `GITHUB_TOKEN` qo'shing — token bilan chegara ancha yuqori |

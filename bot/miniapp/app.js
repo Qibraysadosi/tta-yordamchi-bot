@@ -11,7 +11,8 @@
   const KIND_LABEL = { docx: 'Word', xlsx: 'Excel', pptx: 'PowerPoint', pdf: 'PDF', image: 'Rasm', csv: 'CSV', md: 'Markdown', txt: 'Matn', zip: 'Arxiv', file: 'Fayl' };
   const KIND_ICON = { docx: 'fileText', xlsx: 'table', pptx: 'presentation', pdf: 'pdf', image: 'image', csv: 'table', md: 'fileText', txt: 'fileText', zip: 'zip', file: 'fileText' };
 
-  const state = { me: null, route: 'home', param: null, cache: {}, locked: null, busy: false };
+  // section: 'ai' | 'report' | null (bo'lim tanlovi); launched — start_param (hisobot havolasi) bir marta ishlatiladi
+  const state = { me: null, route: 'home', param: null, section: 'ai', cache: {}, locked: null, busy: false, launched: false };
   // Bot belgisi: suhbat pufakchasi + bitiruv shapkasi (bot/assets/avatar.jpg bilan bir xil)
   const MARK = '<svg class="mark" viewBox="0 0 512 512" aria-hidden="true"><path d="M152 176H360a56 56 0 0 1 56 56v112a56 56 0 0 1-56 56H214l-64 52c-8 6-18 0-16-10l8-42h10a56 56 0 0 1-56-56V232a56 56 0 0 1 56-56z" fill="#fff" opacity=".92"/><circle cx="190" cy="288" r="24" fill="#4f46e5"/><circle cx="256" cy="288" r="24" fill="#8b5cf6"/><circle cx="322" cy="288" r="24" fill="#06b6d4"/><g transform="rotate(-11 318 150)"><path d="M262 160v46s24 22 64 22 64-22 64-22v-46z" fill="#14123a"/><path d="M326 82l126 54-126 54-126-54z" fill="#1e1b4b"/><path d="M326 136l102 14v64" stroke="#fbbf24" stroke-width="7" fill="none" stroke-linecap="round"/></g></svg>';
 
@@ -66,8 +67,8 @@
     }
     let data = {};
     try { data = await res.json(); } catch (e) { data = {}; }
-    if (res.status === 401 || res.status === 403) {
-      if (!path.startsWith('api/admin')) lock(data.message || 'Kirish yopiq');
+    if (res.status === 401 || (res.status === 403 && data.error === 'no_access')) {
+      lock(data.message || 'Kirish yopiq');
       throw new Error(data.message || 'Ruxsat yo\'q');
     }
     if (!res.ok) throw new Error(data.message || ('Xato ' + res.status));
@@ -116,10 +117,15 @@
     const el = $sheetRoot.firstChild;
     if (!el) return;
     el.remove();
-    if (!silent) backButton(state.route !== 'home' && !!state.param);
+    if (!silent) {
+      backButton(state.route !== 'home' && !!state.param);
+      const r = report();
+      if (r && r.onSheetClosed) r.onSheetClosed();
+    }
   }
 
   // ------------------------------------------------------------ marshrut
+  // Ikki bo'lim: AI yordamchi (TABS) va Hisobotlar (report.js). Ikkalasiga ruxsati borga kirishda tanlov ekrani.
   const TABS = [
     { id: 'home', label: 'Bosh', icon: 'home' },
     { id: 'history', label: 'Tarix', icon: 'history' },
@@ -127,9 +133,28 @@
     { id: 'stats', label: 'Xarajat', icon: 'chart' },
     { id: 'admin', label: 'Admin', icon: 'shield', owner: true },
   ];
+  let reportModule = null;
+  function report() {
+    if (reportModule === null) {
+      reportModule = window.TTAReport ? window.TTAReport({
+        api, esc, row, toggleRow, chev, emptyState, skeleton, openSheet, closeSheet, toast, notify, guard, state,
+        rerender: () => render(),
+      }) : false;
+    }
+    return reportModule || null;
+  }
+  function access() { return (state.me && state.me.access) || { ai: true, report: false }; }
+  function bothSections() { const a = access(); return a.ai && a.report && !!report(); }
+  function reportTabs() { const r = report(); return r ? r.tabs : []; }
+  const visible = (list) => list.filter((t) => !t.owner || (state.me && state.me.user.is_owner));
+  function startParam() {
+    try { return (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || ''; } catch (e) { return ''; }
+  }
   function renderTabs() {
-    const owner = state.me && state.me.user.is_owner;
-    $tabs.innerHTML = TABS.filter((t) => !t.owner || owner).map((t) =>
+    if (!state.me || state.route === 'choose') { $tabs.innerHTML = ''; return; }
+    const list = visible(state.section === 'report' ? reportTabs() : TABS);
+    if (bothSections()) list.push({ id: 'choose', label: 'Bo\'limlar', icon: 'grid' });
+    $tabs.innerHTML = list.map((t) =>
       '<button class="tab' + (state.route === t.id ? ' active' : '') + '" data-tab="' + t.id + '" aria-label="' + t.label + '">' + icon(t.icon) + '<span>' + t.label + '</span></button>'
     ).join('');
   }
@@ -139,11 +164,33 @@
     haptic('light');
     location.hash = '#' + b.dataset.tab;
   });
+  function defaultRoute(first) {
+    const a = access();
+    // hisobot ostidagi «📊 Batafsil» tugmasi (t.me/<bot>?startapp=hisobot_YYYYMMDD) — faqat ochilishda
+    const m = first && /^hisobot(?:_(\d{4})(\d{2})(\d{2}))?$/.exec(startParam());
+    if (m && a.report && report()) return ['r-today', m[1] ? m[1] + '-' + m[2] + '-' + m[3] : null];
+    if (bothSections()) return ['choose', null];
+    if (a.report && !a.ai && report()) return ['r-today', null];
+    return ['home', null];
+  }
   function parseRoute() {
-    const h = (location.hash || '#home').slice(1).split('/');
-    state.route = h[0] || 'home';
-    state.param = h[1] || null;
-    if (!TABS.some((t) => t.id === state.route)) { state.route = 'home'; state.param = null; }
+    const h = (location.hash || '').slice(1).split('/');
+    let route = h[0] || '';
+    let param = h[1] || null;
+    const a = access();
+    const first = !state.launched;
+    state.launched = true;
+    const ok = route === 'choose' ? bothSections()
+      : visible(TABS).some((t) => t.id === route) ? a.ai
+      : visible(reportTabs()).some((t) => t.id === route) ? a.report : false;
+    if (!ok) {
+      [route, param] = defaultRoute(first);
+      // ochilishdagi tgWebApp... yoki noma'lum manzil o'rniga — tanlangan ekran (hashchange'siz)
+      try { history.replaceState(null, '', '#' + route + (param ? '/' + param : '')); } catch (e) { /* yo'q */ }
+    }
+    state.route = route;
+    state.param = param;
+    state.section = route === 'choose' ? null : reportTabs().some((t) => t.id === route) ? 'report' : 'ai';
   }
   // Har render o'z raqamini oladi: kechikkan javob yangi ekran ustiga chizilmaydi
   let renderSeq = 0;
@@ -152,13 +199,28 @@
     const seq = ++renderSeq;
     const live = () => seq === renderSeq && !state.locked;
     clearTimeout(searchTimer);
+    state.fresh = false;
+    if (!state.me) {  // bo'lim va ruxsatlar /api/me dan bilinadi
+      $screen.innerHTML = skeleton(4);
+      try {
+        await loadMe();
+      } catch (e) {
+        if (live()) $screen.innerHTML = emptyState('alert', 'Xato', e.message);
+        return;
+      }
+      if (!live()) return;
+      state.fresh = true;  // birinchi ekran /api/me ni qayta so'ramaydi
+    }
     parseRoute();
     renderTabs();
     backButton(!!state.param);
     closeSheet(true);
     $screen.scrollTop = 0;
     window.scrollTo(0, 0);
-    const fn = { home: renderHome, history: state.param ? renderConversation : renderHistory, files: renderFiles, stats: renderStats, admin: renderAdmin }[state.route];
+    let fn;
+    if (state.route === 'choose') fn = renderChooser;
+    else if (state.section === 'report') fn = report().render[state.route];
+    else fn = { home: renderHome, history: state.param ? renderConversation : renderHistory, files: renderFiles, stats: renderStats, admin: renderAdmin }[state.route];
     try {
       await fn(live);
     } catch (e) {
@@ -184,10 +246,30 @@
   function skeleton(n) { return Array.from({ length: n || 4 }, () => '<div class="skeleton"></div>').join(''); }
 
   async function loadMe(force) {
-    if (state.me && !force) return state.me;
+    const fresh = state.fresh;
+    state.fresh = false;
+    if (state.me && (!force || fresh)) return state.me;
     state.me = await api('api/me');
     renderTabs();
     return state.me;
+  }
+
+  // ------------------------------------------------------------ BO'LIM TANLOVI
+  async function renderChooser(live) {
+    $screen.innerHTML = skeleton(3);
+    const me = await loadMe(true);
+    if (!live()) return;
+    const g = me.report;
+    const aiMeta = me.spend ? '<i>Bugun ' + money(me.spend.today) + '</i><i>' + me.spend.today_requests + ' so\'rov</i>' : '';
+    const reportMeta = g ? '<i>' + g.calls + ' ta qo\'ng\'iroq</i><i>' + esc(g.positive_emoji) + ' ' + g.positive + '</i><i>' + g.new_leads + ' yangi lid</i>'
+      : '<i>Lidlar guruhi hali ulanmagan</i>';
+    $screen.innerHTML = '<div class="chooser"><div class="chooser-head">' + MARK + '<div><div class="hello">Salom, ' + esc(me.user.name) + '</div>' +
+      '<div class="big">TTA Yordamchi</div></div></div>' +
+      '<button class="choice ai" data-action="go" data-to="home"><span class="choice-ic">' + icon('sparkles') + '</span>' +
+      '<span class="body"><b>AI yordamchi</b><span>Savol-javob, fayllar, suhbatlar tarixi va xarajat</span><span class="meta">' + aiMeta + '</span></span>' + chev() + '</button>' +
+      '<button class="choice report" data-action="go" data-to="r-today"><span class="choice-ic">' + icon('chart') + '</span>' +
+      '<span class="body"><b>Hisobotlar</b><span>Call center natijalari, operatorlar va sozlamalar</span><span class="meta">' + reportMeta + '</span></span>' + chev() + '</button>' +
+      '</div><p class="note" style="text-align:center">Bo\'limni tanlang · keyin pastdagi «Bo\'limlar» tugmasi bilan almashtirasiz</p>';
   }
 
   // ------------------------------------------------------------ BOSH SAHIFA
@@ -522,10 +604,18 @@
       github: () => guard(async () => { toast('GitHub\'dan yuklanmoqda…'); const r = await api('api/admin/github', { method: 'POST', body: {} }); notify('warning'); toast('Tasdiqlash so\'rovi chatga yuborildi (v' + r.current + ' → v' + r.version + ')'); }),
     };
     if (actions[action]) actions[action]();
+    else {
+      const r = report();
+      if (r && r.actions[action]) r.actions[action](el);
+    }
   });
   document.addEventListener('change', (e) => {
     const t = e.target;
-    if (t.dataset.toggle) {
+    if (t.dataset.rtoggle) {
+      haptic('light');
+      const r = report();
+      if (r) r.change(t);
+    } else if (t.dataset.toggle) {
       haptic('light');
       guard(async () => {
         await patchSettings({ [t.dataset.toggle]: t.checked }, t.dataset.toggle === 'web_search' ? (t.checked ? 'Qidiruv yoqildi' : 'Qidiruv o\'chirildi') : (t.checked ? 'Narx ko\'rsatiladi' : 'Narx yashirildi'));
@@ -564,6 +654,9 @@
       guard(async () => { await api('api/templates', { method: 'POST', body: { name: fd.get('name'), text: fd.get('text') } }); closeSheet(); toast('Shablon saqlandi'); render(); });
     } else if (kind === 'password') {
       guard(async () => { await api('api/admin/password', { method: 'POST', body: { password: fd.get('password') } }); closeSheet(); notify('success'); toast('Parol o\'rnatildi'); render(); });
+    } else {
+      const r = report();
+      if (r && r.forms[kind]) r.forms[kind](fd);
     }
   });
 

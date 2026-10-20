@@ -15,21 +15,23 @@ from test_flow import OWNER, run
 from test_webapp import MEMBER, App, init_data
 
 
-def mock_telegram(user_id: int = OWNER) -> str:
+def mock_telegram(user_id: int = OWNER, init: str | None = None, start_param: str | None = None) -> str:
+    """Soxta Telegram.WebApp: `init` — tayyor initData (boshqa username bilan), `start_param` — t.me/<bot>?startapp=..."""
+    unsafe = {"start_param": start_param} if start_param else {}
     return """
     (() => {
       const noop = () => {};
       window.__nav = 0;  // har hashchange — ilova render() dan oldin sanaladi
       window.addEventListener('hashchange', () => { window.__nav++; });
       window.Telegram = { WebApp: {
-        initData: %s, colorScheme: 'light', themeParams: {},
+        initData: %s, initDataUnsafe: %s, colorScheme: 'light', themeParams: {},
         ready: noop, expand: noop, close: noop, onEvent: noop, offEvent: noop, setHeaderColor: noop,
         setBackgroundColor: noop, disableVerticalSwipes: noop, openLink: noop, downloadFile: noop,
         BackButton: { show: noop, hide: noop, onClick: noop },
         HapticFeedback: { impactOccurred: noop, notificationOccurred: noop },
       } };
     })();
-    """ % json.dumps(init_data(user_id))
+    """ % (json.dumps(init or init_data(user_id)), json.dumps(unsafe))
 
 
 def local_chromium() -> str | None:
@@ -45,7 +47,8 @@ def local_chromium() -> str | None:
 
 @contextlib.asynccontextmanager
 async def chromium():
-    """`open(app, width)` → (page, base): har ilova uchun alohida kontekst; sahifa xatolari yig'iladi."""
+    """`open(app, width, user_id=…, init=…, start_param=…)` → (page, base): har ilova uchun alohida kontekst;
+    sahifa xatolari yig'iladi."""
     pw_api = pytest.importorskip("playwright.async_api")
     async with pw_api.async_playwright() as pw:
         try:
@@ -60,7 +63,7 @@ async def chromium():
                 pytest.skip(f"Chromium ishga tushmadi: {exc2}")
         errors: list[str] = []
 
-        async def open_page(app: App, width: int = 390):
+        async def open_page(app: App, width: int = 390, **telegram):
             base = str(app.client.make_url("/"))
 
             async def only_local(route):
@@ -71,7 +74,7 @@ async def chromium():
 
             context = await browser.new_context(viewport={"width": width, "height": 800}, bypass_csp=True)
             await context.route("**/*", only_local)
-            await context.add_init_script(mock_telegram())
+            await context.add_init_script(mock_telegram(**telegram))
             page = await context.new_page()
             page.set_default_timeout(8000)
             page.on("pageerror", lambda e: errors.append(str(e)))

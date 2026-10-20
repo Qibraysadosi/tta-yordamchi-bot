@@ -1,0 +1,396 @@
+/* TTA Yordamchi Mini App — «Hisobotlar» bo'limi (call center). API: bot/reports/api.py
+   app.js uni window.TTAReport(App) bilan ulaydi: ekranlar, tugma amallari, formalar va tumblerlar shu yerda. */
+(function () {
+  'use strict';
+  const DAYS = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sh', 'Ya'];
+  const AVATAR = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#e11d48', '#7c3aed', '#0284c7', '#c026d3'];
+  const REMIND = [[0, 'O\'chiq'], [15, '15 daqiqa'], [30, '30 daqiqa'], [60, '1 soat'], [120, '2 soat']];
+  const KIND = {
+    operator: { title: 'Operator qo\'shish', hint: 'Lidlarga qo\'ng\'iroq qiladigan xodim. Hisobotda alohida qatorda ko\'rinadi.' },
+    excluded: { title: 'Istisno qo\'shish', hint: 'Bu odamning reaksiya va izohlari hisobotda umuman sanalmaydi (masalan, rahbarlar).' },
+    leader: { title: 'Rahbar qo\'shish', hint: 'Rahbar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi, sozlamalarni o\'zgartira olmaydi.' },
+  };
+
+  window.TTAReport = function (A) {
+    const { api, esc, row, chev, emptyState, skeleton, openSheet, closeSheet, toast, notify, guard, state, rerender } = A;
+    const icon = window.icon;
+    const $screen = document.getElementById('screen');
+    const cache = {};
+    const owner = () => !!(state.me && state.me.user && state.me.user.is_owner);
+
+    const TABS = [
+      { id: 'r-today', label: 'Bugun', icon: 'chart' },
+      { id: 'r-ops', label: 'Operatorlar', icon: 'users' },
+      { id: 'r-set', label: 'Sozlamalar', icon: 'sliders', owner: true },
+    ];
+
+    // ---------------------------------------------------------- yordamchilar
+    function avatar(name) {
+      let h = 0;
+      for (const ch of String(name)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+      const letter = (String(name).replace(/^@/, '').trim()[0] || '?').toUpperCase();
+      return '<span class="avatar" style="background:' + AVATAR[h % AVATAR.length] + '">' + esc(letter) + '</span>';
+    }
+    const dm = (x) => x.slice(8, 10) + '.' + x.slice(5, 7);
+    const period = (d) => dm(d.start) + ' ' + d.start.slice(11) + ' → ' + dm(d.end) + ' ' + d.end.slice(11);
+    const value = (text) => '<span class="value">' + text + '</span>';
+    function hbar(name, count, max, num) {
+      return '<div class="hbar"><span class="name" title="' + name + '">' + name + '</span><span class="track"><i style="width:' +
+        Math.max(2, count / Math.max(max, 1) * 100) + '%"></i></span><span class="num">' + (num == null ? count : num) + '</span></div>';
+    }
+    function statusLine(d, r) {
+      const parts = d.columns.filter((c) => r.counts[c]).map((c) => '<span>' + esc(c) + ' ' + r.counts[c] + '</span>');
+      return '<div class="status-line">' + (parts.length ? parts.join('') : '<span>natija yo\'q</span>') + '</div>';
+    }
+    function opRow(d, r, action) {
+      const share = r.total ? Math.round(r.positive / r.total * 100) : 0;
+      const handle = r.username && r.name !== '@' + r.username ? ' <span class="handle">@' + esc(r.username) + '</span>' : '';
+      return '<button class="row op" data-action="' + (action || 'none') + '" data-key="' + esc(r.key) + '">' + avatar(r.name) +
+        '<span class="body"><div class="label">' + esc(r.name) + handle + '</div>' + statusLine(d, r) +
+        (r.total ? '<div class="mini-bar"><i style="width:' + share + '%"></i></div>' : '') + '</span>' +
+        '<span class="total">' + r.total + '<small>lid</small></span></button>';
+    }
+    function noGroups(isOwner) {
+      return emptyState('inbox', 'Lidlar guruhi ulanmagan', isOwner
+        ? 'Botni lidlar guruhiga qo\'shing va admin qiling — bot sizdan guruh turini so\'raydi. Shundan keyin natijalar shu yerda ko\'rinadi.'
+        : 'Bot egasi lidlar guruhini ulagach, natijalar shu yerda ko\'rinadi.');
+    }
+
+    // ---------------------------------------------------------- BUGUN
+    async function renderToday(live) {
+      $screen.innerHTML = '<div class="title">Hisobot</div>' + skeleton(5);
+      const d = await api('api/report/overview' + (state.param ? '?day=' + encodeURIComponent(state.param) : ''));
+      if (!live()) return;
+      cache.overview = d;
+      if (!d.has_groups) {
+        $screen.innerHTML = '<div class="title">Hisobot</div>' + noGroups(d.role === 'owner');
+        return;
+      }
+      const t = d.totals;
+      const extraTotal = d.extras.reduce((s, r) => s + r.total, 0);
+      const calls = t.total + extraTotal;
+      const pos = d.statuses.find((s) => s.positive);
+      const posCount = t.positive + d.extras.reduce((s, r) => s + r.positive, 0);
+      const share = calls ? Math.round(posCount / calls * 100) : 0;
+      const all = {};
+      d.rows.concat(d.extras).forEach((r) => Object.keys(r.counts).forEach((c) => { all[c] = (all[c] || 0) + r.counts[c]; }));
+      const labels = {};
+      d.statuses.forEach((s) => { labels[s.emoji] = s.label; });
+      labels[d.other] = 'aniqlanmagan';
+      let html = '<div class="hero report">' +
+        '<div class="hello">' + esc(d.label) + (d.live ? ' · ' + d.end.slice(11) + ' gacha<span class="live">jonli</span>' : ' · yakunlangan') + '</div>' +
+        '<div class="big">' + calls + ' <small>ta lidga qo\'ng\'iroq</small></div>' +
+        '<div class="chips">' + d.columns.filter((c) => all[c]).map((c) => '<span class="chip" title="' + esc(labels[c] || '') + '">' + esc(c) + ' <b>' + all[c] + '</b> ' + esc(labels[c] || '') + '</span>').join('') +
+        (calls ? '' : '<span class="chip off">hali natija yo\'q</span>') + '</div>' +
+        '<div class="foot"><div class="stat"><div class="k">Yangi lidlar</div><div class="v">' + d.leads.new + '</div></div>' +
+        '<div class="stat"><div class="k">Belgilanmagan</div><div class="v">' + d.leads.unmarked + '</div></div>' +
+        (pos ? '<div class="stat"><div class="k">' + esc(pos.emoji + ' ' + pos.label) + '</div><div class="v">' + share + '%</div></div>' : '') +
+        '</div></div>' +
+        '<div class="period-nav"><button class="pill" data-action="r-day" data-day="' + esc(d.prev) + '" aria-label="Oldingi kun">' + icon('chevronLeft') + '</button>' +
+        '<span class="when">' + esc(period(d)) + '</span>' +
+        '<button class="pill" ' + (d.next ? 'data-action="r-day" data-day="' + esc(d.next) + '"' : 'disabled') + ' aria-label="Keyingi kun">' + icon('chevronRight') + '</button></div>';
+
+      html += '<div class="section"><div class="section-h">Operatorlar' + (d.has_operator_list ? '' : ' · ro\'yxat kiritilmagan') + '</div>';
+      html += d.rows.length ? '<div class="group">' + d.rows.map((r) => opRow(d, r, 'none')).join('') + '</div>'
+        : '<div class="group">' + emptyState('phone', 'Hali qo\'ng\'iroq yo\'q', 'Operatorlar lidlarga reaksiya yoki izoh qoldirgach, shu yerda ko\'rinadi.') + '</div>';
+      if (!d.has_operator_list && d.role === 'owner') html += '<p class="note">Operatorlar ro\'yxati bo\'sh — reaksiya yoki izoh qoldirgan hamma sanalmoqda. Ro\'yxat: Operatorlar → Qo\'shish.</p>';
+      html += '</div>';
+      if (d.extras.length) {
+        html += '<div class="section"><div class="section-h">Ro\'yxatda yo\'q</div><div class="group">' +
+          d.extras.map((r) => opRow(d, r, d.role === 'owner' ? 'r-extra' : 'none')).join('') + '</div>' +
+          (d.role === 'owner' ? '<p class="note">Bosing — operator qilish yoki hisobotdan chiqarish (istisno).</p>' : '') + '</div>';
+      }
+      const courses = d.courses.filter((c) => c.total);
+      if (courses.length) {
+        const max = Math.max(...courses.map((c) => c.total));
+        html += '<div class="section"><div class="section-h">Kurslar bo\'yicha' + (pos ? ' · ' + esc(pos.emoji) + ' / jami' : '') + '</div><div class="group">' +
+          courses.map((c) => hbar(esc(c.course), c.total, max, (pos ? c.positive + ' / ' : '') + c.total)).join('') + '</div></div>';
+      }
+      if (d.reasons.length) {
+        const max = Math.max(...d.reasons.map((r) => r.count));
+        html += '<div class="section"><div class="section-h">Rad etish sabablari' + (d.reasons_grouped ? '' : ' · dastlabki') + '</div><div class="group">' +
+          d.reasons.map((r) => hbar(esc(r.label), r.count, max)).join('') + '</div></div>';
+      }
+      const facts = [row('chat', 'comment', 'Izohlar', 'AI o\'qib tahlil qiladi', value(d.comments + ' ta'), 'none')];
+      if (d.callbacks) facts.push(row('history', 'phone', 'Qayta qo\'ng\'iroq', 'izohda vaqt aytilgan lidlar', value(d.callbacks + ' ta'), 'none'));
+      if (d.conflicts) facts.push(row('mode', 'alert', 'Ziddiyat', 'reaksiya va izoh mos emas', value(d.conflicts + ' ta'), 'none'));
+      if (d.pending) facts.push(row('think', 'clock', 'Tahlil kutilmoqda', 'bir necha daqiqada tayyor', value(d.pending + ' ta'), 'none'));
+      html += '<div class="section"><div class="section-h">Izohlar</div><div class="group">' + facts.join('') + '</div></div>';
+      if (d.role === 'owner' && d.live) {
+        html += '<div class="btn-row"><button class="btn secondary" data-action="r-send">' + icon('send') + 'Hozirgi holatni rahbarlarga yuborish</button></div>';
+      }
+      if (d.conflicts) html += '<p class="note">Ziddiyatda eng so\'nggi belgi (reaksiya yoki izoh) olinadi.</p>';
+      html += '<p class="note">' + (d.sent ? 'Bu davr uchun kunlik hisobot yuborilgan.' : d.live ? 'Kunlik hisobot ' + esc(d.schedule.time) + ' da (' + esc(d.schedule.days) + ') rahbarlar guruhiga keladi.'
+        : 'Bu davr uchun kunlik hisobot yuborilmagan.') + '</p>';
+      $screen.innerHTML = html;
+    }
+
+    // ---------------------------------------------------------- OPERATORLAR
+    async function renderOperators(live) {
+      $screen.innerHTML = '<div class="title">Operatorlar</div>' + skeleton(5);
+      const people = await api('api/report/people');
+      const d = await api('api/report/overview');
+      if (!live()) return;
+      cache.people = people;
+      cache.overview = d;
+      const isOwner = owner();
+      const stats = {};
+      d.rows.concat(d.extras).forEach((r) => { if (r.user_id) stats[r.user_id] = r; });
+      let html = '<div class="title">Operatorlar<small>' + esc(d.label) + ' · ' + esc(period(d)) + '</small></div>';
+      html += '<div class="section"><div class="section-h">Call center · ' + people.operators.length + ' ta' +
+        (isOwner ? '<button data-action="r-add" data-kind="operator">+ Qo\'shish</button>' : '') + '</div>';
+      if (people.operators.length) {
+        html += '<div class="group">' + people.operators.map((p) => {
+          const r = p.user_id ? stats[p.user_id] : null;
+          const who = p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id);
+          const status = !p.seen ? 'guruhda hali ko\'rinmagan' : p.dm_ok ? 'eslatma oladi' : 'botga /start bosmagan';
+          return '<button class="row op" data-action="' + (isOwner ? 'r-edit' : 'none') + '" data-id="' + p.id + '">' + avatar(p.label) +
+            '<span class="body"><div class="label">' + esc(p.label) + (p.name ? ' <span class="handle">' + who + '</span>' : '') + '</div>' +
+            '<div class="sub">' + status + '</div>' + (r && r.total ? statusLine(d, r) : '') + '</span>' +
+            '<span class="total">' + (r ? r.total : 0) + '<small>lid</small></span></button>';
+        }).join('') + '</div>';
+      } else {
+        html += '<div class="group">' + emptyState('users', 'Ro\'yxat bo\'sh', 'Ro\'yxat bo\'sh bo\'lsa, lidga reaksiya yoki izoh qoldirgan hamma sanaladi. Operatorlarning Telegram username\'ini qo\'shing.') + '</div>';
+      }
+      html += '</div>';
+      if (d.extras.length) {
+        html += '<div class="section"><div class="section-h">Ro\'yxatda yo\'q, lekin qo\'ng\'iroq qilgan</div><div class="group">' +
+          d.extras.map((r) => opRow(d, r, isOwner ? 'r-extra' : 'none')).join('') + '</div></div>';
+      }
+      html += '<p class="note">Operator botga bir marta /start bossa, hech kim belgilamagan lidlar haqida eslatma oladi.</p>';
+      $screen.innerHTML = html;
+    }
+
+    // ---------------------------------------------------------- SOZLAMALAR (faqat egasi)
+    async function renderSettings(live) {
+      $screen.innerHTML = '<div class="title">Sozlamalar</div>' + skeleton(6);
+      const s = await api('api/report/settings');
+      const people = await api('api/report/people');
+      if (!live()) return;
+      cache.settings = s;
+      cache.people = people;
+      const sc = s.schedule;
+      const roleText = (g) => g.active && g.roles.length ? g.roles.map((r) => s.role_labels[r] || r).join(', ') : 'kuzatilmaydi';
+      const leadersGroup = s.groups.some((g) => g.active && g.roles.indexOf('leaders') >= 0);
+      let html = '<div class="title">Sozlamalar<small>Hisobotlar bo\'limi · faqat siz ko\'rasiz</small></div>';
+
+      html += '<div class="section"><div class="section-h">Guruhlar</div><div class="group">' + (s.groups.length ? s.groups.map((g) =>
+        row('group', 'users', esc(g.title || String(g.chat_id)), esc(roleText(g)) + (g.active && g.roles.indexOf('leads') >= 0 && !g.is_admin ? ' · ⚠️ bot admin emas' : ''),
+          chev(), 'r-group', 'data-chat="' + g.chat_id + '"')).join('') :
+        emptyState('users', 'Hali guruh yo\'q', 'Botni lidlar va rahbarlar guruhiga qo\'shing — bot sizdan guruh turini so\'raydi.')) + '</div>' +
+        '<p class="note">Lidlar guruhida botni admin qiling (huquqlar shart emas) — aks holda reaksiyalarni ko\'rmaydi.</p></div>';
+
+      html += '<div class="section"><div class="section-h">Statuslar<button data-action="r-status-add">+ Qo\'shish</button></div><div class="group">' +
+        s.statuses.map((st) => '<button class="row" data-action="r-status" data-id="' + st.id + '"><span class="tile emoji">' + esc(st.emoji) + '</span>' +
+          '<span class="body"><div class="label">' + esc(st.label) + '</div>' + (st.positive ? '<div class="sub">asosiy natija — ulush va kurslar kesimida</div>' : '') + '</span>' + chev() + '</button>').join('') +
+        '</div><p class="note">Operator lid postiga shu emojini bossa, natija shunday hisoblanadi. Izohlarni AI ham shu ro\'yxat bo\'yicha tushunadi.</p></div>';
+
+      const remind = REMIND.find((x) => x[0] === sc.remind_minutes);
+      html += '<div class="section"><div class="section-h">Kunlik hisobot</div><div class="group">' +
+        A.toggleRow('report', 'calendar', 'Kunlik hisobot', leadersGroup ? 'rahbarlar guruhiga' : 'sizga lichkada', 'r-enabled', sc.enabled).replace('data-toggle=', 'data-rtoggle=') +
+        row('clock', 'clock', 'Yuborish vaqti', 'davr shu vaqtda yopiladi', value(esc(sc.time)) + chev(), 'r-time') +
+        row('history', 'calendar', 'Kunlar', 'dam kuni — keyingi kunga', value(esc(sc.days_label)) + chev(), 'r-days') +
+        row('bell', 'bell', 'Belgilanmagan lid eslatmasi', 'operatorlarga lichkada', value(esc(remind ? remind[1] : sc.remind_minutes + ' daqiqa')) + chev(), 'r-remind') +
+        row('clock', 'clock', 'Ish vaqti', 'eslatmalar shu oraliqda', value(esc(sc.work_start + '–' + sc.work_end)) + chev(), 'r-work') +
+        '</div>' + (leadersGroup ? '' : '<p class="note">Rahbarlar guruhi belgilanmagan — hisobot sizga keladi. Guruhni «Guruhlar»da belgilang.</p>') +
+        '<div class="btn-row"><button class="btn secondary" data-action="r-send">' + icon('send') + 'Hozirgi holatni yuborish</button></div></div>';
+
+      const personRows = (list, kind, tile, ic) => list.map((p) => row(tile, ic, esc(p.label), (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) + (kind === 'leader' ? (p.seen ? ' · kirgan' : ' · hali kirmagan') : ''), chev(), 'r-edit', 'data-id="' + p.id + '"')).join('');
+      html += '<div class="section"><div class="section-h">Kirish · rahbarlar<button data-action="r-add" data-kind="leader">+ Qo\'shish</button></div><div class="group">' +
+        (people.leaders.length ? personRows(people.leaders, 'leader', 'leader', 'eye') : emptyState('eye', 'Rahbar qo\'shilmagan', 'Rahbarlar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi.')) + '</div></div>';
+      html += '<div class="section"><div class="section-h">Istisnolar<button data-action="r-add" data-kind="excluded">+ Qo\'shish</button></div><div class="group">' +
+        (people.excluded.length ? personRows(people.excluded, 'excluded', 'ban', 'ban') : emptyState('ban', 'Istisno yo\'q', 'Bu ro\'yxatdagilarning izoh va reaksiyalari hisobotda sanalmaydi.')) + '</div></div>';
+
+      const last = s.last_report ? s.last_report.sent_at.replace('T', ' ').slice(0, 16) + ' (UTC)' : 'hali yo\'q';
+      html += '<div class="section"><div class="section-h">Holat</div><div class="group">' +
+        row('report', 'inbox', 'Oxirgi 24 soat', s.diag.leads + ' ta lid · ' + s.diag.reactions + ' ta reaksiya · ' + s.diag.comments + ' ta izoh', '', 'none') +
+        row('bell', 'bell', 'Eslatma oladigan operatorlar', 'botga /start bosganlar', value(s.operators_dm + ' / ' + s.operators), 'none') +
+        row('model', 'cpu', 'Izohlarni tahlil qiluvchi model', 'xarajat «Xarajat»da alohida', value(esc(s.model)), 'none') +
+        row('history', 'send', 'Oxirgi kunlik hisobot', esc(last), '', 'none') +
+        row('chat', 'external', '«📊 Batafsil» tugmasi', 'hisobot ostida, shu bo\'limni ochadi', value(s.bot.has_main_web_app ? 'ulangan' : 'o\'chiq'), 'none') +
+        '</div>' + (s.bot.has_main_web_app ? '' : '<p class="note">«📊 Batafsil» tugmasini yoqish: @BotFather → botingiz → Bot Settings → Configure Mini App → Enable Mini App → ' +
+          'shu ilova manzili.</p>') + '</div>';
+      $screen.innerHTML = html;
+    }
+
+    // ---------------------------------------------------------- panellar (sheet)
+    function personSheet(kind, preset) {
+      const k = KIND[kind];
+      openSheet('<h3 class="sheet-title">' + k.title + '</h3><p class="sheet-sub">' + k.hint + '</p>' +
+        '<form data-form="r-person"><input type="hidden" name="kind" value="' + kind + '">' +
+        '<div class="field"><label>Telegram username yoki ID</label><input name="who" required maxlength="64" placeholder="@username" autocomplete="off" autocapitalize="off" value="' + esc(preset && preset.who || '') + '"></div>' +
+        '<div class="field"><label>Ism (hisobotda shunday ko\'rinadi)</label><input name="name" maxlength="40" placeholder="Masalan: Malika" value="' + esc(preset && preset.name || '') + '"></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>', (el) => { const i = el.querySelector(preset ? 'input[name=name]' : 'input[name=who]'); if (i) i.focus(); });
+    }
+    function editSheet(p) {
+      const kindLabel = { operator: 'Operator', excluded: 'Istisno', leader: 'Rahbar' }[p.kind] || '';
+      openSheet('<h3 class="sheet-title">' + esc(p.label) + '</h3><p class="sheet-sub">' + kindLabel + ' · ' + (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) +
+        (p.seen ? ' · ID: ' + esc(p.user_id) : ' · guruhda hali ko\'rinmagan') + '</p>' +
+        '<form data-form="r-rename"><input type="hidden" name="id" value="' + p.id + '"><div class="field"><label>Ism</label><input name="name" maxlength="40" value="' + esc(p.name) + '" placeholder="Ism"></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>' +
+        '<div class="btn-row"><button class="btn danger" data-action="r-delete" data-id="' + p.id + '">' + icon('trash') + 'Ro\'yxatdan o\'chirish</button></div>');
+    }
+    function extraSheet(r) {
+      openSheet('<h3 class="sheet-title">' + esc(r.name) + '</h3><p class="sheet-sub">' + (r.username ? '@' + esc(r.username) + ' · ' : '') + 'ro\'yxatda yo\'q, lekin bu davrda ' + r.total + ' ta lidga qo\'ng\'iroq qilgan</p>' +
+        '<div class="group">' +
+        row('report', 'userPlus', 'Operator qilish', 'hisobotda alohida qatorda ko\'rinadi', '', 'r-promote', 'data-kind="operator" data-key="' + esc(r.key) + '"') +
+        row('ban', 'ban', 'Istisno qilish', 'hisobotda umuman sanalmaydi', '', 'r-promote', 'data-kind="excluded" data-key="' + esc(r.key) + '"') +
+        '</div>');
+    }
+    function groupSheet(g) {
+      const s = cache.settings;
+      const toggle = (role) => '<label class="row"><span class="tile ' + (role === 'leads' ? 'report' : 'leader') + '">' + icon(role === 'leads' ? 'inbox' : 'eye') + '</span><span class="body"><div class="label">' + esc(s.role_labels[role]) + '</div>' +
+        '<div class="sub">' + (role === 'leads' ? 'lid postlari va izohlar' : 'kunlik hisobot shu yerga') + '</div></span>' +
+        '<span class="switch"><input type="checkbox" data-rtoggle="r-role" data-chat="' + g.chat_id + '" data-role="' + role + '"' + (g.active && g.roles.indexOf(role) >= 0 ? ' checked' : '') + '><span></span></span></label>';
+      openSheet('<h3 class="sheet-title">' + esc(g.title || String(g.chat_id)) + '</h3><p class="sheet-sub">' +
+        (g.roles.indexOf('leads') >= 0 ? (g.is_admin ? 'Bot guruhda admin ✅' : '⚠️ Bot admin emas — reaksiyalar ko\'rinmaydi') : 'Guruh turini belgilang') + '</p>' +
+        '<div class="group">' + toggle('leads') + toggle('leaders') + '</div>' +
+        '<p class="note">Bot guruhga hech narsa yozmaydi — faqat o\'qiydi. Ikkalasi o\'chirilsa, guruh kuzatilmaydi.</p>');
+    }
+    function statusSheet(st) {
+      const edit = !!st;
+      openSheet('<h3 class="sheet-title">' + (edit ? esc(st.emoji) + ' ' + esc(st.label) : 'Yangi status') + '</h3>' +
+        '<p class="sheet-sub">' + (edit ? 'Ma\'nosini o\'zgartiring yoki o\'chiring' : 'Operator lid postiga bosadigan emoji va uning ma\'nosi') + '</p>' +
+        '<form data-form="' + (edit ? 'r-status-edit' : 'r-status-add') + '">' + (edit ? '<input type="hidden" name="id" value="' + st.id + '">' :
+          '<div class="field"><label>Emoji</label><input name="emoji" required maxlength="8" placeholder="🔥" autocomplete="off"></div>') +
+        '<div class="field"><label>Ma\'nosi</label><input name="label" required maxlength="30" value="' + esc(edit ? st.label : '') + '" placeholder="Masalan: keladi"></div>' +
+        '<label class="row" style="padding-left:4px"><span class="body"><div class="label">Asosiy natija</div><div class="sub">ulush va kurslar kesimida</div></span>' +
+        '<span class="switch"><input type="checkbox" name="positive"' + (edit && st.positive ? ' checked' : '') + '><span></span></span></label>' +
+        '<button class="btn" type="submit">Saqlash</button></form>' +
+        (edit ? '<div class="btn-row"><button class="btn danger" data-action="r-status-delete" data-id="' + st.id + '">' + icon('trash') + 'Statusni o\'chirish</button></div>' +
+          '<p class="note">O\'chirilsa, shu emoji bo\'yicha eski natijalar «❔ aniqlanmagan» ustuniga o\'tadi.</p>' : ''));
+    }
+    function timeSheet() {
+      const sc = cache.settings.schedule;
+      openSheet('<h3 class="sheet-title">Yuborish vaqti</h3><p class="sheet-sub">Hisobot davri — oldingi hisobot vaqtidan shu vaqtgacha</p>' +
+        '<form data-form="r-schedule"><div class="field"><label>Vaqt</label><input type="time" name="time" required value="' + esc(sc.time) + '"></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>');
+    }
+    function daysSheet() {
+      const sc = cache.settings.schedule;
+      openSheet('<h3 class="sheet-title">Hisobot kunlari</h3><p class="sheet-sub">Tanlanmagan kunlar keyingi hisobotga qo\'shiladi</p>' +
+        '<form data-form="r-schedule"><div class="day-chips">' + DAYS.map((name, i) => '<label><input type="checkbox" name="days" value="' + i + '"' + (sc.days.indexOf(i) >= 0 ? ' checked' : '') + '><span>' + name + '</span></label>').join('') + '</div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>');
+    }
+    function workSheet() {
+      const sc = cache.settings.schedule;
+      openSheet('<h3 class="sheet-title">Ish vaqti</h3><p class="sheet-sub">Belgilanmagan lid eslatmalari faqat shu oraliqda va hisobot kunlarida yuboriladi</p>' +
+        '<form data-form="r-schedule"><div class="field-row"><div class="field"><label>Boshlanishi</label><input type="time" name="work_start" required value="' + esc(sc.work_start) + '"></div>' +
+        '<div class="field"><label>Tugashi</label><input type="time" name="work_end" required value="' + esc(sc.work_end) + '"></div></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>');
+    }
+    function remindSheet() {
+      const sc = cache.settings.schedule;
+      openSheet('<h3 class="sheet-title">Belgilanmagan lid eslatmasi</h3><p class="sheet-sub">Yangi lidni shuncha vaqt ichida hech kim belgilamasa, operatorlarga lichkada eslatma boradi</p>' +
+        '<div class="group">' + REMIND.map((x) => '<button class="option" data-action="r-remind-set" data-value="' + x[0] + '"><span class="tile bell">' + icon('bell') + '</span>' +
+          '<span class="body"><div>' + x[1] + '</div></span>' + (sc.remind_minutes === x[0] ? icon('check', 'mark') : '') + '</button>').join('') + '</div>');
+    }
+
+    async function saveSchedule(body, text) {
+      await api('api/report/schedule', { method: 'PATCH', body });
+      closeSheet();
+      notify('success');
+      toast(text || 'Saqlandi');
+      rerender();
+    }
+    function findRow(key) {
+      const d = cache.overview;
+      return d ? d.rows.concat(d.extras).find((r) => r.key === key) : null;
+    }
+    function findPerson(id) {
+      const p = cache.people;
+      return p ? p.operators.concat(p.excluded, p.leaders).find((x) => String(x.id) === String(id)) : null;
+    }
+
+    // ---------------------------------------------------------- hodisalar
+    const actions = {
+      'r-day': (el) => { location.hash = '#r-today/' + el.dataset.day; },
+      'r-extra': (el) => { const r = findRow(el.dataset.key); if (r) extraSheet(r); },
+      'r-promote': (el) => guard(async () => {
+        const r = findRow(el.dataset.key);
+        if (!r) return;
+        await api('api/report/people', { method: 'POST', body: { kind: el.dataset.kind, who: r.username || String(r.user_id), name: r.name.charAt(0) === '@' ? '' : r.name } });
+        closeSheet();
+        notify('success');
+        toast(el.dataset.kind === 'operator' ? 'Operatorlar ro\'yxatiga qo\'shildi' : 'Istisnolarga qo\'shildi');
+        rerender();
+      }),
+      'r-add': (el) => personSheet(el.dataset.kind),
+      'r-edit': (el) => { const p = findPerson(el.dataset.id); if (p) editSheet(Object.assign({ kind: p.kind || kindOf(p) }, p)); },
+      'r-delete': (el) => guard(async () => { await api('api/report/people/' + el.dataset.id, { method: 'DELETE' }); closeSheet(); toast('O\'chirildi'); rerender(); }),
+      'r-group': (el) => { const g = (cache.settings.groups || []).find((x) => String(x.chat_id) === el.dataset.chat); if (g) groupSheet(g); },
+      'r-status': (el) => { const st = cache.settings.statuses.find((x) => String(x.id) === el.dataset.id); if (st) statusSheet(st); },
+      'r-status-add': () => statusSheet(null),
+      'r-status-delete': (el) => guard(async () => { await api('api/report/statuses/' + el.dataset.id, { method: 'DELETE' }); closeSheet(); toast('Status o\'chirildi'); rerender(); }),
+      'r-time': timeSheet, 'r-days': daysSheet, 'r-work': workSheet, 'r-remind': remindSheet,
+      'r-remind-set': (el) => guard(() => saveSchedule({ remind_minutes: Number(el.dataset.value) }, 'Eslatma: ' + (REMIND.find((x) => String(x[0]) === el.dataset.value) || [0, ''])[1])),
+      'r-send': () => guard(async () => {
+        toast('Yuborilmoqda…');
+        const r = await api('api/report/send', { method: 'POST', body: {} });
+        notify('success');
+        toast(r.target === 'leaders' ? 'Rahbarlar guruhiga yuborildi' : 'Sizga yuborildi (rahbarlar guruhi belgilanmagan)');
+      }),
+    };
+    function kindOf(p) {
+      const c = cache.people;
+      if (!c) return 'operator';
+      if (c.leaders.some((x) => x.id === p.id)) return 'leader';
+      if (c.excluded.some((x) => x.id === p.id)) return 'excluded';
+      return 'operator';
+    }
+    const forms = {
+      'r-person': (fd) => guard(async () => {
+        const kind = fd.get('kind');
+        await api('api/report/people', { method: 'POST', body: { kind, who: fd.get('who'), name: fd.get('name') } });
+        closeSheet();
+        notify('success');
+        toast({ operator: 'Operator qo\'shildi', excluded: 'Istisno qo\'shildi', leader: 'Rahbar qo\'shildi' }[kind] || 'Saqlandi');
+        rerender();
+      }),
+      'r-rename': (fd) => guard(async () => { await api('api/report/people/' + fd.get('id'), { method: 'PATCH', body: { name: fd.get('name') } }); closeSheet(); toast('Saqlandi'); rerender(); }),
+      'r-status-add': (fd) => guard(async () => {
+        await api('api/report/statuses', { method: 'POST', body: { emoji: fd.get('emoji'), label: fd.get('label'), positive: fd.get('positive') === 'on' } });
+        closeSheet(); notify('success'); toast('Status qo\'shildi'); rerender();
+      }),
+      'r-status-edit': (fd) => guard(async () => {
+        await api('api/report/statuses/' + fd.get('id'), { method: 'PATCH', body: { label: fd.get('label'), positive: fd.get('positive') === 'on' } });
+        closeSheet(); toast('Saqlandi'); rerender();
+      }),
+      'r-schedule': (fd) => guard(() => {
+        const body = {};
+        if (fd.has('time')) body.time = fd.get('time');
+        if (fd.has('work_start')) { body.work_start = fd.get('work_start'); body.work_end = fd.get('work_end'); }
+        if (document.querySelector('.sheet [name=days]')) {
+          body.days = fd.getAll('days').map(Number);
+          if (!body.days.length) { toast('Kamida bitta kunni tanlang'); return Promise.resolve(); }
+        }
+        return saveSchedule(body);
+      }),
+    };
+    function change(t) {
+      const key = t.dataset.rtoggle;
+      if (key === 'r-enabled') {
+        guard(async () => {
+          await api('api/report/schedule', { method: 'PATCH', body: { enabled: t.checked } });
+          toast(t.checked ? 'Kunlik hisobot yoqildi' : 'Kunlik hisobot o\'chirildi');
+        }).then((ok) => { if (!ok) t.checked = !t.checked; });
+      } else if (key === 'r-role') {
+        const chat = t.dataset.chat;
+        const roles = Array.from(document.querySelectorAll('.sheet [data-rtoggle="r-role"]')).filter((x) => x.checked).map((x) => x.dataset.role);
+        guard(async () => {
+          const r = await api('api/report/groups/' + chat, { method: 'PATCH', body: { roles, active: roles.length > 0 } });
+          const g = (cache.settings.groups || []).find((x) => String(x.chat_id) === chat);
+          if (g) { g.roles = r.roles; g.active = r.active; g.is_admin = r.is_admin; }
+          cache.dirty = true;
+          toast(roles.length ? 'Saqlandi' : 'Guruh kuzatilmaydi');
+          if (r.roles.indexOf('leads') >= 0 && !r.is_admin) toast('⚠️ Botni guruhda admin qiling');
+        }).then((ok) => { if (!ok) t.checked = !t.checked; });
+      }
+    }
+    function onSheetClosed() {
+      if (cache.dirty && state.route === 'r-set') { cache.dirty = false; rerender(); }
+    }
+
+    return { tabs: TABS, render: { 'r-today': renderToday, 'r-ops': renderOperators, 'r-set': renderSettings }, actions, forms, change, onSheetClosed };
+  };
+})();

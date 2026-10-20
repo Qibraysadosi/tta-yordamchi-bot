@@ -88,6 +88,85 @@ CREATE TABLE IF NOT EXISTS files (
     created_at TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_files_user ON files (user_id, id);
+
+-- Hisobotlar (v1.7): kuzatiladigan guruhlar, odamlar, statuslar, lidlar va ular bo'yicha harakatlar
+CREATE TABLE IF NOT EXISTS rp_groups (
+    chat_id   INTEGER PRIMARY KEY,
+    title     TEXT    NOT NULL DEFAULT '',
+    roles     TEXT    NOT NULL DEFAULT '',
+    active    INTEGER NOT NULL DEFAULT 1,
+    is_admin  INTEGER NOT NULL DEFAULT 0,
+    added_by  INTEGER,
+    added_at  TEXT    NOT NULL,
+    asked     INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT
+);
+CREATE TABLE IF NOT EXISTS rp_people (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT    NOT NULL,
+    username   TEXT,
+    user_id    INTEGER,
+    name       TEXT    NOT NULL DEFAULT '',
+    dm_ok      INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rp_people_user ON rp_people (user_id);
+CREATE TABLE IF NOT EXISTS rp_users (
+    user_id   INTEGER PRIMARY KEY,
+    username  TEXT,
+    name      TEXT NOT NULL DEFAULT '',
+    last_seen TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rp_statuses (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    emoji    TEXT    NOT NULL UNIQUE,
+    label    TEXT    NOT NULL,
+    positive INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS rp_leads (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    source     TEXT    NOT NULL DEFAULT 'post',
+    created_at TEXT    NOT NULL DEFAULT '',
+    name       TEXT    NOT NULL DEFAULT '',
+    phones     TEXT    NOT NULL DEFAULT '',
+    age        TEXT    NOT NULL DEFAULT '',
+    district   TEXT    NOT NULL DEFAULT '',
+    course     TEXT    NOT NULL DEFAULT '',
+    text       TEXT    NOT NULL DEFAULT '',
+    reminded   INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rp_leads_time ON rp_leads (created_at);
+CREATE TABLE IF NOT EXISTS rp_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id    INTEGER NOT NULL,
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER,
+    user_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,
+    emoji      TEXT,
+    status     TEXT,
+    text       TEXT,
+    analyzed   INTEGER NOT NULL DEFAULT 0,
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    is_call    INTEGER NOT NULL DEFAULT 1,
+    reason     TEXT,
+    callback   TEXT,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rp_events_time ON rp_events (created_at);
+CREATE INDEX IF NOT EXISTS idx_rp_events_lead ON rp_events (lead_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_rp_events_msg ON rp_events (chat_id, message_id);
+CREATE TABLE IF NOT EXISTS rp_reports (
+    period_end   TEXT PRIMARY KEY,
+    period_start TEXT NOT NULL,
+    sent_at      TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    insights     TEXT
+);
 """
 
 # Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)
@@ -232,6 +311,11 @@ class Database:
 
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self._conn = conn
+
+    @property
+    def conn(self) -> aiosqlite.Connection:
+        """Boshqa modullardagi jadvallar (masalan, bot/reports/store.py) shu ulanishdan foydalanadi."""
+        return self._conn
 
     @classmethod
     async def open(cls, path: Path) -> "Database":

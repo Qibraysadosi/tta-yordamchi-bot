@@ -197,8 +197,8 @@ class FakeSession(BaseSession):
                            document=document, caption=method.caption).as_(bot)
         if name == "GetFile":
             return File(file_id=method.file_id, file_unique_id="u" + method.file_id, file_path=f"files/{method.file_id}")
-        if name == "GetMe":
-            return User(id=999, is_bot=True, first_name="ClaudeBot", username="claude_test_bot")
+        if name == "GetMe":  # me_fields: masalan {"has_main_web_app": True} — BotFather'da Mini App yoqilgan
+            return User(id=999, is_bot=True, first_name="ClaudeBot", username="claude_test_bot", **getattr(self, "me_fields", {}))
         if name == "GetUpdates":
             if self.updates:
                 return [self.updates.pop(0)]

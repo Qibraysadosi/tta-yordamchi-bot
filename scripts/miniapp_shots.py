@@ -1,7 +1,8 @@
 """Mini App ekranlarining skrinshotlari: haqiqiy server + soxta Telegram WebApp obyekti (Playwright).
 
 Ishlatish: pip install playwright && playwright install chromium; python scripts/miniapp_shots.py [chiqish papkasi]
-Natija: docs/screens/{light,dark}-<ekran>.png va overview-{light,dark}.png"""
+Natija: docs/screens/{light,dark}-<ekran>.png, overview-{light,dark}.png (AI bo'limi) va
+overview-report-{light,dark}.png (bo'lim tanlovi + Hisobotlar bo'limi)"""
 from __future__ import annotations
 
 import asyncio
@@ -134,6 +135,61 @@ async def seed(env: Env, store: FileStore) -> None:
     (env.app_dir / "VERSION").write_text("1.5.0\n")
 
 
+async def seed_reports(env: Env) -> None:
+    """Hisobotlar bo'limi: lidlar va rahbarlar guruhi, operatorlar, bir kunlik lidlar, reaksiyalar, tahlil qilingan izohlar."""
+    from test_reports import LEADERS, LEADS, WED, AdminSession, Group, local, person, ts
+
+    env.session = AdminSession()
+    env.bot.session = env.session
+    reports = env.ctx.reports
+    reports.now = lambda: local(WED, "16:40")
+    await reports.ensure()
+    await env.db.set_config("report:since", "2026-10-01T00:00:00")
+    store = reports.store
+    g = Group(env)
+    await g.join(LEADS, "KOMMENTARIYA TA LIDLAR", status="administrator")
+    await g.join(LEADERS, "TTA rahbarlar")
+    await store.set_group_roles(LEADS, ["leads"])
+    await store.set_group_admin(LEADS, True)
+    await store.set_group_roles(LEADERS, ["leaders"])
+    team = [(601, "Malika", "malika_op"), (602, "Sardor", "sardor_op"), (603, "Nilufar", "nilufar_op"), (604, "Jasur", "jasur_op")]
+    for _, name, username in team:
+        await store.add_person("operator", username=username, user_id=None, name=name)
+    await store.add_person("leader", username="dilshod_tta", user_id=None, name="Dilshod aka")
+    await store.add_person("excluded", username="shohrux", user_id=None, name="Shohrux")
+    extra = (605, "Aziz", "aziz_admin")  # ro'yxatda yo'q, lekin qo'ng'iroq qilgan
+    courses = ["Kompyuter savodxonligi", "Massaj", "Ingliz tili", "Excel", "Grafik dizayn", "Buxgalteriya"]
+    names = ["Aziza", "Bobur", "Dilnoza", "Eldor", "Feruza", "G'ayrat", "Hilola", "Islom", "Jamshid", "Kamola", "Laziz",
+             "Madina", "Nodir", "Oydin", "Rustam", "Sevara", "Tohir", "Umida", "Xurshid", "Yulduz", "Zafar", "Shahnoza",
+             "Sardorbek", "Mohira", "Behruz", "Gulnoza"]
+    districts = ["Chilonzor", "Yunusobod", "Sergeli", "Olmazor", "Qibray", "Yashnobod"]
+    statuses = ["👍", "👍", "👍", "👎", "👎", "🆒", "🆒", "🆒", "🤔", "🤝"]
+    notes = {"👎": [("Narxi qimmat ekan dedi", "narxi qimmat"), ("Uzoq ekan, yaqinroq filial so'radi", "uzoq"),
+                    ("Hozir vaqti yo'q", "vaqti yo'q"), ("Narxini eshitib o'ylanib qoldi, qimmat dedi", "narxi qimmat")],
+             "🤔": [("Oilasi bilan maslahatlashib aytaman dedi", None)]}
+    rnd = random.Random(11)
+    for i, name in enumerate(names):
+        day, minutes = (WED, 8 * 60 + 25 + i * 17) if i > 2 else (WED - timedelta(days=1), 19 * 60 + 20 + i * 25)
+        when = ts(day, f"{minutes // 60:02d}:{minutes % 60:02d}")
+        card = (f"Ism: {name} {rnd.choice(['Karimova', 'Toshmatov', 'Rahimova', 'Aliyev', 'Yusupova'])}\n"
+                f"Telefon raqami: +998 9{rnd.randint(0, 9)} {rnd.randint(100, 999)}-{rnd.randint(10, 99)}-{rnd.randint(10, 99)}\n"
+                f"Yoshi: {rnd.randint(17, 45)}\nTumani: {rnd.choice(districts)}\nKurs: {rnd.choice(courses)}")
+        lead = await g.post(card, when)
+        if i >= len(names) - 3:
+            continue  # oxirgi lidlar hali belgilanmagan
+        uid, op_name, username = extra if i in (5, 14) else rnd.choice(team)
+        status = rnd.choice(statuses)
+        user = person(uid, op_name, username)
+        await g.react(lead["message_id"], user, status, when + rnd.randint(4, 40) * 60)
+        if status in notes and rnd.random() < 0.8:
+            text, reason = rnd.choice(notes[status])
+            await g.comment(lead, user, text, when + 45 * 60)
+            row = await store._one("SELECT MAX(id) AS id FROM rp_events WHERE kind = 'comment'")
+            callback = "ertaga 10:00" if status == "🤔" else None
+            await store.save_analysis(row["id"], is_call=True, status=status, reason=reason, callback=callback)
+    await store.commit()
+
+
 async def main() -> None:
     import tempfile
 
@@ -142,6 +198,7 @@ async def main() -> None:
     store = FileStore(env.db, tmp / "data" / "files", 50 * 1024 * 1024)
     env.ctx.files = store
     await seed(env, store)
+    await seed_reports(env)
     webapp = WebApp(env.ctx, env.bot)
     runner = web.AppRunner(webapp.app)
     await runner.setup()
@@ -175,21 +232,36 @@ async def main() -> None:
             await page.click("[data-action='pick-model']")
             await page.wait_for_timeout(350)
             await page.screenshot(path=str(OUT / f"{scheme}-sheet-model.png"))
+            # Hisobotlar bo'limi: tanlov ekrani hash'siz ochilishda chiqadi
+            await page.goto(base, timeout=15000)
+            for name, route_hash in REPORT_SCREENS:
+                print(scheme, name, flush=True)
+                if route_hash:
+                    await page.goto(base + route_hash, timeout=15000)
+                await page.wait_for_timeout(600)
+                await page.wait_for_function("!document.querySelector('.skeleton')", timeout=5000)
+                await page.wait_for_timeout(250)
+                await page.screenshot(path=str(OUT / f"{scheme}-{name}.png"))
             print(scheme, "errors:", errors)
             await context.close()
         await browser.close()
     await runner.cleanup()
     await env.close()
-    compose_overview()
+    compose_overview(AI_NAMES, "overview")
+    compose_overview(REPORT_NAMES, "overview-report")
     print("saved to", OUT)
 
 
-def compose_overview() -> None:
-    """Barcha ekranlarni bitta rasmga yig'adi (ko'rib chiqish uchun)."""
+REPORT_SCREENS = [("choose", None), ("r-today", "#r-today"), ("r-ops", "#r-ops"), ("r-set", "#r-set")]
+AI_NAMES = [("home", "Bosh sahifa"), ("sheet-model", "Model tanlash"), ("history", "Tarix"), ("conversation", "Suhbat"),
+            ("files", "Fayllar"), ("stats", "Xarajat"), ("admin", "Admin panel")]
+REPORT_NAMES = [("choose", "Bo'lim tanlovi"), ("r-today", "Hisobot · Bugun"), ("r-ops", "Operatorlar"), ("r-set", "Sozlamalar")]
+
+
+def compose_overview(names: list[tuple[str, str]], out_name: str) -> None:
+    """Ekranlarni bitta rasmga yig'adi (ko'rib chiqish uchun)."""
     from PIL import Image, ImageDraw, ImageFont
 
-    names = [("home", "Bosh sahifa"), ("sheet-model", "Model tanlash"), ("history", "Tarix"), ("conversation", "Suhbat"),
-             ("files", "Fayllar"), ("stats", "Xarajat"), ("admin", "Admin panel")]
     cell_w, cell_h, pad, label_h = 390, 844, 18, 34
     font_path = ROOT / "bot" / "assets" / "fonts" / "DejaVuSans-Bold.ttf"
     font = ImageFont.truetype(str(font_path), 15) if font_path.exists() else ImageFont.load_default()
@@ -206,7 +278,7 @@ def compose_overview() -> None:
             mask = Image.new("L", img.size, 0)
             ImageDraw.Draw(mask).rounded_rectangle((0, 0, img.size[0] - 1, img.size[1] - 1), radius=28, fill=255)
             canvas.paste(img, (x, pad + label_h), mask)
-        canvas.save(OUT / f"overview-{scheme}.png", optimize=True)
+        canvas.save(OUT / f"{out_name}-{scheme}.png", optimize=True)
 
 
 if __name__ == "__main__":

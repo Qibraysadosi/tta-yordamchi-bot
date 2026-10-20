@@ -39,6 +39,8 @@ from .live import LiveMessage
 from .models import AUTO_MODEL, MODELS, SELECTABLE_MODELS, label
 from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
+from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
+from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
 from .tgformat import format_answer
 from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
@@ -80,6 +82,8 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="parol", description="🔐 Kirish paroli"),
     BotCommand(command="foydalanuvchilar", description="👥 Foydalanuvchilar"),
     BotCommand(command="kod", description="💾 Botning joriy kodi (.zip)"),
+    BotCommand(command="hisobot", description="📊 Call center hisoboti (hozirgi holat)"),
+    BotCommand(command="guruhlar", description="👥 Kuzatiladigan guruhlar"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -133,6 +137,10 @@ APP_TEXT = (
     "Sozlamalar, suhbatlar tarixi, yaratilgan fayllar, xarajat grafigi — bir ekranda. "
     "Tugmani bosing yoki chatning pastki chap burchagidagi menyu tugmasidan oching."
 )
+APP_REPORT_TEXT = (
+    "\n\n📊 Ochilganda bo'lim tanlanadi: <b>AI yordamchi</b> yoki <b>Hisobotlar</b> (call center natijalari, "
+    "operatorlar, guruhlar va hisobot vaqti)."
+)
 APP_DISABLED_TEXT = (
     "📱 Ilova hali ulanmagan: serverdagi .env faylida WEBAPP_URL ko'rsatilmagan (README → Mini App)."
 )
@@ -146,7 +154,9 @@ ADMIN_HELP = (
     "🔐 /parol — kirish parolini o'rnatish yoki o'zgartirish\n"
     "👥 /foydalanuvchilar — parol bilan kirganlar, chiqarib yuborish\n"
     "💾 /zaxira — bazaning zaxira nusxasini hozir olish (har kuni avtomatik ham keladi)\n"
-    "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz"
+    "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz\n"
+    "📊 /hisobot — call center hisoboti: hozirgi holat va rahbarlarga yuborish\n"
+    "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar) va ularning turi"
 )
 
 MODE_TEXT = (
@@ -247,6 +257,7 @@ class AppContext:
     restart_requested: bool = False
     restart_delay: float = 1.0
     dispatcher: Dispatcher | None = None
+    reports: Any = None  # bot/reports/service.py: ReportService (call center hisobotlari)
 
     def is_owner(self, user_id: int) -> bool:
         return user_id in self.settings.owner_ids
@@ -286,7 +297,10 @@ class AppContext:
 
 
 class AccessMiddleware(BaseMiddleware):
-    """Kirish nazorati: egasi (OWNER_IDS) va parol bilan kirgan a'zolar o'tadi, qolganlardan parol so'raladi."""
+    """Kirish nazorati: egasi (OWNER_IDS) va parol bilan kirgan a'zolar o'tadi, qolganlardan parol so'raladi.
+
+    Guruh xabarlari hisobot uchun jim yozib boriladi (javob berilmaydi); hisobotga qo'shilgan rahbar va
+    operatorlarga shaxsiy chatda AI o'rniga qisqa yo'riqnoma ko'rsatiladi."""
 
     async def __call__(
         self,
@@ -295,6 +309,8 @@ class AccessMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         ctx: AppContext = data["ctx"]
+        if isinstance(event, Message) and event.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            return await handler(event, data)  # faqat hisobot yozuvchisi ishlaydi (bot/reports), u hech narsa yozmaydi
         user = data.get("event_from_user")
         if user is None:
             return None
@@ -303,6 +319,12 @@ class AccessMiddleware(BaseMiddleware):
         member = await ctx.db.member(user.id)
         if member is not None and member.active:
             return await handler(event, data)
+        if isinstance(event, Message) and event.chat.type == ChatType.PRIVATE and ctx.reports is not None:
+            role = await ctx.reports.staff_role(user)
+            if role is not None:
+                with contextlib.suppress(TelegramAPIError):
+                    await ctx.reports.staff_message(event, role)
+                return None
         with contextlib.suppress(TelegramAPIError):
             if isinstance(event, CallbackQuery):
                 await event.answer("⛔ Ruxsat yo'q")
@@ -446,9 +468,8 @@ async def cmd_app(message: Message, ctx: AppContext) -> None:
     if button is None:
         await message.answer(APP_DISABLED_TEXT)
         return
-    await message.answer(
-        APP_TEXT, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]])
-    )
+    text = APP_TEXT + (APP_REPORT_TEXT if ctx.is_owner(message.from_user.id) else "")
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]))
 
 
 async def cmd_help(message: Message, ctx: AppContext) -> None:
@@ -650,6 +671,7 @@ async def cost_report(ctx: AppContext, user_id: int) -> tuple[str, InlineKeyboar
         by_user = await ctx.db.spend_by_user(cycle_start)
         if any(uid != user_id for uid, _, _ in by_user):
             names = {m.user_id: m.display for m in await ctx.db.members()}
+            names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
             lines.append("<b>Joriy davr, foydalanuvchilar bo'yicha:</b>")
             for uid, cost, count in by_user[:10]:
                 who = "Siz" if uid == user_id else html.escape(names.get(uid, f"ID {uid}"))

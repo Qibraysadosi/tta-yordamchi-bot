@@ -31,9 +31,11 @@ def _not_excluded(alias: str) -> str:
 
 
 def _marked(lead: str) -> str:
-    """SQL sharti: lidni kimdir belgilagan — izoh yozgan yoki hozir status reaksiyasi turibdi (olib tashlanmagan)."""
+    """SQL sharti: lidni kimdir belgilagan — qo'ng'iroq haqida izoh yozgan (tahlil kutilayotgani ham) yoki hozir
+    status reaksiyasi turibdi (olib tashlanmagan). Ko'rsatma yoki savol izohi (AI: call=false) belgilamaydi."""
     return (
-        f"(EXISTS (SELECT 1 FROM rp_events c WHERE c.lead_id = {lead}.id AND c.kind = 'comment' AND {_not_excluded('c')})"
+        f"(EXISTS (SELECT 1 FROM rp_events c WHERE c.lead_id = {lead}.id AND c.kind = 'comment' AND c.is_call = 1"
+        f" AND {_not_excluded('c')})"
         f" OR EXISTS (SELECT 1 FROM rp_events r WHERE r.lead_id = {lead}.id AND r.kind = 'reaction'"
         f" AND r.status IS NOT NULL AND {_not_excluded('r')} AND r.id = (SELECT MAX(r2.id) FROM rp_events r2"
         f" WHERE r2.lead_id = r.lead_id AND r2.user_id = r.user_id AND r2.kind = 'reaction')))"
@@ -602,9 +604,6 @@ class ReportStore:
         return {"leads": int(leads["n"]), "reactions": counts.get("reaction", 0), "comments": counts.get("comment", 0)}
 
     # ------------------------------------------------------------------ yuborilgan hisobotlar
-    async def report_sent(self, period_end: str) -> bool:
-        return await self._one("SELECT 1 FROM rp_reports WHERE period_end = ?", (period_end,)) is not None
-
     async def report_for_day(self, day: str) -> dict | None:
         """Shu kun («YYYY-MM-DD») uchun yuborilgan kunlik hisobot: vaqt o'zgartirilsa ham bir kunga bitta."""
         row = await self._one(
@@ -619,10 +618,6 @@ class ReportStore:
             " insights = excluded.insights",
             (period_end, period_start, now_iso(), text, insights),
         )
-
-    async def report(self, period_end: str) -> dict | None:
-        row = await self._one("SELECT * FROM rp_reports WHERE period_end = ?", (period_end,))
-        return dict(row) if row else None
 
     async def last_report(self) -> dict | None:
         row = await self._one("SELECT period_end, sent_at FROM rp_reports ORDER BY sent_at DESC LIMIT 1")

@@ -191,7 +191,7 @@ def test_overview_payload_and_send_now(tmp_path):
             assert res == {"ok": True, "sent": 1, "target": "leaders"}
             msg = env.session.of("SendMessage")[-1]
             assert msg.chat_id == LEADERS and "HISOBOT (oraliq)" in msg.text
-            assert not await env.ctx.reports.store.report_sent("2026-10-21 19:00")  # oraliq hisobot davrni yopmaydi
+            assert not await env.ctx.reports.store.report_for_day("2026-10-21")  # oraliq hisobot davrni yopmaydi
 
             # kunlik hisobot yuborilgach — sabablar guruhlangan holda ko'rinadi
             await env.ctx.reports.tick(env.bot, local(WED, "19:00"))

@@ -28,7 +28,7 @@ from aiogram.types import (
 
 from ..claude import ClaudeError
 from . import analysis
-from .leads import message_link, parse_lead
+from .leads import extract_phones, message_link, parse_lead
 from .render import render_report, split_message
 from .stats import (
     SCHEDULE_KEY,
@@ -308,6 +308,8 @@ class ReportService:
                         phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
                     )
                     return True
+                if extract_phones(text) or message.photo or message.document:
+                    return True  # o'qib bo'lmagan kartochka bo'lishi mumkin: operator status bossa — lid sanaladi
             return False
         user = message.from_user
         if user is None or user.is_bot or user.id == TELEGRAM_SERVICE_ID or message.sender_chat is not None:

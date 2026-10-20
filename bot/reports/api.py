@@ -320,8 +320,9 @@ class ReportAPI:
         now = service.now()
         day = current_day(now, await service.schedule())
         sent = await service.send_report(self.bot, day, now, interim=True)
+        fallback = service.last_fallback  # keyingi await'dan oldin: parallel kunlik yuborish o'zgartirmasin
         if not sent:
             return _error("Hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502, "send_failed")
         leaders = await service.store.groups_with("leaders")
-        target = "leaders" if leaders and not service.last_fallback else "owner"
+        target = "leaders" if leaders and not fallback else "owner"
         return _json({"ok": True, "sent": sent, "target": target})

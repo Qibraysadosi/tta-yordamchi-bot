@@ -304,7 +304,7 @@ def test_group_flow_and_daily_report(tmp_path):
             env.session.clear()
             await env.ctx.reports.tick(env.bot, local(WED, "19:00") + timedelta(minutes=5))
             assert not env.session.of("SendMessage")
-            assert await store.report_sent("2026-10-21 19:00")
+            assert await store.report_for_day("2026-10-21")
         finally:
             await env.close()
     run(go())

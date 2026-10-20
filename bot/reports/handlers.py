@@ -153,10 +153,11 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
     if action == "send":
         await callback.answer("Yuborilmoqda…")
         sent = await service.send_report(bot, day, now, interim=True)
+        fallback = service.last_fallback
         targets = await service.store.groups_with("leaders")
         if not sent:
             note = "⚠️ Oraliq hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring."
-        elif service.last_fallback:
+        elif fallback:
             note = "⚠️ Rahbarlar guruhiga yuborib bo'lmadi — hisobot sizga yuborildi (yuqorida)."
         else:
             where = "rahbarlar guruhiga" if targets else "sizga (rahbarlar guruhi belgilanmagan)"

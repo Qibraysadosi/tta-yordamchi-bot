@@ -341,12 +341,18 @@ class AccessMiddleware(BaseMiddleware):
 
 
 async def is_password(message: Message, ctx: AppContext, user: User) -> bool:
-    """Xabar to'g'ri kirish paroli bo'lsa True (xato urinish hisoblanmaydi)."""
+    """Xodim (operator, rahbar) botga yozgan matn kirish paroli bo'lsa True — odatdagidek a'zo bo'ladi.
+
+    Parolga o'xshash (kamida MIN_PASSWORD_LENGTH belgi) noto'g'ri matn ham urinishlar chegarasiga kiradi:
+    xodim yo'li parolni cheksiz taxmin qilish uchun ishlatilmasin. Bloklansa ham yo'riqnoma xabari chiqaveradi."""
     stored = await ctx.db.get_config(PASSWORD_KEY)
     attempt = (message.text or "").strip()
-    if not stored or not attempt or attempt.startswith("/") or ctx.limiter.locked_for(user.id):
+    if not stored or len(attempt) < MIN_PASSWORD_LENGTH or attempt.startswith("/") or ctx.limiter.locked_for(user.id):
         return False
-    return await asyncio.to_thread(verify_password, attempt, stored)
+    if await asyncio.to_thread(verify_password, attempt, stored):
+        return True
+    ctx.limiter.fail(user.id)
+    return False
 
 
 async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User) -> None:

@@ -418,3 +418,62 @@ def test_report_time_change_period_gap_is_one_off(tmp_path):
         finally:
             await env.close()
     run(go())
+
+
+# ---------------------------------------------------------------- ikkinchi tekshiruv
+def test_staff_password_guesses_are_limited(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            await env.ctx.reports.store.add_person("operator", username="sardor_op", user_id=None, name="Sardor")
+            await env.db.set_config(PASSWORD_KEY, await asyncio.to_thread(hash_password, "maxfiy123"))
+            sardor = {"from": person(SARDOR, "Sardor", "sardor_op")}
+            for guess in ("parol111", "parol222", "parol333", "parol444", "parol555"):
+                await env.send_text(guess, user_id=SARDOR, **sardor)
+                assert "operatori sifatida" in env.session.of("SendMessage")[-1].text  # yo'riqnoma chiqaveradi
+            assert env.ctx.limiter.locked_for(SARDOR) > 0
+            await env.send_text("maxfiy123", user_id=SARDOR, **sardor)  # bloklangan — kira olmaydi
+            assert await env.db.member(SARDOR) is None
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_instruction_comment_does_not_mark_lead(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            lead = await g.post(CARD_1, ts(WED, "09:00"))
+            await g.comment(lead, person(BOSS, "Rahbar", "boss"), "Malika, bunga ertaga qiling", ts(WED, "09:05"))
+            # tahlil kutilayotgan izoh belgilangan hisoblanadi; AI «qo'ng'iroq emas» desa — belgilanmagan
+            assert (await env.ctx.reports.overview(WED, local(WED, "15:00"))).unmarked == 0
+            event = (await store.pending_comments(10))[0]
+            await store.save_analysis(event.id, is_call=False, status=None, reason=None, callback=None)
+            await store.commit()
+            ov = await env.ctx.reports.overview(WED, local(WED, "15:00"))
+            assert (ov.unmarked, ov.totals.total, ov.comments) == (1, 0, 0)
+            assert [x.name for x in await store.unmarked_leads("2026-10-21T00:00:00", "2026-10-21T05:00:00")] == ["Aziza Karimova"]
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_unreadable_card_reaction_still_counts(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            g.mid += 1
+            card = {"message_id": g.mid, "date": ts(WED, "09:00"), "chat": g.chat(LEADS, "L"),
+                    "from": person(BOSS, "Rahbar", "boss"), "text": "Yangi odam 90 123 45 67 qo'ng'iroq qiling"}
+            await env._feed({"message": card})
+            assert await store.lead_by_message(LEADS, card["message_id"]) is None  # kartochka sifatida o'qilmadi
+            await g.react(card["message_id"], person(MALIKA, "Malika"), "👍", ts(WED, "09:10"))
+            ov = await env.ctx.reports.overview(WED, local(WED, "15:00"))
+            assert [(r.name, dict(r.counts)) for r in ov.rows] == [("Malika", {"👍": 1})]
+        finally:
+            await env.close()
+    run(go())

@@ -41,6 +41,11 @@ class Schedule:
     remind_minutes: int = 30  # belgilanmagan lid eslatmasi (0 — o'chiq)
     work_start: str = "09:00"
     work_end: str = "19:00"
+    journal_enabled: bool = True  # kundalik — egasiga lichkada (ish kunlari)
+    journal_time: str = "20:00"
+    weekly_enabled: bool = True  # haftalik Excel — dushanba
+    monthly_enabled: bool = True  # oylik Excel — oyning 1-sanasi
+    excel_time: str = "09:00"
 
     @classmethod
     def from_json(cls, raw: str | None) -> "Schedule":
@@ -71,13 +76,23 @@ class Schedule:
             remind_minutes=remind,
             work_start=_hhmm(data.get("work_start", self.work_start), self.work_start),
             work_end=_hhmm(data.get("work_end", self.work_end), self.work_end),
+            journal_enabled=bool(data.get("journal_enabled", self.journal_enabled)),
+            journal_time=_hhmm(data.get("journal_time", self.journal_time), self.journal_time),
+            weekly_enabled=bool(data.get("weekly_enabled", self.weekly_enabled)),
+            monthly_enabled=bool(data.get("monthly_enabled", self.monthly_enabled)),
+            excel_time=_hhmm(data.get("excel_time", self.excel_time), self.excel_time),
         )
 
     def to_json(self) -> str:
-        return json.dumps({
+        return json.dumps(self.as_dict())
+
+    def as_dict(self) -> dict:
+        return {
             "time": self.time, "days": list(self.days), "enabled": self.enabled,
             "remind_minutes": self.remind_minutes, "work_start": self.work_start, "work_end": self.work_end,
-        })
+            "journal_enabled": self.journal_enabled, "journal_time": self.journal_time,
+            "weekly_enabled": self.weekly_enabled, "monthly_enabled": self.monthly_enabled, "excel_time": self.excel_time,
+        }
 
     def days_label(self) -> str:
         days = list(self.days)
@@ -140,6 +155,35 @@ def in_work_hours(now: datetime, s: Schedule) -> bool:
     return now.weekday() in s.days and s.work_start <= now.strftime("%H:%M") < s.work_end
 
 
+# ---------------------------------------------------------------------- hafta va oy (Excel)
+def report_days(first: date, last: date, s: Schedule) -> list[date]:
+    days, day = [], first
+    while day <= last:
+        if day.weekday() in s.days:
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def span_bounds(first: date, last: date, s: Schedule, tz: ZoneInfo) -> tuple[datetime, datetime] | None:
+    """Bir nechta kunning umumiy davri — kunlik hisobotlar davrlarining yig'indisi (raqamlar ular bilan bir xil)."""
+    days = report_days(first, last, s)
+    if not days:
+        return None
+    return period_bounds(days[0], s, tz)[0], period_bounds(days[-1], s, tz)[1]
+
+
+def week_of(day: date) -> tuple[date, date]:
+    monday = day - timedelta(days=day.weekday())
+    return monday, monday + timedelta(days=6)
+
+
+def month_of(day: date) -> tuple[date, date]:
+    first = day.replace(day=1)
+    following = (first.replace(year=first.year + 1, month=1) if first.month == 12 else first.replace(month=first.month + 1))
+    return first, following - timedelta(days=1)
+
+
 # ---------------------------------------------------------------------- hisob-kitob
 @dataclass
 class Row:
@@ -174,6 +218,8 @@ class Overview:
     reasons: list[tuple[str, int]]  # (sabab, son) — AI tahlili natijasi, aniq matn bo'yicha
     callbacks: int
     has_operator_list: bool
+    lead_status: dict[int, str] = field(default_factory=dict)  # lid → so'nggi natija (Excel «Lidlar» varag'i)
+    lead_people: dict[int, list[int]] = field(default_factory=dict)  # lid → belgilagan odamlar (Telegram ID)
 
     @property
     def totals(self) -> Row:
@@ -211,8 +257,14 @@ def _match(people: list[Person], user_id: int, username: str | None) -> Person |
 
 
 async def build_overview(store: ReportStore, s: Schedule, day: date, now: datetime) -> Overview:
-    tz = now.tzinfo
-    start, end = period_bounds(day, s, tz)  # type: ignore[arg-type]
+    start, end = period_bounds(day, s, now.tzinfo)  # type: ignore[arg-type]
+    return await overview_between(store, s, start, end, now, day)
+
+
+async def overview_between(store: ReportStore, s: Schedule, start: datetime, end: datetime, now: datetime,
+                           day: date | None = None) -> Overview:
+    """Istalgan davr bo'yicha natijalar (kunlik hisobot, hafta, oy) — bir xil qoidalar bilan."""
+    day = day or end.date()
     live = now < end
     upto = min(end, now)
     start_iso, upto_iso = iso(start), iso(upto)
@@ -258,7 +310,7 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
 
     status_of: dict[tuple[int, int], str] = {}
     latest_of_lead: dict[int, tuple[str, str]] = {}  # lid → (vaqt, status) — kurslar kesimi uchun
-    for pair in touched:
+    for pair in sorted(touched):  # tartib barqaror: bir xil vaqtli harakatlarda natija har safar bir xil
         r, c = reaction.get(pair), comment.get(pair)
         r_status = r.status if r and r.status in known else None
         c_status = c.status if c and c.status in known else None
@@ -320,6 +372,9 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
     def order(item: Row) -> tuple:
         return (-item.total, item.name.lower())
 
+    lead_people: dict[int, list[int]] = {}
+    for lead_id, user_id in sorted(status_of):
+        lead_people.setdefault(lead_id, []).append(user_id)
     return Overview(
         day=day, start=start, end=end, live=live, statuses=statuses,
         rows=sorted(rows.values(), key=order), extras=sorted(extras.values(), key=order),
@@ -327,4 +382,5 @@ async def build_overview(store: ReportStore, s: Schedule, day: date, now: dateti
         courses=courses, conflicts=len(conflicts), comments=comment_count,
         pending=await store.pending_count(start_iso, upto_iso),
         reasons=reasons.most_common(), callbacks=len(callbacks), has_operator_list=bool(operators),
+        lead_status={lead_id: value for lead_id, (_, value) in latest_of_lead.items()}, lead_people=lead_people,
     )

@@ -12,7 +12,7 @@ import json
 import random
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -215,6 +215,18 @@ async def seed_reports(env: Env) -> None:
     done = await tasks.create(creator_id=OWNER, assignee=Assignee(602, "sardor_op", "Sardor"), text="Zalni seminar uchun tayyorlash",
                               due=local(WED, "11:00"), repeat=None, poll_chat=office, now=now)
     await tasks.store.update(done.id, status="done", done_at=iso(local(WED, "10:40")), done_by=602)
+    # arxiv (v1.9): o'tgan haftalar yuborilgan, kechagi kundalik va kunlik hisobot
+    from bot.reports.archive import WEEK, Period
+    await env.db.set_config("report:archive_since", "2026-10-01T00:00:00")
+    archive = reports.archive
+    for monday, calls, positive, new, unmarked in ((date(2026, 10, 12), 286, 79, 301, 14), (date(2026, 10, 5), 251, 64, 270, 22)):
+        summary = {"calls": calls, "positive": positive, "positive_pct": round(positive * 100 / calls), "positive_emoji": "👍",
+                   "positive_label": "keladi", "new_leads": new, "unmarked": unmarked, "tasks_due": 9, "tasks_done": 7,
+                   "tasks_on_time": 6, "tasks_open": 2, "top": [["Malika", 88, 27], ["Sardor", 74, 19]], "period": ""}
+        await archive.store.save_export(Period(WEEK, monday, monday + timedelta(days=6), None, None, False), summary, sent=True)
+    tuesday = WED - timedelta(days=1)
+    await archive.store.save_journal(tuesday.isoformat(), await archive.journal_text(local(tuesday, "20:00")))
+    await reports.check_daily(env.bot, local(tuesday, "19:05"))
 
 
 async def main() -> None:
@@ -269,6 +281,13 @@ async def main() -> None:
                 await page.wait_for_function("!document.querySelector('.skeleton')", timeout=5000)
                 await page.wait_for_timeout(250)
                 await page.screenshot(path=str(OUT / f"{scheme}-{name}.png"))
+            # arxiv: haftalik davr paneli
+            await page.goto(base + "#r-arch", timeout=15000)
+            await page.wait_for_function("!document.querySelector('.skeleton')", timeout=5000)
+            await page.click("[data-action=r-period][data-key='week:2026-10-19']")
+            await page.wait_for_selector(".sheet [data-action=r-xl-send]")
+            await page.wait_for_timeout(350)
+            await page.screenshot(path=str(OUT / f"{scheme}-sheet-period.png"))
             print(scheme, "errors:", errors)
             await context.close()
         await browser.close()
@@ -279,11 +298,12 @@ async def main() -> None:
     print("saved to", OUT)
 
 
-REPORT_SCREENS = [("choose", None), ("r-today", "#r-today"), ("r-tasks", "#r-tasks"), ("r-ops", "#r-ops"), ("r-set", "#r-set")]
+REPORT_SCREENS = [("choose", None), ("r-today", "#r-today"), ("r-tasks", "#r-tasks"), ("r-ops", "#r-ops"), ("r-arch", "#r-arch"),
+                  ("r-set", "#r-set")]
 AI_NAMES = [("home", "Bosh sahifa"), ("sheet-model", "Model tanlash"), ("history", "Tarix"), ("conversation", "Suhbat"),
             ("files", "Fayllar"), ("stats", "Xarajat"), ("admin", "Admin panel")]
 REPORT_NAMES = [("choose", "Bo'lim tanlovi"), ("r-today", "Hisobot · Bugun"), ("r-tasks", "Vazifalar"), ("r-ops", "Operatorlar"),
-                ("r-set", "Sozlamalar")]
+                ("r-arch", "Arxiv"), ("sheet-period", "Arxiv · hafta"), ("r-set", "Sozlamalar")]
 
 
 def compose_overview(names: list[tuple[str, str]], out_name: str) -> None:

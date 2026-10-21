@@ -7,6 +7,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Mini App (📱 /ilova):** Telegram ichidagi ilova — sozlamalar (model, fikrlash, qidiruv, rejim), suhbatlar tarixi va qidiruv, yaratilgan fayllar galereyasi, xarajat grafiklari, egasi uchun admin panel; Telegram mavzusiga mos yorug'/qorong'i ko'rinish. Chatning menyu tugmasidan yoki /ilova bilan ochiladi (sozlash: pastda «Mini App»)
 - **Call center hisobotlari (📊 /hisobot):** bot lidlar guruhida operatorlarning reaksiya va izohlarini o'qiydi (izohni AI tahlil qiladi) va har kuni 19:00 da rahbarlar guruhiga jadval yuboradi: kim nechta lidga qo'ng'iroq qildi, nechtasi keladi / ko'tarmadi / kelmaydi, kurslar va rad sabablari. Hech kim belgilamagan lid haqida operatorlarga eslatadi. Sozlash — Mini App → Hisobotlar (pastda «Call center hisobotlari»)
 - **Vazifalar (📋 /vazifa):** «#vazifa @username nima qilish kerak, qachongacha» — guruhda yoki botga lichkada. Bot ✍️ qo'yadi, muddatida «📋 Vazifalar» guruhida ijrochini belgilab «Bajardingizmi?» deb so'raydi (Ha / Yo'q), javob bo'lmasa qayta so'raydi va sizga xabar beradi. Takroriy vazifalar («har dushanba») ham bor; ro'yxat — /vazifalar va Mini App
+- **Kundalik va Excel (📓 /kundalik, 📊 /excel):** har ish kuni 20:00 da sizga lichkada kundalik (call center raqamlari va vazifalar); har dushanba va oyning 1-sanasi haftalik / oylik Excel hisobot — rahbarlar guruhiga telefon raqamlari yashirilgan nusxa, sizga to'liq nusxa. Hammasi Mini App → Hisobotlar → «Arxiv»da
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
@@ -73,6 +74,8 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/guruhlar` (`/groups`) | Bot kuzatayotgan guruhlar va ularning turi (lidlar / rahbarlar / vazifalar) |
 | `/vazifa` (`/task`) | Vazifa berish: `/vazifa @username nima qilish kerak, qachongacha` (yoki shunchaki `#vazifa …`) |
 | `/vazifalar` (`/tasks`) | Ochiq vazifalar va ularning holati |
+| `/kundalik` (`/journal`) | Bugungi kundalik — hozirgi holat (har ish kuni 20:00 da o'zi keladi) |
+| `/excel` (`/export`) | Haftalik yoki oylik Excel hisobot: o'tgan / shu hafta, o'tgan / shu oy |
 
 ## Mini App (Telegram ichidagi ilova)
 
@@ -133,7 +136,7 @@ Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorla
 
 **Eslatma:** yangi lidni 30 daqiqa ichida hech kim belgilamasa (reaksiya yoki izoh), `/start` bosgan operatorlarga lichkada havolalar bilan eslatma boradi — faqat ish vaqtida (09:00–19:00) va hisobot kunlarida, kamida 15 daqiqa oralig'ida (yangi lidlar bitta xabarda). Lid postidan boshqa xabarlarga (e'lon, savol) qo'yilgan reaksiya qo'ng'iroq hisoblanmaydi.
 
-**Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish»; `/guruhlar` — guruhlar turini o'zgartirish.
+**Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Arxiv» — yuborilgan kunlik hisobotlar, haftalik va oylik Excel, kundalik (faqat egasi); «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, kundalik va Excel, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish»; `/guruhlar` — guruhlar turini o'zgartirish.
 
 **Xarajat:** izoh tahlili arzon modelda (100 ta izoh ≈ $0.01 dan kam), `/xarajat` da «📊 Guruh tahlili» qatorida ko'rinadi.
 
@@ -157,6 +160,14 @@ Vazifani faqat siz (egasi) berasiz — xabar **`#vazifa`** yoki **`Vazifa:`** bi
 - Mavzuli (forum) guruhda so'rov vazifa berilgan mavzuga chiqadi. Vazifa xabari va so'rovlarga qo'yilgan reaksiyalar call center hisobotida qo'ng'iroq sanalmaydi.
 
 **Mini App → Hisobotlar → Vazifalar:** ochiq / bajarilgan / bekor qilingan ro'yxat, holati (kutilmoqda, so'raldi, «Yo'q» dedi, javob yo'q, muddati o'tgan), tarixi. Siz qo'shasiz, muddatni o'zgartirasiz, yopasiz, hozir so'ratasiz; rahbarlar faqat ko'radi. Ovozli vazifa hozircha yo'q — faqat matn.
+
+## Kundalik va Excel hisobot
+
+**Kundalik** (faqat sizga, lichkada) — har ish kuni 20:00 da: call center raqamlari (bugungi hisobot davri: qo'ng'iroqlar, natijalar, yangi va belgilanmagan lidlar, eng faol operatorlar) va vazifalar (bugun bajarilgani va berilgani, muddati o'tgani, javob bermayotganlar, «Yo'q» javoblari, yaqin muddatlar). Bot o'chiq bo'lsa — 4 soat ichida (yarim tundan oshsa ham, o'sha kun nomi bilan) keladi, undan kech bo'lsa — o'sha kungi kundalik kelmaydi. Hozirgi holat — `/kundalik`.
+
+**Excel hisobot** — har dushanba 09:00 da o'tgan hafta, oyning 1-sanasi 09:00 da o'tgan oy. Rahbarlar guruhiga — telefon raqamlari yashirilgan nusxa (`+998 90 ***-**-67`; izoh va vazifa matnidagi raqamlar ham), sizga lichkada — to'liq nusxa. Varaqlar: **Umumiy** (asosiy ko'rsatkichlar, operatorlar jadvali, kurslar, rad sabablari), **Kunlar** (har kungi hisobot davri), **Lidlar** (sana, ism, telefon, yosh, tuman, kurs, so'nggi natija, kim belgiladi, so'nggi izoh, havola), **Vazifalar**. Davr — kunlik hisobotlar davrlarining yig'indisi, shuning uchun raqamlar kunlik hisobotlar qoidasida (bir davrda bitta lid bir operatorga bir marta). Fayl kimgadir yetmasa (masalan, guruhga), faqat o'shanga qayta uriniladi — boshqalarga ikki marta bormaydi; sizga bir marta xabar keladi. Bot o'chiq bo'lsa — haftalik 2 kun, oylik 5 kun ichida yetkaziladi; v1.9 o'rnatilgunga qadar o'tgan davrlar avtomatik kelmaydi. Rahbarlar nusxasida ism, tuman, izoh kabi har qanday matndagi telefon raqamlari ham yashiriladi.
+
+**Qo'lda:** `/excel` → o'tgan / shu hafta, o'tgan / shu oy (sizga to'liq nusxa). **Mini App → Hisobotlar → Arxiv:** kunlik hisobotlar (bosilsa — o'sha kun), haftalar va oylar (natijalar + «📤 Excel'ni chatga yuborish»; rahbarga telefonlari yashirilgan nusxa keladi), kundaliklar (faqat siz). Vaqtlar va yoqish/o'chirish — Sozlamalar → «Kundalik va Excel».
 
 ## Ishlab chiquvchilar uchun
 

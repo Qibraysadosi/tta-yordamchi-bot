@@ -1,7 +1,7 @@
-📋 v1.8.0 — Vazifalar va «Bajardingizmi?» so'rovi
-• Vazifa berish: «#vazifa @username nima qilish kerak, qachongacha» — guruhda yoki botga lichkada (yoki /vazifa). Belgisiz xabar vazifa emas
-• Bot xabaringizga ✍️ qo'yadi va lichkada tasdiq yuboradi; muddat aytilmasa — tugma bilan tanlaysiz (Bugun / Ertaga / 3 kun / 1 hafta)
-• Muddatida «📋 Vazifalar» guruhida ijrochini belgilab so'raydi: «Ha» — yopiladi va sizga xabar; «Yo'q» — 3 soatdan keyin yana
-• Javob bo'lmasa 2 soatdan keyin yana; 3 marta javobsiz — sizga xabar. Faqat ish vaqtida; tugmani faqat ijrochi bosa oladi
-• Takroriy vazifalar («har dushanba 10:00 da…»); /vazifalar — ochiq vazifalar ro'yxati
-• Mini App → Hisobotlar → «Vazifalar»: holati, tarixi, qo'shish va boshqarish (rahbarlar faqat ko'radi). Sozlash: guruhga «📋 Vazifalar» turini bering
+📓 v1.9.0 — Kundalik va haftalik / oylik Excel hisobot
+• Kundalik: har ish kuni 20:00 da sizga lichkada — call center raqamlari va vazifalar (bajarilgan, berilgan, muddati o'tgan, javobsiz, yaqin muddatlar). Hozirgi holat — /kundalik
+• Excel: har dushanba (o'tgan hafta) va oyning 1-sanasi (o'tgan oy) 09:00 da — rahbarlar guruhiga telefon raqamlari yashirilgan nusxa, sizga to'liq nusxa
+• Varaqlar: Umumiy (ko'rsatkichlar, operatorlar, kurslar, rad sabablari), Kunlar, Lidlar (natija, kim belgiladi, izoh, havola), Vazifalar
+• /excel — istalgan hafta yoki oy (o'tgan / joriy) Excel'i sizga
+• Mini App → Hisobotlar → «Arxiv»: kunlik hisobotlar, haftalar, oylar (Excel'ni chatga olish; rahbarga — telefonlarsiz), kundaliklar (faqat siz)
+• Sozlamalar → «Kundalik va Excel»: yoqish/o'chirish va vaqtlar. Birinchi haftalik Excel — keyingi dushanba

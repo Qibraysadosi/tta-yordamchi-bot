@@ -3,15 +3,20 @@
 Kirish webapp.py dagi middleware'da tekshiriladi: o'qish — egasi va rahbarlar, o'zgartirish — faqat egasi."""
 from __future__ import annotations
 
+import html
 import json
 import logging
+import re
+import time
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiohttp import web
 
 from ..models import label
 from ..prompt import MONTHS, WEEKDAYS
+from .archive import MONTH, WEEK, parse_key
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, neighbour_day
 from .store import PEOPLE_KINDS, ROLES, clean_username, iso
@@ -24,6 +29,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal"}
+SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
+                   "journal_time", "weekly_enabled", "monthly_enabled", "excel_time")
+TAG_RE = re.compile(r"<[^>]+>")
+SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
 STATUS_LABEL_LIMIT = 30
 NAME_LIMIT = 40
@@ -42,6 +52,17 @@ def _day_label(day: date) -> str:
     return f"{day.day}-{MONTHS[day.month - 1]}, {WEEKDAYS[day.weekday()]}"
 
 
+def _plain(text: str) -> str:
+    """Telegram HTML → oddiy matn (Mini App'da xavfsiz ko'rsatish uchun)."""
+    return html.unescape(TAG_RE.sub("", text or ""))
+
+
+def _schedule(schedule) -> dict:
+    data = schedule.as_dict()
+    data["days_label"] = schedule.days_label()
+    return data
+
+
 def _row(ov: Overview, row: Row) -> dict:
     data = row.as_dict()
     data["positive"] = ov.positive(row)
@@ -53,6 +74,8 @@ class ReportAPI:
         self.ctx = ctx
         self.bot = bot
         self.uid_key, self.user_key, self.access_key = uid_key, user_key, access_key
+        self._sent_at: dict[int, float] = {}  # Excel olgan odam → oxirgi muvaffaqiyatli yuborish (monotonic)
+        self._building: set[int] = set()  # hozir fayli yasalayotganlar
 
     @property
     def service(self) -> ReportService:
@@ -76,6 +99,9 @@ class ReportAPI:
         add("GET", "/api/report/tasks/{task_id}", self.task_detail)
         add("PATCH", "/api/report/tasks/{task_id}", self.update_task)
         add("POST", "/api/report/tasks/{task_id}/ask", self.ask_task)
+        add("GET", "/api/report/archive", self.archive_list)
+        add("GET", "/api/report/archive/{key}", self.archive_detail)
+        add("POST", "/api/report/archive/{key}/send", self.archive_send)
 
     async def _body(self, request: web.Request) -> dict:
         try:
@@ -222,9 +248,7 @@ class ReportAPI:
             "role_labels": {k: v.split(" ", 1)[1] for k, v in ROLE_LABELS.items()},
             "statuses": [{"id": s.id, "emoji": s.emoji, "label": s.label, "positive": s.positive}
                          for s in await store.statuses()],
-            "schedule": {"time": schedule.time, "days": list(schedule.days), "enabled": schedule.enabled,
-                         "remind_minutes": schedule.remind_minutes, "work_start": schedule.work_start,
-                         "work_end": schedule.work_end, "days_label": schedule.days_label()},
+            "schedule": _schedule(schedule),
             "bot": {"username": service.bot_info.get("username"),
                     "has_main_web_app": bool(service.bot_info.get("has_main_web_app")),
                     "can_read_all": bool(service.bot_info.get("can_read_all"))},
@@ -309,18 +333,14 @@ class ReportAPI:
         body = await self._body(request)
         if "days" in body and (not isinstance(body["days"], list) or not body["days"]):
             return _error("Kamida bitta kunni tanlang")
-        allowed = {k: body[k] for k in ("time", "days", "enabled", "remind_minutes", "work_start", "work_end") if k in body}
+        allowed = {k: body[k] for k in SCHEDULE_FIELDS if k in body}
         if not allowed:
             return _error("O'zgartiriladigan sozlama yo'q")
         candidate = (await self.service.schedule()).updated(allowed)
         if candidate.work_end <= candidate.work_start:
             return _error("Ish vaqti tugashi boshlanishidan keyin bo'lsin (masalan, 09:00–19:00)")
         schedule = await self.service.save_schedule(allowed)
-        return _json({"ok": True, "schedule": {
-            "time": schedule.time, "days": list(schedule.days), "enabled": schedule.enabled,
-            "remind_minutes": schedule.remind_minutes, "work_start": schedule.work_start,
-            "work_end": schedule.work_end, "days_label": schedule.days_label(),
-        }})
+        return _json({"ok": True, "schedule": _schedule(schedule)})
 
     async def send_now(self, request: web.Request) -> web.Response:
         service = self.service
@@ -483,3 +503,98 @@ class ReportAPI:
         if not await self.service.tasks.ask_now(self.bot, task, self.service.now()):
             return _error("So'rov yuborilmadi: «📋 Vazifalar» guruhi yo'q yoki bot u yerga yoza olmaydi", 409, "not_sent")
         return _json({"ok": True})
+
+    # ------------------------------------------------------------------ arxiv (v1.9)
+    async def archive_list(self, request: web.Request) -> web.Response:
+        service = self.service
+        await service.ensure()
+        owner = bool(request[self.access_key].get("owner"))
+        kind = request.query.get("kind", "weekly")
+        if kind not in ARCHIVE_KINDS:
+            kind = "weekly"
+        if kind == "journal" and not owner:
+            return _error("Kundalik faqat bot egasiga ko'rinadi.", 403, "forbidden")
+        archive = service.archive
+        now = service.now()
+        items: list[dict] = []
+        if kind == "daily":
+            for report in await archive.store.daily_reports():
+                try:
+                    day = datetime.strptime(report["period_end"][:10], "%Y-%m-%d").date()
+                except ValueError:
+                    continue
+                sent = archive.local(report["sent_at"])
+                items.append({"key": day.isoformat(), "label": _day_label(day),
+                              "sent_label": f"{sent:%d.%m %H:%M}" if sent else None})
+        elif kind == "journal":
+            for entry in await archive.store.journals():
+                day = datetime.strptime(entry["day"], "%Y-%m-%d").date()
+                sent = archive.local(entry["sent_at"])
+                items.append({"key": f"journal:{entry['day']}", "label": _day_label(day),
+                              "sent_label": f"{sent:%d.%m %H:%M}" if sent else None})
+        else:
+            items = await archive.periods(WEEK if kind == "weekly" else MONTH, now)
+        schedule = await service.schedule()
+        return _json({"kind": kind, "items": items, "schedule": _schedule(schedule), "owner": owner,
+                      "has_groups": bool(await service.store.groups_with("leads")),
+                      "leaders_group": bool(await service.store.groups_with("leaders"))})
+
+    async def archive_detail(self, request: web.Request) -> web.Response:
+        service = self.service
+        key = request.match_info["key"]
+        if key.startswith("journal:"):
+            if not request[self.access_key].get("owner"):
+                return _error("Kundalik faqat bot egasiga ko'rinadi.", 403, "forbidden")
+            entry = await service.archive.store.journal(key.partition(":")[2])
+            if entry is None:
+                return _error("Kundalik topilmadi", 404, "not_found")
+            day = datetime.strptime(entry["day"], "%Y-%m-%d").date()
+            return _json({"key": key, "kind": "journal", "label": _day_label(day), "text": _plain(entry["text"])})
+        await service.ensure()
+        period = await self._period(key)
+        if period is None:
+            return _error("Davr topilmadi", 404, "not_found")
+        data = await service.archive.detail(*period, service.now())
+        data["masked"] = not request[self.access_key].get("owner")
+        return _json(data)
+
+    async def archive_send(self, request: web.Request) -> web.Response:
+        """Excel faylni so'ragan odamning o'ziga (botdagi chatiga): egasiga to'liq, rahbarga telefonlarsiz."""
+        service = self.service
+        await service.ensure()
+        period = await self._period(request.match_info["key"])
+        if period is None:
+            return _error("Davr topilmadi", 404, "not_found")
+        uid = request[self.uid_key]
+        if uid in self._building:
+            return _error("Fayl tayyorlanmoqda — bir oz kuting.", 429, "busy")
+        if time.monotonic() - self._sent_at.get(uid, -SEND_COOLDOWN) < SEND_COOLDOWN:
+            return _error("Fayl hozirgina yuborildi — chatni tekshiring yoki birozdan keyin qayta urining.", 429, "too_fast")
+        owner = bool(request[self.access_key].get("owner"))
+        self._building.add(uid)  # bir odam bir vaqtda bitta faylni yasaydi
+        try:
+            await service.archive.send_to(self.bot, uid, *period, service.now(), masked=not owner)
+        except TelegramForbiddenError:
+            return _error("Bot sizga yoza olmaydi: botni oching va /start bosing, keyin qayta urinib ko'ring.", 409,
+                          "blocked")
+        except TelegramAPIError as exc:
+            log.warning("Excel yuborilmadi: %s", exc)
+            return _error("Fayl yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502,
+                          "send_failed")
+        except Exception:  # noqa: BLE001 — xato foydalanuvchiga tushunarli, tafsiloti logda
+            log.exception("Excel tayyorlanmadi (%s)", request.match_info["key"])
+            return _error("Faylni tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.", 500, "build_failed")
+        finally:
+            self._building.discard(uid)
+        self._sent_at[uid] = time.monotonic()  # faqat muvaffaqiyatli yuborilgandan keyin
+        return _json({"ok": True, "masked": not owner})
+
+    async def _period(self, key: str) -> tuple[str, date, date] | None:
+        """Kalit → davr; faqat kuzatish boshlangandan bugungacha bo'lgan davrlar (boshqasi — topilmadi)."""
+        period = parse_key(key)
+        if period is None:
+            return None
+        service = self.service
+        since = (await service.since()).astimezone(service.tz).date()
+        _, first, last = period
+        return period if last >= since and first <= service.now().date() else None

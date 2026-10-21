@@ -1,5 +1,5 @@
 """Hisobot uchun Telegram yangilanishlari: guruhlar (jim yozib borish), bot a'zoligi, reaksiyalar
-va egasining buyruqlari (/hisobot, /guruhlar)."""
+va egasining buyruqlari (/hisobot, /guruhlar, /vazifa, /vazifalar, /kundalik, /excel)."""
 from __future__ import annotations
 
 import contextlib
@@ -19,6 +19,7 @@ from aiogram.types import (
     MessageReactionUpdated,
 )
 
+from .archive import parse_key
 from .render import split_message
 from .service import ROLE_LABELS, ReportService
 from .stats import current_day
@@ -385,6 +386,70 @@ async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
     await callback.answer()
 
 
+# --------------------------------------------------------------------------- kundalik va Excel (v1.9)
+async def cmd_journal(message: Message, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    wait = await message.answer("📓 Kundalik tayyorlanmoqda…")
+    now = service.now()
+    text = await service.archive.journal_text(now, interim=True)
+    with contextlib.suppress(TelegramAPIError):
+        await wait.delete()
+    schedule = await service.schedule()
+    if schedule.journal_enabled:
+        text += f"\n\n<i>Kundalik har ish kuni {schedule.journal_time} da o'zi keladi.</i>"
+    await service.refresh_bot_info(bot)
+    await service.archive.send_text(bot, message.chat.id, text, service.archive.journal_markup(now.date()))
+
+
+async def cmd_excel(message: Message, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    if not await service.store.groups_with("leads"):
+        await message.answer(NO_GROUPS_TEXT, parse_mode=ParseMode.HTML)
+        return
+    schedule = await service.schedule()
+    auto = []
+    if schedule.weekly_enabled:
+        auto.append(f"har dushanba {schedule.excel_time} da — o'tgan hafta")
+    if schedule.monthly_enabled:
+        auto.append(f"oyning 1-sanasi {schedule.excel_time} da — o'tgan oy")
+    text = ("📊 <b>Excel hisobot</b>\nQaysi davr? Fayl sizga to'liq (telefon raqamlari bilan) keladi.\n\n"
+            + ("Avtomatik: " + "; ".join(auto) + ". Rahbarlar guruhiga — telefonlari yashirilgan nusxa."
+               if auto else "Avtomatik yuborish o'chiq (Mini App → Hisobotlar → Sozlamalar)."))
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=service.archive.excel_keyboard(service.now()))
+
+
+async def cb_excel(callback: CallbackQuery, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    if service is None or not ctx.is_owner(callback.from_user.id):
+        await callback.answer("⛔ Faqat bot egasi uchun", show_alert=True)
+        return
+    period = parse_key((callback.data or "").partition(":")[2])
+    if period is None:
+        await callback.answer("Bu tugma eskirgan — /excel ni qayta yozing", show_alert=True)
+        return
+    await callback.answer("Tayyorlanmoqda…")
+    kind, first, last = period
+    chat_id = callback.from_user.id
+    with contextlib.suppress(TelegramAPIError):
+        await bot.send_chat_action(chat_id, "upload_document")
+    try:
+        await service.archive.send_to(bot, chat_id, kind, first, last, service.now(), masked=False)
+    except Exception:  # noqa: BLE001 — xato egasiga ko'rinsin, tafsiloti logda
+        log.exception("Excel tayyorlanmadi yoki yuborilmadi (%s)", callback.data)
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_message(chat_id, "⚠️ Excel faylni tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.")
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -396,10 +461,13 @@ def build_router() -> Router:
     router.message.register(cmd_groups, Command("guruhlar", "groups"), private)
     router.message.register(cmd_task, Command("vazifa", "task"), private, F.forward_origin.is_(None))
     router.message.register(cmd_tasks, Command("vazifalar", "tasks"), private)
+    router.message.register(cmd_journal, Command("kundalik", "journal"), private)
+    router.message.register(cmd_excel, Command("excel", "export"), private)
     router.message.register(on_private_task, private, is_owner_task)
     router.callback_query.register(cb_task_answer, F.data.startswith("tq:"))
     router.callback_query.register(cb_task_owner, F.data.startswith("tk:"))
     router.callback_query.register(cb_group_role, F.data.startswith("rg:"))
     router.callback_query.register(cb_group_open, F.data.startswith("rgo:"))
     router.callback_query.register(cb_report, F.data.startswith("rp:"))
+    router.callback_query.register(cb_excel, F.data.startswith("xl:"))
     return router

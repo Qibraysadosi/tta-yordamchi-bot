@@ -12,6 +12,7 @@ import hmac
 import html
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -62,6 +63,8 @@ USER = web.RequestKey("user", dict) if hasattr(web, "RequestKey") else "user"  #
 # Bo'limlarga kirish: {"ai": a'zo yoki egasi, "report": rahbar yoki egasi, "owner": egasi}
 ACCESS = web.RequestKey("access", dict) if hasattr(web, "RequestKey") else "access"  # type: ignore[assignment]
 REPORT_PREFIX = "/api/report"
+# Rahbar ham bajara oladigan yagona amal: Excel faylni o'zining chatiga olish (telefonlari yashirilgan nusxa)
+LEADER_POST = re.compile(r"^/api/report/archive/[^/]+/send$")
 
 
 class AuthError(Exception):
@@ -221,7 +224,8 @@ class WebApp:
         if path.startswith(REPORT_PREFIX):
             if not report:
                 return _error("Hisobotlar bo'limi siz uchun yopiq.", 403, "forbidden")
-            if not owner and (request.method != "GET" or path.startswith(REPORT_PREFIX + "/settings")):
+            leader_post = request.method == "POST" and LEADER_POST.match(path) is not None
+            if not owner and not leader_post and (request.method != "GET" or path.startswith(REPORT_PREFIX + "/settings")):
                 return _error("Buni faqat bot egasi o'zgartira oladi.", 403, "forbidden")
         elif path != "/api/me" and not ai:
             return _error("AI bo'limi siz uchun yopiq — Hisobotlar bo'limidan foydalaning.", 403, "forbidden")

@@ -3,7 +3,7 @@
 Haqiqiy aiohttp server + Chromium (Playwright); bo'lmasa — o'tkazib yuboriladi (test_fix_miniapp.chromium)."""
 from test_fix_miniapp import chromium, go_hash, navigate, settled
 from test_flow import OWNER, run
-from test_reports import CARD_1, CARD_2, LEADERS, LEADS, MALIKA, SARDOR, WED, Group, person, ts
+from test_reports import CARD_1, CARD_2, LEADERS, LEADS, MALIKA, SARDOR, WED, Group, local, person, ts
 from test_reports_api import LEADER, MEMBER, Api, init_data
 
 TABS = "() => Array.from(document.querySelectorAll('#tabs [data-tab]')).map((b) => b.dataset.tab)"
@@ -43,7 +43,7 @@ def test_owner_chooser_and_report_section(tmp_path):
 
                 await navigate(page, lambda: page.click(".choice.report"))
                 assert await page.evaluate("location.hash") == "#r-today"
-                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops", "r-set", "choose"]
+                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops", "r-arch", "r-set", "choose"]
                 text = await page.evaluate(TEXT)
                 assert "2 ta lidga qo'ng'iroq" in text and "jonli" in text and "Malika" in text
                 assert "Ro'yxatda yo'q" in text and "Sardor" in text
@@ -133,7 +133,7 @@ def test_leader_sees_only_reports(tmp_path):
                 await page.goto(base)
                 await settled(page)
                 assert await page.evaluate("location.hash") == "#r-today"
-                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops"]  # sozlamalar va bo'limlar yo'q
+                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops", "r-arch"]  # sozlamalar va bo'limlar yo'q
                 text = await page.evaluate(TEXT)
                 assert "2 ta lidga qo'ng'iroq" in text and "Malika" in text
                 assert "rahbarlarga yuborish" not in text and "operator qilish" not in text
@@ -257,3 +257,78 @@ def test_tasks_tab(tmp_path):
             await api.close()
     run(go())
 
+
+
+def test_archive_tab(tmp_path):
+    async def go():
+        api = await Api().start(tmp_path)
+        try:
+            await prepare(api)
+            env = api.env
+            reports = env.ctx.reports
+            await env.db.set_config("report:archive_since", "2026-10-01T00:00:00")
+            await reports.check_daily(env.bot, local(WED, "19:05"))  # kunlik hisobot arxivga tushadi
+            assert await reports.archive.check_journal(env.bot, local(WED, "20:00"))
+            async with chromium() as open_page:
+                page, base = await open_page(api)
+                await page.goto(base + "#r-arch")
+                await settled(page)
+                assert await page.locator(".seg button").all_inner_texts() == ["Kunlik", "Haftalik", "Oylik", "Kundalik"]
+                text = await page.evaluate(TEXT)
+                assert "19–25 oktabr 2026" in text and "joriy" in text and "28 sentabr – 4 oktabr 2026" in text
+                assert "rahbarlar guruhiga (telefon raqamlari yashirilgan) va sizga (to'liq)" in text
+
+                # joriy hafta: natijalar va Excel'ni chatga olish
+                await page.click("[data-action=r-period][data-key='week:2026-10-19']")
+                await page.wait_for_selector(".sheet [data-action=r-xl-send]")
+                sheet = await page.evaluate("document.querySelector('.sheet').textContent")
+                assert "Qo'ng'iroq qilingan lidlar2" in sheet and "Malika" in sheet and "to'liq nusxa" in sheet
+                async with page.expect_response(lambda r: r.url.endswith("/send")):
+                    await page.click(".sheet [data-action=r-xl-send]")
+                await page.wait_for_function("document.querySelector('#toast').textContent === 'Excel chatingizga yuborildi'")
+                doc = env.session.of("SendDocument")[-1]
+                assert doc.chat_id == OWNER and env.session.documents[-1][0].endswith("_oraliq.xlsx")
+
+                # kundalik va kunlik hisobotlar
+                await page.click("[data-action=r-akind][data-k=journal]")
+                await page.wait_for_function("document.querySelector('[data-action=r-journal]')"
+                                             " && document.querySelector('.seg .on').dataset.k === 'journal'")
+                await page.click("[data-action=r-journal]")
+                await page.wait_for_selector(".sheet .pre-text")
+                assert "KUNDALIK · 21.10.2026" in await page.evaluate("document.querySelector('.sheet .pre-text').textContent")
+                await page.click(".sheet", position={"x": 20, "y": 20})
+                await page.click("[data-action=r-akind][data-k=daily]")
+                await page.wait_for_function("document.querySelector('[data-action=r-day]')")
+                await navigate(page, lambda: page.click("[data-action=r-day]"))
+                assert await page.evaluate("location.hash") == "#r-today/2026-10-21"
+
+                # sozlamalar: haftalik Excel'ni o'chirish, kundalik vaqti
+                await go_hash(page, "#r-set")
+                assert "Kundalik va Excel" in await page.evaluate(TEXT)
+                async with page.expect_response(lambda r: r.url.endswith("/api/report/schedule")):
+                    await page.evaluate("document.querySelector('[data-rtoggle=r-weekly]').click()")
+                await page.wait_for_function("document.querySelector('#toast').textContent === 'Haftalik Excel o\\'chirildi'")
+                await page.click("[data-action=r-jtime]")
+                await page.fill(".sheet input[name=journal_time]", "21:15")
+                async with page.expect_response(lambda r: r.url.endswith("/api/report/schedule")):
+                    await page.click(".sheet button[type=submit]")
+                await page.wait_for_function("!document.querySelector('.sheet') && !document.querySelector('.skeleton')"
+                                             " && document.querySelector('#screen').textContent.includes('21:15')")
+                schedule = await reports.schedule()
+                assert schedule.weekly_enabled is False and schedule.journal_time == "21:15"
+
+                # rahbar: kundaliksiz, Excel — telefonlari yashirilgan nusxa
+                page, base = await open_page(api, init=init_data(LEADER, "rahbar_1"))
+                await page.goto(base + "#r-arch")
+                await settled(page)
+                assert await page.locator(".seg button").all_inner_texts() == ["Kunlik", "Haftalik", "Oylik"]
+                await page.click("[data-action=r-period][data-key='week:2026-10-12']")
+                await page.wait_for_selector(".sheet [data-action=r-xl-send]")
+                assert "yashirilgan" in await page.evaluate("document.querySelector('.sheet').textContent")
+                async with page.expect_response(lambda r: r.url.endswith("/send")):
+                    await page.click(".sheet [data-action=r-xl-send]")
+                await page.wait_for_function("document.querySelector('#toast').textContent.includes('telefonlarsiz')")
+                assert env.session.of("SendDocument")[-1].chat_id == LEADER
+        finally:
+            await api.close()
+    run(go())

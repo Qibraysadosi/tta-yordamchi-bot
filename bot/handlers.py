@@ -86,6 +86,8 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="guruhlar", description="👥 Kuzatiladigan guruhlar"),
     BotCommand(command="vazifa", description="📋 Vazifa berish (#vazifa @username …)"),
     BotCommand(command="vazifalar", description="🗂 Ochiq vazifalar"),
+    BotCommand(command="kundalik", description="📓 Kundalik: bugungi raqamlar va vazifalar"),
+    BotCommand(command="excel", description="📊 Haftalik / oylik Excel hisobot"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -160,7 +162,9 @@ ADMIN_HELP = (
     "📊 /hisobot — call center hisoboti: hozirgi holat va rahbarlarga yuborish\n"
     "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar, vazifalar) va ularning turi\n"
     "📋 /vazifa — vazifa berish: «#vazifa @username nima, qachongacha» (guruhda yoki shu yerda)\n"
-    "🗂 /vazifalar — ochiq vazifalar va ularning holati"
+    "🗂 /vazifalar — ochiq vazifalar va ularning holati\n"
+    "📓 /kundalik — bugungi kundalik: call center raqamlari va vazifalar (ish kunlari 20:00 da o'zi keladi)\n"
+    "📊 /excel — haftalik yoki oylik Excel hisobot (dushanba va oyning 1-sanasi o'zi keladi)"
 )
 
 MODE_TEXT = (

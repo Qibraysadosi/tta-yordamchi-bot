@@ -441,6 +441,11 @@ a { color: var(--link); }
 .hist span:last-child { color: var(--hint); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sheet .btn-row { flex-wrap: wrap; }
 
+/* --- arxiv --- */
+.tile.journal { background: #9333ea; }
+.row .badge { flex: none; margin: 0 2px 0 6px; }
+.pre-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; padding: 12px 14px; }
+
 /* --- toast --- */
 .toast {
   position: fixed; left: 50%; bottom: calc(var(--tabbar) + var(--safe-bottom) + 14px); transform: translate(-50%, 10px);

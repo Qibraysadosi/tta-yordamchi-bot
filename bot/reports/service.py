@@ -1,7 +1,8 @@
 """Hisobot xizmati: guruhlardagi lidlar va harakatlarni yozib borish, izoh tahlili, kunlik hisobot va eslatmalar.
 
 Lidlar guruhiga bot hech narsa yozmaydi — faqat o'qiydi. Hisobot rahbarlar guruhiga (bo'lmasa egasiga) boradi;
-«📋 Vazifalar» guruhida faqat «Bajardingizmi?» so'rovlari (bot/reports/tasks.py)."""
+«📋 Vazifalar» guruhida faqat «Bajardingizmi?» so'rovlari (bot/reports/tasks.py); kundalik va haftalik / oylik
+Excel — bot/reports/archive.py."""
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +30,7 @@ from aiogram.types import (
 
 from ..claude import ClaudeError
 from . import analysis
+from .archive import ARCHIVE_SINCE_KEY, ArchiveService
 from .leads import extract_phones, message_link, parse_lead
 from .render import render_report, split_message
 from .stats import (
@@ -94,6 +96,7 @@ class ReportService:
         self._reasons_cache: tuple[str, tuple, list] | None = None  # (davr, xom sabablar, guruhlangan)
         self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
         self.tasks = TaskService(self)
+        self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -107,8 +110,9 @@ class ReportService:
         if self._ready:
             return
         await self.store.seed_statuses()
-        if not await self.ctx.db.get_config(SINCE_KEY):
-            await self.ctx.db.set_config(SINCE_KEY, iso(datetime.now(timezone.utc)))
+        for key in (SINCE_KEY, ARCHIVE_SINCE_KEY):
+            if not await self.ctx.db.get_config(key):
+                await self.ctx.db.set_config(key, iso(datetime.now(timezone.utc)))
         self._ready = True
 
     async def since(self) -> datetime:
@@ -614,6 +618,8 @@ class ReportService:
             ("eslatmalar", lambda: self.check_reminders(bot, now)),
             ("kunlik hisobot", lambda: self.check_daily(bot, now)),
             ("vazifalar", lambda: self.tasks.tick(bot, now)),
+            ("kundalik", lambda: self.archive.check_journal(bot, now)),
+            ("excel", lambda: self.archive.check_exports(bot, now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:

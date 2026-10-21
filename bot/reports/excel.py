@@ -25,9 +25,9 @@ MUTED = "6B7280"
 NOTE_LIMIT = 300
 # Excel (XML) qabul qilmaydigan belgilar: boshqaruv belgilari, yolg'iz surrogatlar, U+FFFE / U+FFFF
 CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
-# Rahbarlar nusxasi uchun «raqamlar zanjiri»: raqam guruhlari orasida 1–3 ta belgi (bo'shliq, tire, nuqta, «/», «_» …).
+# Rahbarlar nusxasi uchun «raqamlar zanjiri»: raqam guruhlari orasida 1–5 ta belgi (bo'shliq, tire, nuqta, «/», «_» …).
 # Kamida 7 raqamli zanjir yashiriladi (yopiq bo'lib qolish afzal), sana / soat / summa / «ID …» bundan mustasno.
-RUN_RE = re.compile(r"(?<!ID )(?<![\w+])\+?\d+(?:(?:[^\w\n]|_){1,3}\d+)*")
+RUN_RE = re.compile(r"(?<!ID )(?<![\w+])\+?\d+(?:(?:[^\w\n]|_){1,5}\d+)*")
 _DAY, _MONTH = r"(?:0?[1-9]|[12]\d|3[01])", r"(?:0?[1-9]|1[0-2])"
 _DATE = rf"(?:{_DAY}[./-]{_MONTH}[./-](?:(?:19|20)\d{{2}}|\d{{2}})|(?:19|20)\d{{2}}-{_MONTH}-{_DAY})"
 _TIME = r"(?:[01]?\d|2[0-3])[:.][0-5]\d"

@@ -1,11 +1,13 @@
 """v1.9: kundalik (egasiga, ish kunlari 20:00) va haftalik / oylik Excel (rahbarlarga yashirilgan, egasiga to'liq)."""
 import io
+import random
+import re
 from datetime import date, datetime, timezone
 
 from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 
 from bot.reports.archive import MONTH, WEEK, due_period, parse_key, period_key, period_label, previous_period
-from bot.reports.excel import format_phone, mask_phone
+from bot.reports.excel import format_phone, hide_numbers, mask_phone
 from test_flow import OWNER, run
 from test_reports import (
     CARD_1,
@@ -122,6 +124,33 @@ def test_period_keys_and_labels():
     assert format_phone("+998901234567") == "+998 90 123-45-67" and mask_phone("+998901234567") == "+998 90 ***-**-67"
     assert mask_phone("12345") == "***"
 
+
+
+def test_hide_numbers():
+    """Rahbarlar nusxasi: har qanday ko'rinishdagi raqam yashiriladi, sana / soat / summa joyida qoladi."""
+    groupings = [[2, 3, 2, 2], [2, 3, 4], [2, 7], [9], [3, 3, 3], [2, 2, 2, 3], [1] * 9, [3, 2, 2, 2], [4, 5], [5, 4]]
+    seps = [" ", "-", ".", "/", "_", ",", " - ", " / ", "\u2011", "\u2013", "\u00a0", "\u200b", "    ", "\t", "|", "\u00ad"]
+    prefixes = ["", "+998 ", "998", "+998", "8 ", "(", "0"]
+    wraps = ["Tel: {}", "({})", "{}.", "{}:", "onasi {} ga", "{}ga yozdim", "21.10.2026 18.00 da {}", "10:00, {}", "{} 24 yosh"]
+    rnd = random.Random(7)
+    for _ in range(3000):
+        core = rnd.choice(["90", "93", "97", "99", "33", "71"]) + "".join(rnd.choice("0123456789") for _ in range(7))
+        if core.endswith("000"):
+            continue  # «901 234 000» — summa bilan bir xil, ataylab ochiq qoldirilgan
+        parts, i = [], 0
+        for size in rnd.choice(groupings):
+            parts.append(core[i:i + size])
+            i += size
+        prefix = rnd.choice(prefixes)
+        sep = rnd.choice(seps)
+        body = parts[0] + ")" + sep + sep.join(parts[1:]) if prefix == "(" and len(parts) > 1 else sep.join(parts)
+        text = rnd.choice(wraps).format(prefix + body)
+        digits = re.sub(r"\D", "", hide_numbers(text))
+        assert not any(core[i:i + 7] in digits for i in range(3)), text
+    for text in ("22.10.2026 18.00 da keladi", "2026-10-21 19.00", "21.10.26-25.10.26", "1 200 000-1 500 000",
+                 "125 000 000 so'm", "17.10.2026 19:00 → 24.10.2026 19:00", "25.10, 26.10 va 27.10", "09:00–18:00",
+                 "1\u00a0250\u00a0000 so'm", "Excel 2016, 3-oy", "24"):
+        assert hide_numbers(text) == text
 
 # --------------------------------------------------------------------------- Excel
 def test_weekly_excel_masked_and_full(tmp_path):

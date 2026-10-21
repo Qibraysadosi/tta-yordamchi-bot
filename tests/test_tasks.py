@@ -581,3 +581,59 @@ def test_private_explicit_marker_caption_and_text_mention(tmp_path):
         finally:
             await env.close()
     run(go())
+
+
+# ---------------------------------------------------------------- uchinchi tekshiruv holatlari
+def test_stop_repeat_wins_race_and_keeps_buttons(tmp_path):
+    async def go():
+        import asyncio
+
+        from aiogram.types import User
+
+        env = await start(tmp_path)
+        try:
+            env.ctx.reports.set_bot_info(User(id=123456, is_bot=True, first_name="Bot", username="claude_test_bot"))
+            office = await Office(env).setup()
+            await office.say(MALIKA_USER, "salom", ts(WED, "09:00"))
+            at(env, WED, "15:00")
+            env.api.responses.append(parsed("Kunlik hisobot", "2026-10-22 10:00", "daily"))
+            text = "#vazifa @malika_op har kuni 10:00 da kunlik hisobot"
+            await office.say(OWNER_USER, text, ts(WED, "15:00"), entities=mention(text, "malika_op"))
+            tasks = env.ctx.reports.tasks
+            task = (await tasks.store.tasks(OPEN))[0]
+            original = env.session.make_request
+
+            async def slow(bot, method, timeout=None):
+                if type(method).__name__ == "SendMessage":
+                    await asyncio.sleep(0.05)
+                return await original(bot, method, timeout)
+
+            env.session.make_request = slow
+            now = at(env, THU, "10:00")
+            await asyncio.gather(tasks.tick(env.bot, now), tasks.stop_repeat(task, OWNER))
+            env.session.make_request = original
+            alive = [t for t in await tasks.store.tasks(OPEN) if t.repeat]
+            assert alive == []  # takror to'xtadi: ochiq takroriy nusxa qolmadi
+
+            # ⏹ tugmasi boshqa tugmalarni o'chirmaydi
+            env.api.responses.append(parsed("Haftalik reja", "2026-10-26 10:00", "weekly:0"))
+            text = "#vazifa @malika_op har dushanba haftalik reja"
+            await office.say(OWNER_USER, text, ts(WED, "15:10"), entities=mention(text, "malika_op"))
+            weekly = [t for t in await tasks.store.tasks(OPEN) if t.repeat == "weekly:0"][0]
+            await env.press(f"tk:{weekly.id}:rs")
+            edited = env.session.of("EditMessageText")[-1]
+            labels = [b.text for row in edited.reply_markup.inline_keyboard for b in row]
+            assert labels == ["⏰ Muddatni o'zgartirish", "🗑 Bekor qilish"] and "Takror to'xtatildi" in edited.text
+
+            # lichka: uzatilgan /vazifa va boshqa botga buyruq — vazifa emas
+            count = len(await tasks.store.tasks())
+            env.api.responses += [fakes.simple_answer("Ok."), fakes.simple_answer("Ok.")]
+            fwd = "/vazifa @malika_op x"
+            await env.send_text(fwd, entities=mention(fwd, "malika_op"),
+                                forward_origin={"type": "hidden_user", "date": ts(WED, "14:00"), "sender_user_name": "K"})
+            other = "/vazifa@boshqa_bot @malika_op y"
+            await env.send_text(other, entities=mention(other, "malika_op"))
+            assert len(await tasks.store.tasks()) == count
+        finally:
+            await env.close()
+    run(go())

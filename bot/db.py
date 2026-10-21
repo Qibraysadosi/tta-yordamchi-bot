@@ -213,6 +213,7 @@ CREATE INDEX IF NOT EXISTS idx_rp_task_events ON rp_task_events (task_id);
 # Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)
 MIGRATIONS = {
     "settings": {"mode": "TEXT"},
+    "rp_tasks": {"poll_thread": "INTEGER"},
 }
 TITLE_LIMIT = 48
 

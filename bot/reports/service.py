@@ -514,8 +514,11 @@ class ReportService:
                 for index, part in enumerate(parts):
                     last = index == len(parts) - 1
                     msg = await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML, reply_markup=markup if last else None)
-                    if chat_id < 0:  # guruhdagi hisobotga reaksiya — qo'ng'iroq emas
-                        await self.store.mark_seen(chat_id, msg.message_id)
+                    if chat_id < 0:  # guruhdagi hisobotga reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
+                        try:
+                            await self.store.mark_seen(chat_id, msg.message_id)
+                        except Exception:  # noqa: BLE001
+                            log.exception("Hisobot xabarini belgilab bo'lmadi")
                 sent += 1
             except TelegramAPIError as exc:
                 log.warning("Hisobot yuborilmadi (%s): %s", chat_id, exc)

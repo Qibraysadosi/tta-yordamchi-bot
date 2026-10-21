@@ -438,7 +438,8 @@
       'r-task-add': () => taskAddSheet(),
       'r-task-due': () => taskDueSheet(),
       'r-task-set': (el) => guard(() => taskPatch({ status: el.dataset.status },
-        { done: 'Vazifa yopildi', cancelled: 'Vazifa bekor qilindi', open: 'Vazifa qayta ochildi' }[el.dataset.status] || 'Saqlandi')),
+        { done: 'Vazifa yopildi', open: 'Vazifa qayta ochildi',
+          cancelled: cache.task && cache.task.repeat ? 'Bekor qilindi — takror ham to\'xtadi' : 'Vazifa bekor qilindi' }[el.dataset.status] || 'Saqlandi')),
       'r-task-norepeat': () => guard(() => taskPatch({ repeat: '' }, 'Takror to\'xtatildi')),
       'r-task-ask': () => guard(async () => {
         const t = cache.task;

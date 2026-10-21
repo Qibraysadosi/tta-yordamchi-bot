@@ -303,7 +303,9 @@ class TaskStore(ReportStore):
 
     async def claim_spawn(self, task_id: int) -> bool:
         """Takroriy vazifaning keyingi nusxasi faqat bir marta yaratiladi (fon sikli va egasi amali bir vaqtda)."""
-        cur = await self.conn.execute("UPDATE rp_tasks SET spawned = 1 WHERE id = ? AND spawned = 0", (task_id,))
+        cur = await self.conn.execute(
+            "UPDATE rp_tasks SET spawned = 1 WHERE id = ? AND spawned = 0 AND repeat IS NOT NULL", (task_id,)
+        )
         await self.conn.commit()
         return cur.rowcount > 0
 
@@ -623,14 +625,16 @@ class TaskService:
         return done
 
     async def _send_poll(self, bot: Bot, chat: int, task: Task) -> Message:
-        thread = task.poll_thread if chat == task.poll_chat else None
+        if chat != task.poll_chat:
+            task.poll_thread = None  # boshqa guruhga o'tdi — eski guruh mavzusi bu yerda yo'q
+        thread = task.poll_thread
         try:
             return await bot.send_message(chat, self.poll_text(task), parse_mode=ParseMode.HTML,
                                           reply_markup=self.poll_keyboard(task), message_thread_id=thread)
-        except TelegramBadRequest:
-            if thread is None:
+        except TelegramBadRequest as exc:
+            if thread is None or not any(w in str(exc).lower() for w in ("thread", "topic")):
                 raise
-            await self.store.update(task.id, poll_thread=None)  # mavzu o'chirilgan — umumiy chatga
+            task.poll_thread = None  # mavzu o'chirilgan yoki yopilgan — umumiy chatga (keyingi nusxalar ham)
             return await bot.send_message(chat, self.poll_text(task), parse_mode=ParseMode.HTML,
                                           reply_markup=self.poll_keyboard(task))
 
@@ -661,12 +665,16 @@ class TaskService:
                 await self.tell(bot, task.creator_id, f"⚠️ Guruhga «Bajardingizmi?» so'rovini yozib bo'lmadi: "
                                                       f"{html.escape(str(exc))}\nBot guruhda xabar yoza olishini tekshiring.")
             return False
-        await self.reports.store.mark_seen(chat, sent.message_id)  # so'rovga qo'yilgan reaksiya — qo'ng'iroq emas
         await self.store.update(
-            task.id, poll_chat=chat, ask_chat=chat, ask_msg=sent.message_id, asks=task.asks + 1, escalated=0,
-            next_ask_at=iso(next_work_moment(now + NO_ANSWER_AFTER, schedule, self.tz)),
+            task.id, poll_chat=chat, poll_thread=task.poll_thread, ask_chat=chat, ask_msg=sent.message_id,
+            asks=task.asks + 1, escalated=0, next_ask_at=iso(next_work_moment(now + NO_ANSWER_AFTER, schedule, self.tz)),
         )
+        task.poll_chat = chat
         await self.store.log(task.id, "asked")
+        try:  # so'rovga qo'yilgan reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
+            await self.reports.store.mark_seen(chat, sent.message_id)
+        except Exception:  # noqa: BLE001
+            log.exception("So'rov xabarini belgilab bo'lmadi")
         await self.spawn_next(task, schedule)
         return True
 
@@ -811,8 +819,9 @@ class TaskService:
 
     async def stop_repeat(self, task: Task, by: int | None = None) -> None:
         """Takrorni to'xtatish: shu nusxa va undan keyingilar takrorlanmaydi; hali so'ralmagan keyingi nusxa bekor."""
-        await self.store.update(task.id, repeat=None)
-        await self.store.log(task.id, "norepeat", by)
+        async with self.lock(task.id):  # shu vazifadagi so'rov/yopish tugagach — keyingi nusxa ochilmay qolmasin
+            await self.store.update(task.id, repeat=None)
+            await self.store.log(task.id, "norepeat", by)
         parent = task.id
         for _ in range(100):
             child = await self.store.child_of(parent)

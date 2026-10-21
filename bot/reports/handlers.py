@@ -234,17 +234,23 @@ async def cb_group_open(callback: CallbackQuery, ctx) -> None:
 
 
 # --------------------------------------------------------------------------- vazifalar
+def _bot_username(ctx) -> str | None:
+    service = _service(ctx)
+    return service.bot_info.get("username") if service is not None else None
+
+
 async def is_owner_task(message: Message, ctx) -> bool:
     """Lichkadagi «#vazifa …» / «Vazifa: @… …» — faqat egasidan (boshqalarniki va uzatilgan matn — AI suhbatiga)."""
     user = message.from_user
-    return (user is not None and ctx.is_owner(user.id) and task_body(message.text or message.caption) is not None
-            and is_explicit(message))
+    return (user is not None and ctx.is_owner(user.id) and is_explicit(message)
+            and task_body(message.text or message.caption, _bot_username(ctx)) is not None)
 
 
 async def on_private_task(message: Message, bot: Bot, ctx) -> None:
     service = _service(ctx)
     if service is not None:
-        await service.tasks.from_message(bot, message, task_body(message.text or message.caption) or "", group_chat=None)
+        body = task_body(message.text or message.caption, _bot_username(ctx)) or ""
+        await service.tasks.from_message(bot, message, body, group_chat=None)
 
 
 async def cmd_task(message: Message, bot: Bot, ctx) -> None:
@@ -254,7 +260,7 @@ async def cmd_task(message: Message, bot: Bot, ctx) -> None:
     if not ctx.is_owner(message.from_user.id):
         await message.answer("Vazifani faqat bot egasi beradi.")
         return
-    body = task_body(message.text or message.caption) or ""
+    body = task_body(message.text or message.caption, _bot_username(ctx)) or ""
     if not body:
         await message.answer(TASK_HELP, parse_mode=ParseMode.HTML)
         return
@@ -346,9 +352,17 @@ async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
         if task.repeat:
             await tasks.stop_repeat(task, callback.from_user.id)
         await callback.answer("Takror to'xtatildi — keyingi nusxalar bo'lmaydi")
+        fresh = await tasks.store.get(task.id) or task
         if message is not None:
+            old = message.reply_markup.inline_keyboard if message.reply_markup else []
+            alert = any((b.callback_data or "").endswith(":ask") for row in old for b in row)
+            markup = None
+            if fresh.status == OPEN:  # boshqa tugmalar qoladi (⏹ siz)
+                markup = tasks.alert_keyboard(fresh) if alert else tasks.owner_keyboard(fresh, now, presets=False,
+                                                                                         schedule=schedule)
             with contextlib.suppress(TelegramBadRequest):
-                await message.edit_text(f"{message.html_text}\n\n⏹ <i>Takror to'xtatildi</i>", parse_mode=ParseMode.HTML)
+                await message.edit_text(f"{message.html_text}\n\n⏹ <i>Takror to'xtatildi</i>", parse_mode=ParseMode.HTML,
+                                        reply_markup=markup)
         return
     if action == "ask":
         ok = await tasks.ask_now(bot, task, now)
@@ -361,7 +375,8 @@ async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
             else:
                 await tasks.close(bot, task, callback.from_user.id, now)
         done = (await tasks.store.get(task.id) or task).status
-        note = {DONE: "✅ <i>Bajarildi deb yopildi</i>"}.get(done, "🗑 <i>Bekor qilindi</i>")
+        note = {DONE: "✅ <i>Bajarildi deb yopildi</i>"}.get(
+            done, "🗑 <i>Bekor qilindi" + (" — takror ham to'xtatildi" if task.repeat else "") + "</i>")
         await callback.answer("Saqlandi")
         if message is not None:
             with contextlib.suppress(TelegramBadRequest):
@@ -379,7 +394,7 @@ def build_router() -> Router:
     private = F.chat.type == ChatType.PRIVATE
     router.message.register(cmd_report, Command("hisobot", "report"), private)
     router.message.register(cmd_groups, Command("guruhlar", "groups"), private)
-    router.message.register(cmd_task, Command("vazifa", "task"), private)
+    router.message.register(cmd_task, Command("vazifa", "task"), private, F.forward_origin.is_(None))
     router.message.register(cmd_tasks, Command("vazifalar", "tasks"), private)
     router.message.register(on_private_task, private, is_owner_task)
     router.callback_query.register(cb_task_answer, F.data.startswith("tq:"))

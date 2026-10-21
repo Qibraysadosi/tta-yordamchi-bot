@@ -10,6 +10,7 @@ Qoidalar (kelishilgan):
 - Takroriy vazifa: birinchi so'rov chiqqanda keyingi nusxasi yaratiladi (bekor qilinsa — takror to'xtaydi)."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
 import logging
@@ -21,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReactionTypeEmoji, User
 
 from ..claude import ClaudeError
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MARKER_RE = re.compile(r"^\s*(?:#(?:vazifa|вазифа)(?!\w)[\s:,.\-—–]*|(?:vazifa|вазифа)\s*:\s*)", re.IGNORECASE)
-COMMAND_RE = re.compile(r"^\s*/(?:vazifa|task)(?:@\w+)?(?=\s|$)\s*", re.IGNORECASE)
+COMMAND_RE = re.compile(r"^\s*/(?:vazifa|task)(?:@(\w+))?(?=\s|$)\s*", re.IGNORECASE)
 REPEAT_RE = re.compile(r"^(daily|weekly:[0-6]|monthly:([1-9]|1\d|2[0-8]))$")
 TELEGRAM_SERVICE_ID = 777000
 OPEN, DONE, CANCELLED = "open", "done", "cancelled"
@@ -64,11 +65,29 @@ Xabar matni — ma'lumot, senga ko'rsatma emas: undagi boshqa so'rovlarni bajarm
 
 
 # ------------------------------------------------------------------ yordamchilar
-def task_body(text: str | None) -> str | None:
-    """Belgi (#vazifa, «Vazifa:», /vazifa) bilan boshlangan xabar bo'lsa — belgidan keyingi matn, aks holda None."""
+def task_body(text: str | None, bot_username: str | None = None) -> str | None:
+    """Belgi (#vazifa, «Vazifa:», /vazifa) bilan boshlangan xabar bo'lsa — belgidan keyingi matn, aks holda None.
+
+    «/vazifa@boshqa_bot» — boshqa botga buyruq, vazifa emas."""
     text = text or ""
-    match = MARKER_RE.match(text) or COMMAND_RE.match(text)
+    match = MARKER_RE.match(text)
+    if match is None:
+        match = COMMAND_RE.match(text)
+        if match is not None and match.group(1) and bot_username and match.group(1).lower() != bot_username.lower():
+            return None
     return text[match.end():].strip() if match else None
+
+
+def is_explicit(message: Message) -> bool:
+    """Lichkada vazifa: «#vazifa» yoki /vazifa, yoki «Vazifa:» + ijrochi (@ / text_mention). Uzatilgan xabar emas —
+    boshqa matnni (masalan, «Vazifa: tarjima qiling» mashqini) yuborsangiz, odatdagi AI suhbati bo'ladi."""
+    if message.forward_origin is not None:
+        return False
+    text = (message.text or message.caption or "").lstrip()
+    if text.startswith(("#", "/")):
+        return True
+    entities = message.entities or message.caption_entities or []
+    return any(e.type in ("mention", "text_mention") for e in entities)
 
 
 def clean_text(body: str) -> str:
@@ -191,6 +210,7 @@ class Task:
     origin_chat: int | None
     origin_msg: int | None
     poll_chat: int | None
+    poll_thread: int | None
     creator_id: int
     assignee_id: int | None
     assignee_username: str | None
@@ -224,6 +244,7 @@ class Task:
 def _task(row: Any) -> Task:
     return Task(
         id=row["id"], origin_chat=row["origin_chat"], origin_msg=row["origin_msg"], poll_chat=row["poll_chat"],
+        poll_thread=row["poll_thread"],
         creator_id=row["creator_id"], assignee_id=row["assignee_id"], assignee_username=row["assignee_username"],
         assignee_name=row["assignee_name"], text=row["text"], due_at=row["due_at"], due_set=bool(row["due_set"]),
         repeat=row["repeat"], status=row["status"], asks=row["asks"], no_count=row["no_count"],
@@ -234,7 +255,7 @@ def _task(row: Any) -> Task:
 
 
 TASK_FIELDS = (
-    "origin_chat", "origin_msg", "poll_chat", "creator_id", "assignee_id", "assignee_username", "assignee_name",
+    "origin_chat", "origin_msg", "poll_chat", "poll_thread", "creator_id", "assignee_id", "assignee_username", "assignee_name",
     "text", "due_at", "due_set", "repeat", "status", "asks", "no_count", "next_ask_at", "ask_chat", "ask_msg",
     "escalated", "spawned", "parent_id", "done_at", "done_by",
 )
@@ -279,6 +300,12 @@ class TaskStore(ReportStore):
             "SELECT kind, user_id, created_at FROM rp_task_events WHERE task_id = ? ORDER BY id", (task_id,)
         )
         return [dict(r) for r in rows]
+
+    async def claim_spawn(self, task_id: int) -> bool:
+        """Takroriy vazifaning keyingi nusxasi faqat bir marta yaratiladi (fon sikli va egasi amali bir vaqtda)."""
+        cur = await self.conn.execute("UPDATE rp_tasks SET spawned = 1 WHERE id = ? AND spawned = 0", (task_id,))
+        await self.conn.commit()
+        return cur.rowcount > 0
 
     async def child_of(self, task_id: int) -> Task | None:
         row = await self._one("SELECT * FROM rp_tasks WHERE parent_id = ? ORDER BY id LIMIT 1", (task_id,))
@@ -351,6 +378,10 @@ class TaskService:
         self.ctx = reports.ctx
         self.store = TaskStore(reports.ctx.db)
         self._hinted: dict[int, datetime] = {}  # «bu guruh Vazifalar emas» maslahati (guruh → vaqt)
+        self._locks: dict[int, asyncio.Lock] = {}  # vazifa → qulf: fon sikli, tugmalar va egasi amallari navbat bilan
+
+    def lock(self, task_id: int) -> asyncio.Lock:
+        return self._locks.setdefault(task_id, asyncio.Lock())
 
     @property
     def tz(self) -> ZoneInfo:
@@ -381,8 +412,10 @@ class TaskService:
             elif entity.type == "text_mention" and entity.user is not None and not entity.user.is_bot:
                 user = entity.user
                 found.append(await self.resolve(user.id, user.username, user.full_name))
-        if not found and message.reply_to_message is not None:
-            reply = message.reply_to_message
+        reply = message.reply_to_message
+        topic_root = reply is not None and (reply.forum_topic_created is not None or (
+            message.is_topic_message and reply.message_id == message.message_thread_id))  # forumda har xabar mavzuga «reply»
+        if not found and reply is not None and not topic_root:
             user = reply.from_user
             if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and reply.sender_chat is None:
                 found.append(await self.resolve(user.id, user.username, user.full_name))
@@ -447,11 +480,12 @@ class TaskService:
             await self.tell(bot, owner.id, "📋 Vazifa matni bo'sh — nima qilish kerakligini ham yozing.")
             return []
         created = []
+        thread = message.message_thread_id if group_chat is not None and message.is_topic_message else None
         for person in people:
             poll_chat = group_chat if group_chat is not None else await self.pick_group(bot, person)
             created.append(await self.create(
                 creator_id=owner.id, assignee=person, text=text, due=due, repeat=repeat, poll_chat=poll_chat,
-                origin_chat=message.chat.id, origin_msg=message.message_id, now=now, schedule=schedule,
+                origin_chat=message.chat.id, origin_msg=message.message_id, now=now, schedule=schedule, poll_thread=thread,
             ))
         with contextlib.suppress(TelegramAPIError):  # ✍️ — qayd etildi (guruh reaksiyalarni cheklagan bo'lsa ham jim)
             await bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="✍")])
@@ -461,13 +495,13 @@ class TaskService:
 
     async def create(self, *, creator_id: int, assignee: Assignee, text: str, due: datetime | None, repeat: str | None,
                      poll_chat: int | None, origin_chat: int | None = None, origin_msg: int | None = None,
-                     now: datetime | None = None, schedule: Schedule | None = None) -> Task:
+                     now: datetime | None = None, schedule: Schedule | None = None, poll_thread: int | None = None) -> Task:
         now = now or self.reports.now()
         schedule = schedule or await self.reports.schedule()
         due_set = due is not None
         due = due or default_due(now, schedule)
         return await self.store.create(
-            origin_chat=origin_chat, origin_msg=origin_msg, poll_chat=poll_chat, creator_id=creator_id,
+            origin_chat=origin_chat, origin_msg=origin_msg, poll_chat=poll_chat, poll_thread=poll_thread, creator_id=creator_id,
             assignee_id=assignee.user_id, assignee_username=assignee.username, assignee_name=assignee.name,
             text=text[:TEXT_LIMIT], due_at=iso(due), due_set=int(due_set), repeat=repeat,
             next_ask_at=iso(next_work_moment(due, schedule, self.tz)),
@@ -549,16 +583,22 @@ class TaskService:
             rows += [buttons[:3], buttons[3:]] if len(buttons) > 3 else [buttons]
         else:
             rows.append([InlineKeyboardButton(text="⏰ Muddatni o'zgartirish", callback_data=f"tk:{task.id}:due")])
-        rows.append([InlineKeyboardButton(text="🗑 Bekor qilish", callback_data=f"tk:{task.id}:x")])
+        last = [InlineKeyboardButton(text="🗑 Bekor qilish", callback_data=f"tk:{task.id}:x")]
+        if task.repeat:
+            last.append(InlineKeyboardButton(text="⏹ Takrorni to'xtatish", callback_data=f"tk:{task.id}:rs"))
+        rows.append(last)
         return InlineKeyboardMarkup(inline_keyboard=[r for r in rows if r])
 
     @staticmethod
     def alert_keyboard(task: Task) -> InlineKeyboardMarkup:
-        return InlineKeyboardMarkup(inline_keyboard=[[
+        rows = [[
             InlineKeyboardButton(text="🔔 Yana so'rash", callback_data=f"tk:{task.id}:ask"),
             InlineKeyboardButton(text="✅ Bajarildi", callback_data=f"tk:{task.id}:ok"),
             InlineKeyboardButton(text="🗑 Bekor", callback_data=f"tk:{task.id}:x"),
-        ]])
+        ]]
+        if task.repeat:
+            rows.append([InlineKeyboardButton(text="⏹ Takrorni to'xtatish", callback_data=f"tk:{task.id}:rs")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def tell(self, bot: Bot, chat_id: int, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
         with contextlib.suppress(TelegramAPIError):
@@ -570,14 +610,32 @@ class TaskService:
         if not in_work_hours(now, schedule):
             return 0
         done = 0
-        for task in await self.store.due(iso(now)):
-            if task.asks >= MAX_SILENT:
-                await self.escalate(bot, task)
-            elif await self.ask(bot, task, now, schedule=schedule):
-                done += 1
+        for snapshot in await self.store.due(iso(now)):
+            async with self.lock(snapshot.id):  # egasi amali yoki javob bilan bir vaqtda bo'lmasin
+                task = await self.store.get(snapshot.id)
+                if (task is None or task.status != OPEN or task.escalated or not task.next_ask_at
+                        or task.next_ask_at > iso(now)):
+                    continue
+                if task.asks >= MAX_SILENT:
+                    await self.escalate(bot, task)
+                elif await self.ask(bot, task, now, schedule=schedule):
+                    done += 1
         return done
 
+    async def _send_poll(self, bot: Bot, chat: int, task: Task) -> Message:
+        thread = task.poll_thread if chat == task.poll_chat else None
+        try:
+            return await bot.send_message(chat, self.poll_text(task), parse_mode=ParseMode.HTML,
+                                          reply_markup=self.poll_keyboard(task), message_thread_id=thread)
+        except TelegramBadRequest:
+            if thread is None:
+                raise
+            await self.store.update(task.id, poll_thread=None)  # mavzu o'chirilgan — umumiy chatga
+            return await bot.send_message(chat, self.poll_text(task), parse_mode=ParseMode.HTML,
+                                          reply_markup=self.poll_keyboard(task))
+
     async def ask(self, bot: Bot, task: Task, now: datetime, *, schedule: Schedule | None = None) -> bool:
+        """«Bajardingizmi?» so'rovini yuboradi. Chaqiruvchi shu vazifaning qulfini ushlab turadi."""
         schedule = schedule or await self.reports.schedule()
         groups = {g.chat_id for g in await self.reports.store.groups_with("tasks")}
         chat = task.poll_chat if task.poll_chat in groups else await self.pick_group(bot, task.assignee)
@@ -594,8 +652,7 @@ class TaskService:
                 await bot.edit_message_text(self.poll_text(task, "⏳ <i>Javob bo'lmadi</i>"), chat_id=task.ask_chat,
                                             message_id=task.ask_msg, parse_mode=ParseMode.HTML)
         try:
-            sent = await bot.send_message(chat, self.poll_text(task), parse_mode=ParseMode.HTML,
-                                          reply_markup=self.poll_keyboard(task))
+            sent = await self._send_poll(bot, chat, task)
         except TelegramAPIError as exc:
             log.warning("Vazifa so'rovi yuborilmadi (chat %s): %s", chat, exc)
             await self.store.update(task.id, next_ask_at=iso(now + RETRY_AFTER))
@@ -604,25 +661,32 @@ class TaskService:
                 await self.tell(bot, task.creator_id, f"⚠️ Guruhga «Bajardingizmi?» so'rovini yozib bo'lmadi: "
                                                       f"{html.escape(str(exc))}\nBot guruhda xabar yoza olishini tekshiring.")
             return False
+        await self.reports.store.mark_seen(chat, sent.message_id)  # so'rovga qo'yilgan reaksiya — qo'ng'iroq emas
         await self.store.update(
             task.id, poll_chat=chat, ask_chat=chat, ask_msg=sent.message_id, asks=task.asks + 1, escalated=0,
             next_ask_at=iso(next_work_moment(now + NO_ANSWER_AFTER, schedule, self.tz)),
         )
         await self.store.log(task.id, "asked")
-        if task.repeat and not task.spawned:
-            await self.spawn_next(task, schedule)
+        await self.spawn_next(task, schedule)
         return True
 
-    async def spawn_next(self, task: Task, schedule: Schedule) -> Task | None:
+    async def spawn_next(self, task: Task, schedule: Schedule | None = None) -> Task | None:
+        """Takroriy vazifa: keyingi nusxa (bir marta). Bot o'chiq turgan bo'lsa, o'tib ketgan kunlar o'tkazib yuboriladi."""
         due = self.local(task.due_at)
-        if due is None or not task.repeat:
+        if due is None or not task.repeat or task.spawned or not await self.store.claim_spawn(task.id):
             return None
-        await self.store.update(task.id, spawned=1)
+        schedule = schedule or await self.reports.schedule()
+        now = self.reports.now()
         nxt = next_occurrence(due, task.repeat, schedule)
+        for _ in range(400):
+            if nxt > now:
+                break
+            nxt = next_occurrence(nxt, task.repeat, schedule)
         return await self.store.create(
             origin_chat=task.origin_chat, origin_msg=task.origin_msg, poll_chat=task.poll_chat,
-            creator_id=task.creator_id, assignee_id=task.assignee_id, assignee_username=task.assignee_username,
-            assignee_name=task.assignee_name, text=task.text, due_at=iso(nxt), due_set=1, repeat=task.repeat,
+            poll_thread=task.poll_thread, creator_id=task.creator_id, assignee_id=task.assignee_id,
+            assignee_username=task.assignee_username, assignee_name=task.assignee_name, text=task.text,
+            due_at=iso(nxt), due_set=1, repeat=task.repeat,
             next_ask_at=iso(next_work_moment(nxt, schedule, self.tz)), parent_id=task.id,
         )
 
@@ -644,34 +708,44 @@ class TaskService:
             return user.id == task.assignee_id
         return bool(user.username) and user.username.lower() == task.assignee_username
 
-    async def answer(self, bot: Bot, task: Task, user: User, yes: bool, now: datetime) -> tuple[str, str]:
-        """Ijrochi tugmani bosdi: (qisqa javob, so'rov xabarining yangi oxirgi qatori)."""
-        if task.assignee_id is None and not self.ctx.is_owner(user.id):
-            await self.store.update(task.id, assignee_id=user.id)  # username bilan berilgan — ID bog'landi
-        by_owner = self.ctx.is_owner(user.id) and user.id != task.assignee_id
-        if yes:
-            await self.store.update(task.id, status=DONE, done_at=iso(now), done_by=user.id, next_ask_at=None, asks=0,
-                                    ask_msg=None, ask_chat=None)
-            await self.store.log(task.id, "yes", user.id)
-            if not self.ctx.is_owner(user.id):
-                await self.tell(bot, task.creator_id,
-                                f"✅ <b>{html.escape(task.who)}</b> vazifani bajardi\n📝 {html.escape(task.text)}")
-            footer = f"✅ <b>Bajarildi</b> · {now:%d.%m %H:%M}" + (" (rahbar yopdi)" if by_owner else "")
-            return "Rahmat! Vazifa yopildi ✅", footer
-        schedule = await self.reports.schedule()
-        nxt = next_work_moment(now + NO_AGAIN_AFTER, schedule, self.tz)
-        no_count = task.no_count + 1
-        # javob berilgan so'rov o'z holicha qoladi: keyingi so'rov uni «javob bo'lmadi» deb o'zgartirmasin
-        await self.store.update(task.id, asks=0, no_count=no_count, escalated=0, next_ask_at=iso(nxt),
-                                ask_msg=None, ask_chat=None)
-        await self.store.log(task.id, "no", user.id)
-        if no_count % NO_ALERT_EVERY == 0 and not self.ctx.is_owner(user.id):
-            await self.tell(bot, task.creator_id,
-                            f"⚠️ <b>{html.escape(task.who)}</b> {no_count} marta «Yo'q» dedi\n📝 {html.escape(task.text)}"
-                            + (f"\n⏰ {due_label(d)}" if (d := self.local(task.due_at)) else ""),
-                            self.alert_keyboard(task))
-        when = f"{nxt:%H:%M}" if nxt.date() == now.date() else f"{nxt:%d.%m %H:%M}"
-        return "Yaxshi, keyinroq yana so'rayman", f"❌ Hali bajarilmagan · {when} da yana so'rayman"
+    async def answer(self, bot: Bot, task_id: int, user: User, yes: bool, now: datetime,
+                     pressed: tuple[int, int] | None = None) -> tuple[str, str | None]:
+        """Ijrochi tugmani bosdi: (qisqa javob, so'rov xabarining yangi oxirgi qatori yoki None — vazifa yopilgan)."""
+        async with self.lock(task_id):
+            task = await self.store.get(task_id)
+            if task is None or task.status != OPEN:
+                return "Bu vazifa allaqachon yopilgan", None
+            if task.assignee_id is None and not self.ctx.is_owner(user.id):
+                await self.store.update(task.id, assignee_id=user.id)  # username bilan berilgan — ID bog'landi
+            by_owner = self.ctx.is_owner(user.id) and user.id != task.assignee_id
+            if yes:
+                await self.store.update(task.id, status=DONE, done_at=iso(now), done_by=user.id, next_ask_at=None,
+                                        asks=0, ask_msg=None, ask_chat=None)
+                await self.store.log(task.id, "yes", user.id)
+                await self.spawn_next(task)  # takroriy: hali so'ralmagan bo'lsa ham keyingisi
+                if not self.ctx.is_owner(user.id):
+                    await self.tell(bot, task.creator_id,
+                                    f"✅ <b>{html.escape(task.who)}</b> vazifani bajardi\n📝 {html.escape(task.text)}")
+                toast = "Rahmat! Vazifa yopildi ✅"
+                footer = f"✅ <b>Bajarildi</b> · {now:%d.%m %H:%M}" + (" (rahbar yopdi)" if by_owner else "")
+            else:
+                schedule = await self.reports.schedule()
+                nxt = next_work_moment(now + NO_AGAIN_AFTER, schedule, self.tz)
+                no_count = task.no_count + 1
+                # javob berilgan so'rov o'z holicha qoladi: keyingi so'rov uni «javob bo'lmadi» deb o'zgartirmasin
+                await self.store.update(task.id, asks=0, no_count=no_count, escalated=0, next_ask_at=iso(nxt),
+                                        ask_msg=None, ask_chat=None)
+                await self.store.log(task.id, "no", user.id)
+                if no_count % NO_ALERT_EVERY == 0 and not self.ctx.is_owner(user.id):
+                    await self.tell(bot, task.creator_id,
+                                    f"⚠️ <b>{html.escape(task.who)}</b> {no_count} marta «Yo'q» dedi\n📝 {html.escape(task.text)}"
+                                    + (f"\n⏰ {due_label(d)}" if (d := self.local(task.due_at)) else ""),
+                                    self.alert_keyboard(task))
+                when = f"{nxt:%H:%M}" if nxt.date() == now.date() else f"{nxt:%d.%m %H:%M}"
+                toast, footer = "Yaxshi, keyinroq yana so'rayman", f"❌ Hali bajarilmagan · {when} da yana so'rayman"
+            if task.ask_msg and task.ask_chat and (task.ask_chat, task.ask_msg) != pressed:
+                await self.finish_poll(bot, task, footer)  # eski so'rovga javob berildi — oxirgisi ham yopiladi
+            return toast, footer
 
     # -------------------------------------------------------------- egasi amallari
     async def finish_poll(self, bot: Bot, task: Task, footer: str) -> None:
@@ -682,36 +756,58 @@ class TaskService:
 
     async def set_due(self, task: Task, due: datetime, by: int | None = None) -> Task:
         schedule = await self.reports.schedule()
-        await self.store.update(task.id, due_at=iso(due), due_set=1, asks=0, escalated=0,
-                                next_ask_at=iso(next_work_moment(due, schedule, self.tz)))
-        await self.store.log(task.id, "due", by)
-        task = await self.store.get(task.id)
-        assert task is not None
-        return task
+        async with self.lock(task.id):
+            await self.store.update(task.id, due_at=iso(due), due_set=1, asks=0, escalated=0,
+                                    next_ask_at=iso(next_work_moment(due, schedule, self.tz)))
+            await self.store.log(task.id, "due", by)
+            fresh = await self.store.get(task.id)
+        assert fresh is not None
+        return fresh
 
     async def close(self, bot: Bot, task: Task, by: int, now: datetime) -> None:
-        await self.store.update(task.id, status=DONE, done_at=iso(now), done_by=by, next_ask_at=None, asks=0)
-        await self.store.log(task.id, "yes", by)
-        await self.finish_poll(bot, task, f"✅ <b>Bajarildi</b> · {now:%d.%m %H:%M} (rahbar yopdi)")
+        """Egasi «bajarildi» deb yopdi. Takroriy bo'lsa — keyingi nusxa (hali so'ralmagan bo'lsa ham) yaratiladi."""
+        async with self.lock(task.id):
+            task = await self.store.get(task.id) or task
+            if task.status != OPEN:
+                return
+            await self.store.update(task.id, status=DONE, done_at=iso(now), done_by=by, next_ask_at=None, asks=0,
+                                    ask_msg=None, ask_chat=None)
+            await self.store.log(task.id, "yes", by)
+            await self.spawn_next(task)
+            await self.finish_poll(bot, task, f"✅ <b>Bajarildi</b> · {now:%d.%m %H:%M} (rahbar yopdi)")
 
     async def cancel(self, bot: Bot, task: Task, by: int, now: datetime) -> None:
-        await self.store.update(task.id, status=CANCELLED, done_at=iso(now), done_by=by, next_ask_at=None)
-        await self.store.log(task.id, "cancelled", by)
-        await self.finish_poll(bot, task, "🗑 <i>Vazifa bekor qilindi</i>")
+        """Bekor qilish. Takroriy vazifa butunlay to'xtaydi (keyingi, hali so'ralmagan nusxa ham bekor)."""
+        async with self.lock(task.id):
+            task = await self.store.get(task.id) or task
+            if task.status != OPEN:
+                return
+            await self.store.update(task.id, status=CANCELLED, done_at=iso(now), done_by=by, next_ask_at=None,
+                                    ask_msg=None, ask_chat=None)
+            await self.store.log(task.id, "cancelled", by)
+            await self.finish_poll(bot, task, "🗑 <i>Vazifa bekor qilindi</i>")
+        if task.repeat:
+            await self.stop_repeat(task, by)
 
     async def ask_now(self, bot: Bot, task: Task, now: datetime) -> bool:
-        await self.store.update(task.id, asks=0, escalated=0)
-        task = await self.store.get(task.id)
-        assert task is not None
-        return await self.ask(bot, task, now)
+        async with self.lock(task.id):
+            task = await self.store.get(task.id) or task
+            if task.status != OPEN:
+                return False
+            await self.store.update(task.id, asks=0, escalated=0)
+            fresh = await self.store.get(task.id)
+            assert fresh is not None
+            return await self.ask(bot, fresh, now)
 
     async def reopen(self, task: Task, by: int | None, now: datetime) -> None:
         """Yopilgan vazifani qayta ochish: muddati o'tgan bo'lsa — darhol (ish vaqtida) so'raladi."""
         schedule = await self.reports.schedule()
-        due = self.local(task.due_at) or now
-        await self.store.update(task.id, status=OPEN, done_at=None, done_by=None, asks=0, escalated=0,
-                                next_ask_at=iso(next_work_moment(max(due, now), schedule, self.tz)))
-        await self.store.log(task.id, "reopened", by)
+        async with self.lock(task.id):
+            due = self.local(task.due_at) or now
+            await self.store.update(task.id, status=OPEN, done_at=None, done_by=None, asks=0, escalated=0,
+                                    ask_msg=None, ask_chat=None,
+                                    next_ask_at=iso(next_work_moment(max(due, now), schedule, self.tz)))
+            await self.store.log(task.id, "reopened", by)
 
     async def stop_repeat(self, task: Task, by: int | None = None) -> None:
         """Takrorni to'xtatish: shu nusxa va undan keyingilar takrorlanmaydi; hali so'ralmagan keyingi nusxa bekor."""
@@ -722,12 +818,14 @@ class TaskService:
             child = await self.store.child_of(parent)
             if child is None:
                 break
-            if child.status == OPEN and child.asks == 0 and child.no_count == 0:
-                await self.store.update(child.id, status=CANCELLED, repeat=None, next_ask_at=None,
-                                        done_at=iso(datetime.now(timezone.utc)), done_by=by)
-                await self.store.log(child.id, "cancelled", by)
-            else:
-                await self.store.update(child.id, repeat=None)
+            async with self.lock(child.id):
+                child = await self.store.get(child.id) or child
+                if child.status == OPEN and child.asks == 0 and child.no_count == 0:
+                    await self.store.update(child.id, status=CANCELLED, repeat=None, next_ask_at=None,
+                                            done_at=iso(datetime.now(timezone.utc)), done_by=by)
+                    await self.store.log(child.id, "cancelled", by)
+                else:
+                    await self.store.update(child.id, repeat=None)
             parent = child.id
 
     async def maybe_hint(self, bot: Bot, chat_id: int, title: str, owner_id: int, now: datetime) -> None:

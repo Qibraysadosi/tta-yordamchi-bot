@@ -152,7 +152,9 @@ Vazifani faqat siz (egasi) berasiz — xabar **`#vazifa`** yoki **`Vazifa:`** bi
 - Botga lichkada yozilgan vazifa so'rovi ijrochi a'zo bo'lgan «📋 Vazifalar» guruhiga chiqadi.
 - Muddatida (faqat ish vaqtida) bot guruhda ijrochini @ bilan belgilab so'raydi: **✅ Ha** — vazifa yopiladi, sizga xabar keladi; **❌ Yo'q** — 3 soatdan keyin yana so'raydi (har 3-«Yo'q»da sizga xabar). Javob bo'lmasa 2 soatdan keyin yana; 3 marta javobsiz qolsa — sizga xabar (**🔔 Yana so'rash / ✅ Bajarildi / 🗑 Bekor**), so'rash to'xtaydi.
 - Tugmalarni faqat ijrochi (yoki siz) bosa oladi; boshqalarga «Bu savol … uchun» deb chiqadi.
-- Takroriy vazifa: birinchi so'rov chiqqanda keyingi nusxasi yaratiladi; to'xtatish — Mini App'da **🔁 Takrorni to'xtatish** yoki keyingi nusxani bekor qilish.
+- Takroriy vazifa: so'rov chiqqanda (yoki shu nusxa yopilganda) keyingi nusxasi yaratiladi; bot o'chiq turgan kunlar uchun eski so'rovlar yog'ilmaydi. **✅ Bajarildi** — shu nusxa yopiladi, keyingisi o'z vaqtida; **⏹ Takrorni to'xtatish** — shu nusxa qoladi, keyingilari bo'lmaydi; **🗑 Bekor qilish** — vazifa butunlay to'xtaydi.
+- Lichkada «Vazifa:» bilan boshlangan xabar faqat @username bo'lsa vazifa (aks holda odatdagi savol sifatida AI'ga ketadi); uzatilgan (forward) xabarlar vazifa bo'lmaydi. `/vazifa@boshqa_bot` — boshqa botga buyruq, e'tiborsiz.
+- Mavzuli (forum) guruhda so'rov vazifa berilgan mavzuga chiqadi. Vazifa xabari va so'rovlarga qo'yilgan reaksiyalar call center hisobotida qo'ng'iroq sanalmaydi.
 
 **Mini App → Hisobotlar → Vazifalar:** ochiq / bajarilgan / bekor qilingan ro'yxat, holati (kutilmoqda, so'raldi, «Yo'q» dedi, javob yo'q, muddati o'tgan), tarixi. Siz qo'shasiz, muddatni o'zgartirasiz, yopasiz, hozir so'ratasiz; rahbarlar faqat ko'radi. Ovozli vazifa hozircha yo'q — faqat matn.
 

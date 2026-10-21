@@ -276,8 +276,10 @@ class ReportService:
         user = message.from_user
         if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and message.sender_chat is None:
             await self.store.remember_user(user.id, user.username, user.full_name)
-            body = task_body(message.text or message.caption) if self.ctx.is_owner(user.id) else None
+            body = (task_body(message.text or message.caption, self.bot_info.get("username"))
+                    if self.ctx.is_owner(user.id) and message.forward_origin is None else None)
             if body is not None:  # egasining vazifasi — lid ham, oddiy xabar ham emas
+                await self.store.mark_seen(chat.id, message.message_id)  # unga reaksiya — qo'ng'iroq emas
                 if "tasks" in group.roles:
                     await self.tasks.from_message(bot, message, body, group_chat=chat.id)
                 else:
@@ -511,7 +513,9 @@ class ReportService:
             try:
                 for index, part in enumerate(parts):
                     last = index == len(parts) - 1
-                    await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML, reply_markup=markup if last else None)
+                    msg = await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML, reply_markup=markup if last else None)
+                    if chat_id < 0:  # guruhdagi hisobotga reaksiya — qo'ng'iroq emas
+                        await self.store.mark_seen(chat_id, msg.message_id)
                 sent += 1
             except TelegramAPIError as exc:
                 log.warning("Hisobot yuborilmadi (%s): %s", chat_id, exc)

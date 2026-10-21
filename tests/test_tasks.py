@@ -400,3 +400,184 @@ def test_tasks_api(tmp_path):
         finally:
             await api.close()
     run(go())
+
+
+# ---------------------------------------------------------------- ikkinchi tekshiruv holatlari
+def test_closing_recurring_instance_early_keeps_series(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            office = await Office(env).setup()
+            await office.say(MALIKA_USER, "salom", ts(WED, "09:00"))
+            at(env, WED, "15:00")
+            env.api.responses.append(parsed("Kunlik hisobot", "2026-10-22 10:00", "daily"))
+            text = "#vazifa @malika_op har kuni 10:00 da kunlik hisobot"
+            await office.say(OWNER_USER, text, ts(WED, "15:00"), entities=mention(text, "malika_op"))
+            tasks = env.ctx.reports.tasks
+            first = (await tasks.store.tasks(OPEN))[0]
+            await env.press(f"tk:{first.id}:ok")  # so'ralmasdan oldin «bajarildi» — takror davom etadi
+            opened = await tasks.store.tasks(OPEN)
+            assert len(opened) == 1 and opened[0].due_at == "2026-10-23T05:00:00" and opened[0].repeat == "daily"
+            await env.press(f"tk:{opened[0].id}:rs")  # ⏹ takrorni to'xtatish — shu nusxa qoladi
+            assert (await tasks.store.get(opened[0].id)).repeat is None
+            assert await tasks.tick(env.bot, at(env, date(2026, 10, 23), "10:00")) == 1
+            assert len(await tasks.store.tasks(OPEN)) == 1  # keyingisi yaratilmadi
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_task_messages_do_not_become_calls(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            office = Office(env)
+            await office.setup(LEADS, "Lidlar va vazifalar")
+            await env.press(f"rgo:{LEADS}")
+            await env.press(f"rg:{LEADS}:leads")
+            await env.press(f"rg:{LEADS}:done")
+            group = await env.ctx.reports.store.group(LEADS)
+            assert set(group.roles) == {"leads", "tasks"}
+            at(env, WED, "15:00")
+            env.api.responses.append(parsed("Hamma lidlarga qo'ng'iroq qilish", "2026-10-21 16:00"))
+            text = "Vazifa: @malika_op bugun hamma lidlarga qo'ng'iroq qilsin"
+            order = await office.say(OWNER_USER, text, ts(WED, "15:00"), chat_id=LEADS, entities=mention(text, "malika_op"))
+            await office.g.react(order["message_id"], MALIKA_USER, "👍", ts(WED, "15:01"))
+            await env.ctx.reports.tasks.tick(env.bot, at(env, WED, "16:00"))
+            poll_id = env.session.next_id
+            await office.g.react(poll_id, SARDOR_USER, "👍", ts(WED, "16:01"))
+            ov = await env.ctx.reports.overview(WED, local(WED, "16:30"))
+            assert ov.totals.total == 0 and ov.extras == [] and ov.new_leads == 0
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_recurring_catch_up_skips_past_days(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            await Office(env).say(MALIKA_USER, "salom", ts(WED, "09:00"), chat_id=LEADS)  # bot Malikani ko'rmagan ham bo'lishi mumkin
+            at(env, WED, "15:00")
+            env.api.responses.append(parsed("Kunlik hisobot", "2026-10-22 10:00", "daily"))
+            text = "#vazifa @malika_op har kuni 10:00 da kunlik hisobot"
+            await env.send_text(text, entities=mention(text, "malika_op"))  # vazifalar guruhi hali yo'q
+            tasks = env.ctx.reports.tasks
+            later = date(2026, 10, 29)
+            await Office(env).setup()  # bir haftadan keyin guruh belgilandi
+            env.session.clear()
+            for minute in range(0, 10, 1):
+                await tasks.tick(env.bot, at(env, later, f"11:{minute:02d}"))
+            assert len(polls(env)) == 1  # 7 ta eski kun uchun so'rov yog'ilmadi
+            opened = await tasks.store.tasks(OPEN)
+            assert sorted(t.due_at for t in opened) == ["2026-10-22T05:00:00", "2026-10-30T05:00:00"]
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_tick_and_owner_ask_do_not_duplicate_series(tmp_path):
+    async def go():
+        import asyncio
+
+        env = await start(tmp_path)
+        try:
+            office = await Office(env).setup()
+            await office.say(MALIKA_USER, "salom", ts(WED, "09:00"))
+            at(env, WED, "15:00")
+            env.api.responses.append(parsed("Hisobot", "2026-10-22 10:00", "weekly:3"))
+            text = "#vazifa @malika_op har payshanba 10:00 da hisobot"
+            await office.say(OWNER_USER, text, ts(WED, "15:00"), entities=mention(text, "malika_op"))
+            tasks = env.ctx.reports.tasks
+            task = (await tasks.store.tasks(OPEN))[0]
+            original = env.session.make_request
+
+            async def slow(bot, method, timeout=None):
+                if type(method).__name__ == "SendMessage":
+                    await asyncio.sleep(0.05)
+                return await original(bot, method, timeout)
+
+            env.session.make_request = slow
+            now = at(env, THU, "10:00")
+            await asyncio.gather(tasks.tick(env.bot, now), tasks.ask_now(env.bot, task, now))
+            children = [t for t in await tasks.store.tasks() if t.parent_id == task.id]
+            assert len(children) == 1
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_forum_topic_and_other_bot_command(tmp_path):
+    async def go():
+        from aiogram.types import User
+
+        env = await start(tmp_path)
+        try:
+            env.ctx.reports.set_bot_info(User(id=123456, is_bot=True, first_name="Bot", username="claude_test_bot"))
+            office = await Office(env).setup()
+            await office.say(MALIKA_USER, "salom", ts(WED, "09:00"))
+            at(env, WED, "15:00")
+            root = {"message_id": 50, "date": ts(WED, "08:00"), "chat": office.g.chat(TASKS, "Ofis"), "from": OWNER_USER,
+                    "forum_topic_created": {"name": "Hisobotlar", "icon_color": 7322096}, "is_topic_message": True,
+                    "message_thread_id": 50}
+            office.g.mid += 1
+            await env._feed({"message": {"message_id": office.g.mid, "date": ts(WED, "15:00"),
+                                         "chat": office.g.chat(TASKS, "Ofis"), "from": OWNER_USER, "is_topic_message": True,
+                                         "message_thread_id": 50, "reply_to_message": root,
+                                         "text": "#vazifa ertaga hisobot"}})
+            tasks = env.ctx.reports.tasks
+            assert await tasks.store.tasks() == [] and "Kimga?" in dms(env)[-1].text  # mavzu ochgan odam ijrochi emas
+            env.api.responses.append(parsed("Hisobot", "2026-10-22 10:00"))
+            text = "#vazifa @malika_op ertaga 10 da hisobot"
+            office.g.mid += 1
+            await env._feed({"message": {"message_id": office.g.mid, "date": ts(WED, "15:01"),
+                                         "chat": office.g.chat(TASKS, "Ofis"), "from": OWNER_USER, "is_topic_message": True,
+                                         "message_thread_id": 50, "reply_to_message": root, "text": text,
+                                         "entities": mention(text, "malika_op")}})
+            task = (await tasks.store.tasks(OPEN))[0]
+            assert task.poll_thread == 50 and task.assignee_id == MALIKA
+            await tasks.tick(env.bot, at(env, THU, "10:00"))
+            assert polls(env)[-1].message_thread_id == 50  # so'rov o'sha mavzuda
+            # boshqa botga buyruq — vazifa emas; o'zimizga — vazifa
+            text = "/vazifa@boshqa_bot @malika_op x"
+            await office.say(OWNER_USER, text, ts(WED, "15:02"), entities=mention(text, "malika_op"))
+            assert len(await tasks.store.tasks()) == 1
+            env.api.responses.append(parsed("Y", "2026-10-22 11:00"))
+            text = "/vazifa@claude_test_bot @malika_op y"
+            await office.say(OWNER_USER, text, ts(WED, "15:03"), entities=mention(text, "malika_op"))
+            assert len(await tasks.store.tasks()) == 2
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_private_explicit_marker_caption_and_text_mention(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            await Office(env).setup()
+            at(env, WED, "15:00")
+            tasks = env.ctx.reports.tasks
+            # «Vazifa:» bilan boshlangan mashq matni (ijrochisiz) — AI suhbati
+            env.api.responses.append(fakes.simple_answer("Mana tarjima."))
+            await env.send_text("Vazifa: quyidagi matnni ingliz tiliga tarjima qiling")
+            assert await tasks.store.tasks() == [] and env.api.requests[-1]["model"] != "claude-haiku-5-5"
+            # uzatilgan «#vazifa» — vazifa emas
+            env.api.responses.append(fakes.simple_answer("Tushunarli."))
+            await env.send_text("#vazifa @malika_op x", forward_origin={"type": "hidden_user", "date": ts(WED, "14:00"),
+                                                                          "sender_user_name": "Kimdir"})
+            assert await tasks.store.tasks() == []
+            # rasm izohida /vazifa va text_mention (username'siz odam)
+            env.api.responses.append(parsed("Afishani tekshirish", "2026-10-22 12:00"))
+            caption = "/vazifa Gulnora afishani tekshirsin"
+            await env._feed({"message": env._msg(OWNER, photo=[{"file_id": "p1", "file_unique_id": "u1", "width": 10, "height": 10}],
+                                                 caption=caption, caption_entities=[{
+                                                     "type": "text_mention", "offset": 8, "length": 7,
+                                                     "user": {"id": 777123, "is_bot": False, "first_name": "Gulnora"}}])})
+            task = (await tasks.store.tasks(OPEN))[0]
+            assert (task.assignee_id, task.assignee_name, task.assignee_username) == (777123, "Gulnora", None)
+            await tasks.tick(env.bot, at(env, THU, "12:00"))
+            assert 'tg://user?id=777123' in polls(env)[-1].text
+        finally:
+            await env.close()
+    run(go())

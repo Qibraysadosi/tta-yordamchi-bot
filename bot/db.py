@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS rp_tasks (
     origin_chat       INTEGER,                    -- vazifa berilgan chat (guruh yoki egasining lichkasi)
     origin_msg        INTEGER,                    -- egasining xabari (✍️ reaksiya)
     poll_chat         INTEGER,                    -- «Bajardingizmi?» chiqadigan guruh (NULL — so'rovda aniqlanadi)
+    poll_thread       INTEGER,                    -- forum guruhida vazifa berilgan mavzu (so'rov o'sha yerga)
     creator_id        INTEGER NOT NULL,
     assignee_id       INTEGER,
     assignee_username TEXT,

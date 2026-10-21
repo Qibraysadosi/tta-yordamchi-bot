@@ -22,7 +22,7 @@ from aiogram.types import (
 from .render import split_message
 from .service import ROLE_LABELS, ReportService
 from .stats import current_day
-from .tasks import DONE, OPEN, preset_due, task_body
+from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
 
 log = logging.getLogger(__name__)
 
@@ -235,9 +235,10 @@ async def cb_group_open(callback: CallbackQuery, ctx) -> None:
 
 # --------------------------------------------------------------------------- vazifalar
 async def is_owner_task(message: Message, ctx) -> bool:
-    """Lichkadagi «#vazifa …» / «Vazifa: …» — faqat egasidan (boshqalarniki odatdagi AI suhbatiga o'tadi)."""
+    """Lichkadagi «#vazifa …» / «Vazifa: @… …» — faqat egasidan (boshqalarniki va uzatilgan matn — AI suhbatiga)."""
     user = message.from_user
-    return user is not None and ctx.is_owner(user.id) and task_body(message.text or message.caption) is not None
+    return (user is not None and ctx.is_owner(user.id) and task_body(message.text or message.caption) is not None
+            and is_explicit(message))
 
 
 async def on_private_task(message: Message, bot: Bot, ctx) -> None:
@@ -253,7 +254,7 @@ async def cmd_task(message: Message, bot: Bot, ctx) -> None:
     if not ctx.is_owner(message.from_user.id):
         await message.answer("Vazifani faqat bot egasi beradi.")
         return
-    body = task_body(message.text) or ""
+    body = task_body(message.text or message.caption) or ""
     if not body:
         await message.answer(TASK_HELP, parse_mode=ParseMode.HTML)
         return
@@ -290,21 +291,16 @@ async def cb_task_answer(callback: CallbackQuery, bot: Bot, ctx) -> None:
     if not tasks.may_answer(task, callback.from_user):
         await callback.answer(f"Bu savol {task.who} uchun", show_alert=True)
         return
-    if task.status != OPEN:
-        await callback.answer("Bu vazifa allaqachon yopilgan")
-        if message is not None:
-            with contextlib.suppress(TelegramBadRequest):
-                await message.edit_reply_markup(reply_markup=None)
-        return
-    before = task
-    toast, footer = await tasks.answer(bot, task, callback.from_user, parts[2] == "y", service.now())
+    pressed = (message.chat.id, message.message_id) if message is not None else None
+    toast, footer = await tasks.answer(bot, task.id, callback.from_user, parts[2] == "y", service.now(), pressed)
     await callback.answer(toast)
     task = await tasks.store.get(task.id) or task
     if message is not None:
         with contextlib.suppress(TelegramBadRequest):
-            await message.edit_text(tasks.poll_text(task, footer), parse_mode=ParseMode.HTML)
-        if before.ask_msg and (before.ask_chat, before.ask_msg) != (message.chat.id, message.message_id):
-            await tasks.finish_poll(bot, before, footer)  # eski so'rovga javob berildi — oxirgisi ham yopiladi
+            if footer is None:  # allaqachon yopilgan — tugmalar olinadi
+                await message.edit_reply_markup(reply_markup=None)
+            else:
+                await message.edit_text(tasks.poll_text(task, footer), parse_mode=ParseMode.HTML)
 
 
 async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
@@ -345,6 +341,14 @@ async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
         if message is not None:
             with contextlib.suppress(TelegramBadRequest):
                 await message.edit_reply_markup(reply_markup=tasks.owner_keyboard(task, now, presets=True, schedule=schedule))
+        return
+    if action == "rs":
+        if task.repeat:
+            await tasks.stop_repeat(task, callback.from_user.id)
+        await callback.answer("Takror to'xtatildi — keyingi nusxalar bo'lmaydi")
+        if message is not None:
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_text(f"{message.html_text}\n\n⏹ <i>Takror to'xtatildi</i>", parse_mode=ParseMode.HTML)
         return
     if action == "ask":
         ok = await tasks.ask_now(bot, task, now)

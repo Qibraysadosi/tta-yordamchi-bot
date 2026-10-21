@@ -5,7 +5,9 @@ Qoidalar (kelishilgan):
   davri) va vazifalar (bugun bajarilgan va berilgan, muddati o'tgan, javobsiz, yaqin muddatlar). Bir kunga bitta;
   bot o'chiq bo'lib 4 soatdan ko'p kechiksa — o'sha kun yuborilmaydi.
 - Excel — dushanba (o'tgan hafta) va oyning 1-sanasi (o'tgan oy) excel_time (09:00) da: rahbarlar guruhiga
-  telefonlari yashirilgan nusxa, egasiga to'liq nusxa. Bot o'chiq bo'lsa — hafta (oy) ichida yetkaziladi.
+  telefonlari yashirilgan nusxa, egasiga to'liq nusxa. Har oluvchi alohida belgilanadi (rp_exports.sent_to):
+  biriga yetmasa — faqat unga qayta uriniladi (oraliq 10 daqiqadan 6 soatgacha o'sib boradi), boshqasiga ikki marta
+  bormaydi. Bot o'chiq bo'lsa — haftalik 2 kun, oylik 5 kun ichida yetkaziladi.
 - Davr — kunlik hisobotlar davrlarining yig'indisi (raqamlar kunlik hisobotlar bilan bir xil qoidada).
 - v1.9 o'rnatilishidan oldingi davrlar avtomatik yuborilmaydi (ARCHIVE_SINCE_KEY); qo'lda — /excel yoki Mini App."""
 from __future__ import annotations
@@ -53,7 +55,9 @@ log = logging.getLogger(__name__)
 ARCHIVE_SINCE_KEY = "report:archive_since"  # v1.9 ishga tushgan vaqt: undan oldingi davrlar avtomatik yuborilmaydi
 WEEK, MONTH = "week", "month"
 JOURNAL_LATE = timedelta(hours=4)  # bot o'chiq bo'lsa — kundalik shuncha kechikib ham yuboriladi
-SEND_RETRY = timedelta(minutes=10)  # hech qayerga yetmasa — qayta urinish
+SEND_RETRY = timedelta(minutes=10)  # kimgadir yetmasa — qayta urinish (har safar ikki baravar, MAX_RETRY gacha)
+MAX_RETRY = timedelta(hours=6)
+CATCH_UP = {"week": timedelta(days=2), "month": timedelta(days=5)}  # bot o'chiq bo'lsa — shu muddat ichida yuboriladi
 FLUSH_BATCHES = 5
 LIST_LIMIT = {WEEK: 26, MONTH: 12}
 SHOWN = 5  # kundalikdagi ro'yxatlar
@@ -81,12 +85,15 @@ def parse_key(key: str) -> tuple[str, date, date] | None:
             first = datetime.strptime(raw, "%Y-%m-%d").date()
             if first.weekday() != 0:
                 return None
-            return (WEEK, *week_of(first))
-        if kind == MONTH:
-            return (MONTH, *month_of(datetime.strptime(raw, "%Y-%m").date()))
+        elif kind == MONTH:
+            first = datetime.strptime(raw, "%Y-%m").date()
+        else:
+            return None
     except ValueError:
         return None
-    return None
+    if not 2000 <= first.year <= 2100:  # 0001 / 9999 kabi yillarda sana hisobi toshib ketadi
+        return None
+    return (WEEK, *week_of(first)) if kind == WEEK else (MONTH, *month_of(first))
 
 
 def period_label(kind: str, first: date, last: date) -> str:
@@ -187,15 +194,25 @@ class ArchiveStore(ReportStore):
         rows = await self._all("SELECT * FROM rp_exports WHERE kind = ?", (kind,))
         return {r["key"]: dict(r) for r in rows}
 
-    async def save_export(self, period: Period, summary: dict, *, sent: bool) -> None:
-        """Davr ko'rsatkichlari (Arxiv ro'yxati uchun); sent=True — avtomatik yuborildi deb belgilanadi."""
+    async def save_export(self, period: Period, summary: dict, *, sent: bool = False,
+                          sent_to: Iterable[int] | None = None) -> None:
+        """Davr ko'rsatkichlari (Arxiv ro'yxati uchun). sent_to — avtomatik nusxa yetgan chatlar;
+        sent=True — hamma oluvchiga yetdi (davr yopildi)."""
+        recipients = ",".join(str(c) for c in sorted(set(sent_to))) if sent_to is not None else None
         await self._run(
-            "INSERT INTO rp_exports (key, kind, first_day, last_day, sent_at, summary) VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO rp_exports (key, kind, first_day, last_day, sent_at, summary, sent_to)"
+            " VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, ''))"
             " ON CONFLICT(key) DO UPDATE SET summary = excluded.summary,"
-            " sent_at = COALESCE(excluded.sent_at, rp_exports.sent_at)",
+            " sent_at = COALESCE(rp_exports.sent_at, excluded.sent_at),"
+            " sent_to = COALESCE(?, rp_exports.sent_to)",
             (period.key, period.kind, period.first.isoformat(), period.last.isoformat(), now_iso() if sent else None,
-             json.dumps(summary, ensure_ascii=False)),
+             json.dumps(summary, ensure_ascii=False), recipients, recipients),
         )
+
+    @staticmethod
+    def recipients(row: dict | None) -> set[int]:
+        raw = (row or {}).get("sent_to") or ""
+        return {int(x) for x in raw.split(",") if x.strip().lstrip("-").isdigit()}
 
     async def daily_reports(self, limit: int = 60) -> list[dict]:
         rows = await self._all(
@@ -227,7 +244,8 @@ class ArchiveService:
         self.ctx = reports.ctx
         self.store = ArchiveStore(reports.ctx.db)
         self._journal_retry: datetime | None = None
-        self._export_retry: dict[str, datetime] = {}
+        self._export_retry: dict[str, tuple[datetime, int]] = {}  # davr → (keyingi urinish, urinishlar soni)
+        self._warned: set[str] = set()  # egasiga aytilgan muammolar (davr bo'yicha bir marta)
 
     @property
     def tz(self):
@@ -249,18 +267,19 @@ class ArchiveService:
         return from_iso(value, self.tz)
 
     # -------------------------------------------------------------- kundalik
-    async def journal_text(self, now: datetime, *, interim: bool = False) -> str:
+    async def journal_text(self, now: datetime, *, day: date | None = None, interim: bool = False) -> str:
+        """Kundalik: `day` kuni (standart — bugun). Yarim tundan keyin kechikib yuborilsa — kechagi kun."""
         reports = self.reports
         s = await reports.schedule()
-        today = now.date()
-        lines = [f"📓 <b>KUNDALIK · {today:%d.%m.%Y} ({WEEKDAYS[today.weekday()]})</b>"]
+        day = day or now.date()
+        lines = [f"📓 <b>KUNDALIK · {day:%d.%m.%Y} ({WEEKDAYS[day.weekday()]})</b>"]
         if interim:
             lines.append(f"<i>hozirgi holat · {now:%H:%M}</i>")
         if await reports.store.groups_with("leads"):
             await reports.analyze_pending(FLUSH_BATCHES)  # izohlar tahlilsiz qolmasin
-            day = today if today.weekday() in s.days else current_day(now, s)
-            lines += [""] + self._journal_calls(await build_overview(reports.store, s, day, now))
-        lines += [""] + await self._journal_tasks(now, s)
+            report_day = day if day.weekday() in s.days else current_day(now, s)
+            lines += [""] + self._journal_calls(await build_overview(reports.store, s, report_day, now))
+        lines += [""] + await self._journal_tasks(now, s, day)
         return "\n".join(lines)
 
     @staticmethod
@@ -305,10 +324,10 @@ class ArchiveService:
             lines.append(f"… va yana {len(tasks) - SHOWN} ta")
         return lines
 
-    async def _journal_tasks(self, now: datetime, s: Schedule) -> list[str]:
+    async def _journal_tasks(self, now: datetime, s: Schedule, day: date) -> list[str]:
         store = self.reports.tasks.store
-        day_start = datetime.combine(now.date(), time(0), tzinfo=self.tz)
-        start, upto = iso(day_start), iso(now)
+        day_start = datetime.combine(day, time(0), tzinfo=self.tz)
+        start, upto = iso(day_start), iso(min(now, day_start + timedelta(days=1)))
         done = await store.closed_between(DONE, start, upto)
         given = await store.created_count(start, upto)
         refused = await store.events_count("no", start, upto)
@@ -348,25 +367,35 @@ class ArchiveService:
             await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML,
                                    reply_markup=markup if index == len(parts) - 1 else None)
 
+    async def due_journal_day(self, now: datetime, s: Schedule) -> date | None:
+        """Kundaligi yuboriladigan kun: vaqti kelgan, 4 soatdan ko'p o'tmagan (yarim tundan oshsa ham), hali yo'q."""
+        for day in (now.date(), now.date() - timedelta(days=1)):
+            if day.weekday() not in s.days:
+                continue
+            due = _at(day, s.journal_time, self.tz)
+            if not due <= now <= due + JOURNAL_LATE:
+                continue
+            if await self.store.journal(day.isoformat()) is not None:
+                continue
+            if due < await self.archive_since():  # o'rnatilgan kunning o'tib ketgan vaqti — keyingi kundan
+                continue
+            return day
+        return None
+
     async def check_journal(self, bot: Bot, now: datetime) -> bool:
         s = await self.reports.schedule()
-        today = now.date()
-        if not s.journal_enabled or today.weekday() not in s.days:
+        if not s.journal_enabled:
             return False
-        due = _at(today, s.journal_time, self.tz)
-        if now < due or now - due > JOURNAL_LATE:
-            return False
-        if await self.store.journal(today.isoformat()) is not None:
-            return False
-        if due < await self.archive_since():  # o'rnatilgan kunning o'tib ketgan vaqti — keyingi kundan
+        day = await self.due_journal_day(now, s)
+        if day is None:
             return False
         if self._journal_retry is not None and now < self._journal_retry:
             return False
         if not await self.reports.store.groups_with("leads") and not await self.reports.tasks.store.has_any():
             return False  # hali hech narsa ulanmagan — bo'sh kundalik yuborilmaydi
-        text = await self.journal_text(now)
+        text = await self.journal_text(now, day=day)
         await self.reports.refresh_bot_info(bot)
-        markup = self.journal_markup(today)
+        markup = self.journal_markup(day)
         sent = 0
         for owner_id in self.reports.owners():
             try:
@@ -377,7 +406,7 @@ class ArchiveService:
         if not sent:
             self._journal_retry = now + SEND_RETRY
             return False
-        await self.store.save_journal(today.isoformat(), text)
+        await self.store.save_journal(day.isoformat(), text)
         self._journal_retry = None
         return True
 
@@ -422,7 +451,6 @@ class ArchiveService:
         labels[OTHER] = "aniqlanmagan"
         positives = [st for st in statuses if st.positive]
         positive_label = " / ".join(f"{st.emoji} {st.label}" for st in positives) or "Asosiy natija"
-        columns = [(c, labels.get(c, "")) for c in (ov.columns() if ov else [st.emoji for st in statuses])]
 
         operators = []
         if ov is not None:
@@ -443,6 +471,11 @@ class ArchiveService:
             days.append(DayLine(day=day, weekday=WEEKDAYS[day.weekday()], total=sum(r.total for r in people),
                                 counts=dict(counts), positive=sum(day_ov.positive(r) for r in people),
                                 new_leads=day_ov.new_leads, unmarked=day_ov.unmarked, live=day_ov.live))
+
+        # ustunlar: statuslar + «❔», agar natijasi aniqlanmagan qo'ng'iroq biror kunda yoki butun davrda bo'lsa
+        # (dushanba ❔, seshanba 👎 bo'lgan lid haftada 👎 — lekin «Kunlar»da dushanba ❔ ustunida ko'rinishi kerak)
+        other = any(line.counts.get(OTHER) for line in operators) or any(line.counts.get(OTHER) for line in days)
+        columns = [(st.emoji, st.label) for st in statuses] + ([(OTHER, labels[OTHER])] if other else [])
 
         leads: list[LeadLine] = []
         if ov is not None and period.start is not None:
@@ -562,43 +595,61 @@ class ArchiveService:
             await self.store.save_export(export.period, export.summary, sent=False)
         return export
 
-    async def deliver(self, bot: Bot, kind: str, first: date, last: date, now: datetime) -> int:
-        """Avtomatik yuborish: rahbarlar guruhiga yashirilgan nusxa, egasiga to'liq. Yetkazilgan chatlar soni."""
-        export = await self.collect(kind, first, last, now)
-        groups = await self.reports.store.groups_with("leaders")
-        full, masked = await self.files(export, False, True)
-        delivered, failed = 0, []
-        for group in groups:
-            try:
-                msg = await self.send_file(bot, group.chat_id, export, masked, masked=True)
-                delivered += 1
-            except TelegramAPIError as exc:
-                log.warning("Excel guruhga yuborilmadi (%s): %s", group.chat_id, exc)
-                failed.append(f"«{group.title or group.chat_id}»: {exc}")
-                continue
-            try:  # guruhdagi faylga reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
-                await self.reports.store.mark_seen(group.chat_id, msg.message_id)
-            except Exception:  # noqa: BLE001
-                log.exception("Excel xabarini belgilab bo'lmadi")
+    async def _warn_owners(self, bot: Bot, key: str, text: str) -> None:
+        """Egasiga ogohlantirish — har davr va holat uchun bir marta (har 10 daqiqalik urinishda emas)."""
+        if key in self._warned:
+            return
+        self._warned.add(key)
         for owner_id in self.reports.owners():
             try:
-                await self.send_file(bot, owner_id, export, full, masked=False)
-                delivered += 1
+                await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
+            except TelegramAPIError:
+                pass
+
+    async def deliver(self, bot: Bot, kind: str, first: date, last: date, now: datetime) -> bool:
+        """Avtomatik yuborish: rahbarlar guruhiga yashirilgan nusxa, egasiga to'liq. Faylni hali olmaganlargagina
+        yuboriladi (har muvaffaqiyatdan keyin darhol yoziladi). True — hamma oluvchida bor."""
+        period = self.period(kind, first, last, await self.reports.schedule(), now)
+        received = self.store.recipients(await self.store.export(period.key))
+        groups = await self.reports.store.groups_with("leaders")
+        targets = [(g.chat_id, True, g.title or str(g.chat_id)) for g in groups]
+        targets += [(owner_id, False, "") for owner_id in self.reports.owners()]
+        pending = [t for t in targets if t[0] not in received]
+        if not pending:
+            row = await self.store.export(period.key)
+            await self.store.save_export(period, json.loads(row["summary"]) if row else {}, sent=True)
+            return True
+        export = await self.collect(kind, first, last, now)
+        masks = sorted({masked for _, masked, _ in pending})
+        files = dict(zip(masks, await self.files(export, *masks)))
+        failed = []
+        for chat_id, masked, title in pending:
+            try:
+                msg = await self.send_file(bot, chat_id, export, files[masked], masked=masked)
             except TelegramAPIError as exc:
-                log.warning("Excel egasiga yuborilmadi (%s): %s", owner_id, exc)
-        if delivered:
-            await self.store.save_export(export.period, export.summary, sent=True)
-            if failed:
-                problem = html.escape("\n".join(failed))
-                for owner_id in self.reports.owners():
-                    try:
-                        await bot.send_message(owner_id, f"⚠️ {export.period.title} rahbarlar guruhiga yuborilmadi:\n"
-                                                         f"<i>{problem}</i>", parse_mode=ParseMode.HTML)
-                    except TelegramAPIError:
-                        pass
-        return delivered
+                log.warning("Excel yuborilmadi (%s): %s", chat_id, exc)
+                if masked:
+                    failed.append(f"«{title}»: {exc}")
+                continue
+            received.add(chat_id)
+            await self.store.save_export(export.period, export.summary, sent_to=received)  # qayta yuborilmasin
+            if masked:
+                try:  # guruhdagi faylga reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
+                    await self.reports.store.mark_seen(chat_id, msg.message_id)
+                except Exception:  # noqa: BLE001
+                    log.exception("Excel xabarini belgilab bo'lmadi")
+        complete = all(chat_id in received for chat_id, _, _ in targets)
+        await self.store.save_export(export.period, export.summary, sent=complete, sent_to=received)
+        if failed:
+            problem = html.escape("\n".join(failed))
+            await self._warn_owners(bot, f"group:{period.key}", (
+                f"⚠️ {export.period.title} ({html.escape(export.period.label)}) rahbarlar guruhiga yuborilmadi:\n"
+                f"<i>{problem}</i>\nBot keyinroq o'zi qayta urinadi. Sizdagi nusxada telefon raqamlari ochiq — "
+                "uni guruhga uzatmang."))
+        return complete
 
     async def check_exports(self, bot: Bot, now: datetime) -> int:
+        """Vaqti kelgan haftalik / oylik Excel: to'liq yetkazilgan davrlar soni."""
         s = await self.reports.schedule()
         done = 0
         for kind, enabled in ((WEEK, s.weekly_enabled), (MONTH, s.monthly_enabled)):
@@ -606,28 +657,32 @@ class ArchiveService:
                 continue
             first, last, send_day = due_period(kind, now.date())
             moment = _at(send_day, s.excel_time, self.tz)
-            if now < moment or moment < await self.archive_since():
+            if not moment <= now <= moment + CATCH_UP[kind] or moment < await self.archive_since():
                 continue
             key = period_key(kind, first)
             row = await self.store.export(key)
             if row is not None and row["sent_at"]:
                 continue
             retry = self._export_retry.get(key)
-            if retry is not None and now < retry:
+            if retry is not None and now < retry[0]:
                 continue
             span = span_bounds(first, last, s, self.tz)
             if span is None or span[1] <= await self.reports.since() or not await self.reports.store.groups_with("leads"):
                 continue  # kuzatishdan oldingi davr yoki lidlar guruhi yo'q
             try:
-                delivered = await self.deliver(bot, kind, first, last, now)
+                complete = await self.deliver(bot, kind, first, last, now)
             except Exception:  # noqa: BLE001 — bitta davrdagi xato boshqasini to'xtatmasin, keyinroq qayta
                 log.exception("Excel hisobot tayyorlanmadi (%s)", key)
-                delivered = 0
-            if delivered:
+                await self._warn_owners(bot, f"error:{key}", (
+                    f"⚠️ {'Haftalik' if kind == WEEK else 'Oylik'} Excel ({html.escape(period_label(kind, first, last))}) "
+                    "tayyorlanmadi — xato logda. Bot keyinroq qayta urinadi; hozir olish uchun: /excel"))
+                complete = False
+            if complete:
                 done += 1
                 self._export_retry.pop(key, None)
-            else:
-                self._export_retry[key] = now + SEND_RETRY
+            else:  # 10 daqiqa, 20, 40 … 6 soatgacha
+                attempts = (retry[1] + 1) if retry is not None else 1
+                self._export_retry[key] = (now + min(SEND_RETRY * 2 ** (attempts - 1), MAX_RETRY), attempts)
         return done
 
     # -------------------------------------------------------------- Arxiv (Mini App)

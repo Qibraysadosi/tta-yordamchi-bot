@@ -2,12 +2,14 @@
 
 Ma'lumot bot/reports/archive.py da yig'iladi (ExcelReport — tayyor qiymatlar), bu yerda faqat fayl yasaladi:
 og'ir ish, asyncio.to_thread da chaqiriladi. Rahbarlar guruhi nusxasida (masked=True) telefon raqamlari
-yashiriladi — izoh va vazifa matnidagilari ham. Formulalar yo'q: qiymatlar tayyor (telefonda ham ko'rinadi)."""
+yashiriladi — ism, tuman, izoh, vazifa matni kabi har qanday matndagilari ham. Formulalar yo'q: qiymatlar tayyor
+(telefonda ham ko'rinadi); «=» bilan boshlangan matn formula bo'lib qolmaydi, Excel qabul qilmaydigan boshqaruv
+belgilari olib tashlanadi."""
 from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -20,6 +22,10 @@ GOOD_FILL = "E8F5E9"
 WARN_FILL = "FFF4E5"
 MUTED = "6B7280"
 NOTE_LIMIT = 300
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")  # Excel (openpyxl) qabul qilmaydigan belgilar
+# Odatiy shakldan tashqari raqamlar ham (90 12 34 567, 0901234567, 90/123/45/67, +7 …): 9–15 ta raqam.
+# Sana (21.10.2026) va summa (1 250 000) 9 raqamdan kam — tegilmaydi; «19:00» dagi soat qismiga yopishmaydi.
+LOOSE_NUMBER_RE = re.compile(r"(?<![\w+])\+?(?:\d{9,15}|\d{1,4}(?:[\s\-./()]{1,2}\d{1,4}){2,6})(?![\d:])")
 
 
 @dataclass
@@ -111,6 +117,29 @@ def mask_phone(phone: str) -> str:
     return "***"
 
 
+def hide_numbers(text: str) -> str:
+    """Matndagi telefon raqamlari (odatiy va noodatiy yozilganlari) → «[raqam]»."""
+    def repl(match: re.Match) -> str:
+        return "[raqam]" if 9 <= len(_digits(match.group(0))) <= 15 else match.group(0)
+    return LOOSE_NUMBER_RE.sub(repl, mask_phones(text or ""))
+
+
+def masked_report(report: "ExcelReport") -> "ExcelReport":
+    """Rahbarlar nusxasi uchun: odamlar yozgan har bir matn maydonidan raqamlar olib tashlanadi."""
+    hide = hide_numbers
+    return replace(
+        report,
+        operators=[replace(o, name=hide(o.name), username=hide(o.username) if o.username else o.username)
+                   for o in report.operators],
+        courses=[(hide(course), count, positive) for course, count, positive in report.courses],
+        reasons=[(hide(reason), count) for reason, count in report.reasons],
+        leads=[replace(lead, name=hide(lead.name), age=hide(lead.age), district=hide(lead.district),
+                       course=hide(lead.course), people=hide(lead.people), note=hide(lead.note),
+                       reason=hide(lead.reason), callback=hide(lead.callback)) for lead in report.leads],
+        tasks=[replace(task, who=hide(task.who), text=hide(task.text)) for task in report.tasks],
+    )
+
+
 # ------------------------------------------------------------------ yasash
 class _Book:
     """openpyxl ustidan yupqa qatlam: bir xil shrift, sarlavha va jami qatorlari uslubi."""
@@ -155,7 +184,11 @@ class _Book:
 
     def put(self, ws, row: int, col: int, value: Any, *, font=None, fill=None, fmt: str | None = None,
             align=None, border: bool = False):
+        if isinstance(value, str):
+            value = CONTROL_RE.sub("", value)
         cell = ws.cell(row=row, column=col, value=value)
+        if isinstance(value, str) and value.startswith("="):
+            cell.data_type = "s"  # lid formasidan kelgan «=HYPERLINK(…)» kabi matn formula bo'lmasin
         cell.font = font or self.font
         if fill is not None:
             cell.fill = fill
@@ -308,10 +341,8 @@ def _leads_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
     for index, lead in enumerate(report.leads, 1):
         row = index + 1
         phones = ", ".join((mask_phone if masked else format_phone)(p) for p in lead.phones if p)
-        hide = mask_phones if masked else str
         values = [index, lead.created, lead.name, phones, lead.age, lead.district, lead.course, lead.status,
-                  lead.people, hide(lead.note)[:NOTE_LIMIT], hide(lead.reason), hide(lead.callback),
-                  "ochish" if lead.link else ""]
+                  lead.people, lead.note[:NOTE_LIMIT], lead.reason, lead.callback, "ochish" if lead.link else ""]
         book.values(ws, row, values, fmts={2: "DD.MM.YYYY HH:MM"}, wrap=True)
         status_cell = ws.cell(row=row, column=8)
         if lead.positive:
@@ -325,7 +356,7 @@ def _leads_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
     ws.auto_filter.ref = f"A1:M{len(report.leads) + 1}"
 
 
-def _tasks_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
+def _tasks_sheet(book: _Book, report: ExcelReport) -> None:
     ws = book.sheet("Vazifalar", [5, 20, 46, 16, 16, 18, 16, 10, 22])
     titles = ["№", "Ijrochi", "Vazifa", "Berilgan", "Muddat", "Holat", "Yopilgan", "«Yo'q» javoblari", "Takror"]
     book.header(ws, 1, titles)
@@ -335,8 +366,8 @@ def _tasks_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
         return
     for index, task in enumerate(report.tasks, 1):
         row = index + 1
-        text = mask_phones(task.text) if masked else task.text
-        values = [index, task.who, text, task.created, task.due, task.state, task.closed, task.no_count or None, task.repeat]
+        values = [index, task.who, task.text, task.created, task.due, task.state, task.closed, task.no_count or None,
+                  task.repeat]
         book.values(ws, row, values, fmts={4: "DD.MM.YYYY HH:MM", 5: "DD.MM.YYYY HH:MM", 7: "DD.MM.YYYY HH:MM"}, wrap=True)
         state = ws.cell(row=row, column=6)
         if task.state.startswith("✅"):
@@ -348,9 +379,11 @@ def _tasks_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
 
 def build_workbook(report: ExcelReport, *, masked: bool) -> bytes:
     """Excel fayl (bayt). masked=True — rahbarlar guruhi uchun: telefonlar yashiriladi."""
+    if masked:
+        report = masked_report(report)
     book = _Book()
     _summary_sheet(book, report, masked)
     _days_sheet(book, report)
     _leads_sheet(book, report, masked)
-    _tasks_sheet(book, report, masked)
+    _tasks_sheet(book, report)
     return book.save()

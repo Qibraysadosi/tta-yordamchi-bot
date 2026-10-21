@@ -7,6 +7,7 @@ import html
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal"}
 SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
                    "journal_time", "weekly_enabled", "monthly_enabled", "excel_time")
 TAG_RE = re.compile(r"<[^>]+>")
+SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
 STATUS_LABEL_LIMIT = 30
 NAME_LIMIT = 40
@@ -72,6 +74,7 @@ class ReportAPI:
         self.ctx = ctx
         self.bot = bot
         self.uid_key, self.user_key, self.access_key = uid_key, user_key, access_key
+        self._sent_at: dict[int, float] = {}  # Excel so'ragan odam → oxirgi so'rov (monotonic)
 
     @property
     def service(self) -> ReportService:
@@ -546,10 +549,10 @@ class ReportAPI:
                 return _error("Kundalik topilmadi", 404, "not_found")
             day = datetime.strptime(entry["day"], "%Y-%m-%d").date()
             return _json({"key": key, "kind": "journal", "label": _day_label(day), "text": _plain(entry["text"])})
-        period = parse_key(key)
+        await service.ensure()
+        period = await self._period(key)
         if period is None:
             return _error("Davr topilmadi", 404, "not_found")
-        await service.ensure()
         data = await service.archive.detail(*period, service.now())
         data["masked"] = not request[self.access_key].get("owner")
         return _json(data)
@@ -557,18 +560,35 @@ class ReportAPI:
     async def archive_send(self, request: web.Request) -> web.Response:
         """Excel faylni so'ragan odamning o'ziga (botdagi chatiga): egasiga to'liq, rahbarga telefonlarsiz."""
         service = self.service
-        period = parse_key(request.match_info["key"])
+        await service.ensure()
+        period = await self._period(request.match_info["key"])
         if period is None:
             return _error("Davr topilmadi", 404, "not_found")
-        await service.ensure()
+        uid = request[self.uid_key]
+        moment = time.monotonic()
+        if moment - self._sent_at.get(uid, -SEND_COOLDOWN) < SEND_COOLDOWN:
+            return _error("Fayl hozirgina yuborildi — chatni tekshiring yoki birozdan keyin qayta urining.", 429, "too_fast")
+        self._sent_at[uid] = moment
         owner = bool(request[self.access_key].get("owner"))
         try:
-            await service.archive.send_to(self.bot, request[self.uid_key], *period, service.now(), masked=not owner)
+            await service.archive.send_to(self.bot, uid, *period, service.now(), masked=not owner)
         except TelegramForbiddenError:
+            self._sent_at.pop(uid, None)
             return _error("Bot sizga yoza olmaydi: botni oching va /start bosing, keyin qayta urinib ko'ring.", 409,
                           "blocked")
         except TelegramAPIError as exc:
+            self._sent_at.pop(uid, None)
             log.warning("Excel yuborilmadi: %s", exc)
             return _error("Fayl yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502,
                           "send_failed")
         return _json({"ok": True, "masked": not owner})
+
+    async def _period(self, key: str) -> tuple[str, date, date] | None:
+        """Kalit → davr; faqat kuzatish boshlangandan bugungacha bo'lgan davrlar (boshqasi — topilmadi)."""
+        period = parse_key(key)
+        if period is None:
+            return None
+        service = self.service
+        since = (await service.since()).astimezone(service.tz).date()
+        _, first, last = period
+        return period if last >= since and first <= service.now().date() else None

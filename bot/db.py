@@ -218,8 +218,9 @@ CREATE TABLE IF NOT EXISTS rp_exports (
     kind      TEXT NOT NULL,           -- week | month
     first_day TEXT NOT NULL,           -- mahalliy sana
     last_day  TEXT NOT NULL,
-    sent_at   TEXT,                    -- UTC; NULL — avtomatik yuborilmagan (faqat ko'rilgan)
-    summary   TEXT NOT NULL DEFAULT '{}'
+    sent_at   TEXT,                    -- UTC; hamma oluvchiga yetgan vaqt (NULL — hali to'liq yuborilmagan)
+    summary   TEXT NOT NULL DEFAULT '{}',
+    sent_to   TEXT NOT NULL DEFAULT '' -- avtomatik nusxa yetgan chatlar (vergul bilan): qayta yuborilmaydi
 );
 """
 
@@ -227,6 +228,7 @@ CREATE TABLE IF NOT EXISTS rp_exports (
 MIGRATIONS = {
     "settings": {"mode": "TEXT"},
     "rp_tasks": {"poll_thread": "INTEGER"},
+    "rp_exports": {"sent_to": "TEXT NOT NULL DEFAULT ''"},
 }
 TITLE_LIMIT = 48
 

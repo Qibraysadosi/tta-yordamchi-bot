@@ -253,10 +253,26 @@ def test_delivery_rules(tmp_path):
                 return await original(bot_, method, timeout)
             env.session.make_request = flaky
             env.session.clear()
-            assert await archive.check_exports(bot, local(NEXT_MON, "11:05")) == 1
+            assert await archive.check_exports(bot, local(NEXT_MON, "11:05")) == 0  # guruhga yetmadi — davr ochiq
             assert [d.chat_id for d in env.session.of("SendDocument")] == [OWNER]  # guruhga urinish xato bilan tugadi
             warn = env.session.of("SendMessage")[-1]
-            assert warn.chat_id == OWNER and "rahbarlar guruhiga yuborilmadi" in warn.text
+            assert warn.chat_id == OWNER and "rahbarlar guruhiga yuborilmadi" in warn.text and "uzatmang" in warn.text
+            row = await archive.store.export("week:2026-10-19")
+            assert row["sent_at"] is None and archive.store.recipients(row) == {OWNER}
+            assert await archive.check_exports(bot, local(NEXT_MON, "11:14")) == 0  # 10 daqiqa kutiladi
+            assert len(env.session.of("SendDocument")) == 1
+            assert await archive.check_exports(bot, local(NEXT_MON, "11:16")) == 0  # yana xato → endi 20 daqiqa
+            assert [d.chat_id for d in env.session.of("SendDocument")] == [OWNER]  # egasiga qayta yuborilmadi
+            assert len([m for m in env.session.of("SendMessage") if "yuborilmadi" in m.text]) == 1  # bir marta aytiladi
+            env.session.make_request = original
+            env.session.clear()
+            assert await archive.check_exports(bot, local(NEXT_MON, "11:30")) == 0  # 11:36 gacha kutiladi
+            assert await archive.check_exports(bot, local(NEXT_MON, "11:37")) == 1
+            assert [d.chat_id for d in env.session.of("SendDocument")] == [LEADERS]  # faqat yetmagan guruhga
+            assert "🔒" in env.session.of("SendDocument")[0].caption
+            row = await archive.store.export("week:2026-10-19")
+            assert row["sent_at"] and archive.store.recipients(row) == {OWNER, LEADERS}
+            assert await archive.check_exports(bot, local(NEXT_MON, "12:00")) == 0
 
             # hech qayerga yetmasa — 10 daqiqadan keyin qayta
             await env.db.conn.execute("DELETE FROM rp_exports")
@@ -268,10 +284,27 @@ def test_delivery_rules(tmp_path):
                 return await original(bot_, method, timeout)
             env.session.make_request = broken
             assert await archive.check_exports(bot, local(NEXT_MON, "12:00")) == 0
-            assert (await archive.store.export("week:2026-10-19")) is None
+            assert (await archive.store.export("week:2026-10-19"))["sent_at"] is None
             env.session.make_request = original
             assert await archive.check_exports(bot, local(NEXT_MON, "12:05")) == 0  # kutish
             assert await archive.check_exports(bot, local(NEXT_MON, "12:11")) == 1
+
+            # tayyorlashda xato — egasiga bir marta aytiladi, keyinroq qayta
+            await env.db.conn.execute("DELETE FROM rp_exports")
+            await env.db.conn.commit()
+
+            async def crash(*args, **kwargs):
+                raise RuntimeError("sinov")
+            archive.collect, collect = crash, archive.collect
+            env.session.clear()
+            assert await archive.check_exports(bot, local(NEXT_MON, "13:00")) == 0
+            assert await archive.check_exports(bot, local(NEXT_MON, "13:11")) == 0
+            notes = [m.text for m in env.session.of("SendMessage")]
+            assert len(notes) == 1 and "tayyorlanmadi" in notes[0] and "/excel" in notes[0]
+            archive.collect = collect
+            # bot o'chiq bo'lsa — haftalik 2 kun ichida; undan keyin o'tgan hafta avtomatik kelmaydi
+            assert await archive.check_exports(bot, local(date(2026, 10, 28), "11:01")) == 0
+            assert await archive.check_exports(bot, local(date(2026, 10, 28), "10:59")) == 1
             # o'tgan hafta yuborilmagan bo'lsa ham, keyingi hafta (dushanbadan) faqat yangi davr ko'riladi
             assert due_period(WEEK, date(2026, 11, 3))[0] == NEXT_MON
         finally:
@@ -313,10 +346,16 @@ def test_journal(tmp_path):
             await env.ctx.reports.save_schedule({"journal_time": "12:00"})
             assert await archive.check_journal(bot, local(FRI, "16:01")) is False  # 4 soatdan ko'p kechikdi
             assert await archive.check_journal(bot, local(FRI, "15:59")) is True
-            # yakshanba — ish kuni emas; o'chirilgan bo'lsa — yo'q
-            assert await archive.check_journal(bot, local(date(2026, 10, 25), "20:00")) is False
+            # yakshanba — ish kuni emas
+            assert await archive.check_journal(bot, local(date(2026, 10, 25), "12:30")) is False
+            # 22:00 dagi kundalik yarim tundan keyin ham (4 soat ichida) keladi — o'sha kun nomi bilan
+            await env.ctx.reports.save_schedule({"journal_time": "22:00"})
+            assert await archive.check_journal(bot, local(date(2026, 10, 25), "00:30")) is True
+            assert "KUNDALIK · 24.10.2026 (shanba)" in env.session.of("SendMessage")[-1].text
+            assert await archive.check_journal(bot, local(date(2026, 10, 25), "01:00")) is False  # bir marta
+            # o'chirilgan bo'lsa — yo'q
             await env.ctx.reports.save_schedule({"journal_enabled": False})
-            assert await archive.check_journal(bot, local(SAT, "20:00")) is False
+            assert await archive.check_journal(bot, local(NEXT_MON, "22:00")) is False
         finally:
             await env.close()
     run(go())
@@ -391,6 +430,8 @@ def test_archive_api(tmp_path):
             await api.call("GET", "/api/report/archive/journal:2026-10-26", user=leader, status=403)
             await api.call("GET", "/api/report/archive/journal:2026-01-01", status=404)
 
+            for key in ("week:0001-01-01", "week:9999-12-27", "week:2026-09-21", "week:2026-11-02", "month:2026-09"):
+                await api.call("GET", f"/api/report/archive/{key}", user=leader, status=404)  # kuzatish oralig'idan tashqari
             week = await api.call("GET", "/api/report/archive/week:2026-10-12", user=leader)
             assert week["summary"]["calls"] == 0 and week["masked"] is True and week["sent"] is False
             assert (await reports.archive.store.export("week:2026-10-12"))["sent_at"] is None  # ko'rildi, yuborilmadi
@@ -399,6 +440,8 @@ def test_archive_api(tmp_path):
             # Excel'ni o'z chatiga: rahbarga yashirilgan, egasiga to'liq
             res = await api.call("POST", "/api/report/archive/week:2026-10-19/send", {}, user=leader)
             assert res == {"ok": True, "masked": True}
+            again = await api.call("POST", "/api/report/archive/week:2026-10-19/send", {}, user=leader, status=429)
+            assert "hozirgina" in again["message"]
             doc = env.session.of("SendDocument")[-1]
             assert doc.chat_id == LEADER and "🔒" in doc.caption
             assert "***" in column(workbook(env.session.documents[-1][1])["Lidlar"], "Telefon")[0]
@@ -420,3 +463,61 @@ def test_archive_api(tmp_path):
         finally:
             await api.close()
     run(go())
+
+
+def test_excel_hardening(tmp_path):
+    """Yashirilgan nusxada hech qanday maydonda to'liq raqam yo'q; «=…» formula emas; boshqaruv belgisi faylni buzmaydi;
+    biror kunda aniqlanmagan natija bo'lsa — «Kunlar»da ❔ ustuni bor."""
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            reports = env.ctx.reports
+            await reports.store.add_person("operator", username="malika_op", user_id=None, name="Malika")
+            malika, sardor = person(MALIKA, "Malika", "malika_op"), person(SARDOR, "Sardor", "sardor")
+            lola = await g.post("Ism: Lola (onasi 91 765 43 21)\nTuman: Chilonzor 9, qo'shimcha 93 111 22 33\nKurs: =1+2",
+                                ts(MON, "10:00"))
+            evil = await g.post('Ism: =HYPERLINK("http://evil.example/?x","Aziza")\nTelefon: 90 222 33 44\nKurs: Excel',
+                                ts(MON, "11:00"))
+            await g.comment(lola, malika, "qildim", ts(MON, "10:05"))  # natijasi aniqlanmadi → dushanba ❔
+            await g.react(lola["message_id"], malika, "👎", ts(TUE, "10:00"))  # haftada — 👎
+            await g.comment(evil, sardor, "=SUM(1,2) 90 12 34 567 ga yozdim", ts(MON, "11:30"))
+            pending = await reports.store.pending_comments(10)
+            env.api.responses.append(classify(
+                {"id": pending[0].id, "call": True, "status": "", "reason": "", "callback": ""},
+                {"id": pending[1].id, "call": True, "status": "👎", "reason": "", "callback": ""}))
+            tasks = reports.tasks
+            await tasks.create(creator_id=OWNER, assignee=await tasks.resolve(MALIKA, "malika_op", "Malika"),
+                               text="Hisobot\u0007 tayyorlash", due=local(THU, "18:00"), repeat=None, poll_chat=None)
+            export = await reports.archive.collect(WEEK, MON, date(2026, 10, 25), local(NEXT_MON, "09:05"))
+            full, masked = await reports.archive.files(export, False, True)
+
+            book = workbook(full)
+            names = book["Lidlar"]
+            assert names.cell(row=3, column=3).value.startswith("=HYPERLINK") and names.cell(row=3, column=3).data_type == "s"
+            assert names.cell(row=3, column=10).value.startswith("=SUM") and names.cell(row=3, column=10).data_type == "s"
+            course = find_row(book["Umumiy"], "=1+2")
+            assert course[1] == 1
+            assert column(book["Vazifalar"], "Vazifa") == ["Hisobot tayyorlash"]
+            days = book["Kunlar"]
+            headers = [c.value for c in days[1]]
+            assert "❔ aniqlanmagan" in headers and "❔ aniqlanmagan" in [c.value for c in book["Umumiy"][find_header(book["Umumiy"])]]
+            assert days.cell(row=2, column=headers.index("❔ aniqlanmagan") + 1).value == 1  # dushanba
+            assert days.cell(row=3, column=headers.index("👎 kelmaydi") + 1).value == 1  # seshanba
+
+            hidden = workbook(masked)
+            flat = " ".join(str(v) for ws in hidden for row in ws.iter_rows(values_only=True) for v in row if v)
+            for raw in ("765 43 21", "111 22 33", "222 33 44", "12 34 567"):
+                assert raw not in flat
+            assert "Lola (onasi [raqam])" in flat and "qo'shimcha [raqam]" in flat and "[raqam] ga yozdim" in flat
+        finally:
+            await env.close()
+    run(go())
+
+
+def find_header(ws):
+    """Operatorlar jadvali sarlavhasi qatori raqami."""
+    for row in ws.iter_rows():
+        if row[0].value == "Operator":
+            return row[0].row
+    raise AssertionError("Operatorlar jadvali topilmadi")

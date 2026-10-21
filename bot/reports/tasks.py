@@ -334,6 +334,42 @@ class TaskStore(ReportStore):
             rows = await self._all("SELECT * FROM rp_tasks ORDER BY id DESC LIMIT ?", (limit,))
         return [_task(r) for r in rows]
 
+    async def closed_between(self, status: str, start: str, end: str) -> list[Task]:
+        """Shu oraliqda yopilgan (bajarilgan yoki bekor qilingan) vazifalar — kundalik uchun."""
+        rows = await self._all(
+            "SELECT * FROM rp_tasks WHERE status = ? AND done_at >= ? AND done_at < ? ORDER BY done_at, id",
+            (status, start, end),
+        )
+        return [_task(r) for r in rows]
+
+    async def created_count(self, start: str, end: str) -> int:
+        """Egasi bergan vazifalar soni (takroriy vazifaning avtomatik nusxalari sanalmaydi)."""
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM rp_tasks WHERE parent_id IS NULL AND created_at >= ? AND created_at < ?",
+            (start, end),
+        )
+        return int(row["n"])
+
+    async def events_count(self, kind: str, start: str, end: str) -> int:
+        row = await self._one(
+            "SELECT COUNT(*) AS n FROM rp_task_events WHERE kind = ? AND created_at >= ? AND created_at < ?",
+            (kind, start, end),
+        )
+        return int(row["n"])
+
+    async def touching(self, start: str, end: str, limit: int = 3000) -> list[Task]:
+        """Davrga tegishli vazifalar (Excel): muddati, yopilgani yoki berilgani (nusxalarsiz) shu oraliqda."""
+        rows = await self._all(
+            "SELECT * FROM rp_tasks WHERE (due_at >= ? AND due_at < ?) OR (done_at >= ? AND done_at < ?)"
+            " OR (parent_id IS NULL AND created_at >= ? AND created_at < ?)"
+            " ORDER BY COALESCE(due_at, created_at), id LIMIT ?",
+            (start, end, start, end, start, end, limit),
+        )
+        return [_task(r) for r in rows]
+
+    async def has_any(self) -> bool:
+        return await self._one("SELECT 1 FROM rp_tasks LIMIT 1") is not None
+
     async def task_counts(self, now: str) -> dict[str, int]:
         row = await self._one(
             "SELECT COUNT(*) AS open, SUM(CASE WHEN due_at < ? THEN 1 ELSE 0 END) AS overdue"

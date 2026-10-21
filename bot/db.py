@@ -208,6 +208,19 @@ CREATE TABLE IF NOT EXISTS rp_task_events (
     created_at TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rp_task_events ON rp_task_events (task_id);
+CREATE TABLE IF NOT EXISTS rp_journal (
+    day     TEXT PRIMARY KEY,          -- mahalliy sana YYYY-MM-DD (kundalik egasiga yuborilgan kun)
+    sent_at TEXT NOT NULL,             -- UTC
+    text    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rp_exports (
+    key       TEXT PRIMARY KEY,        -- week:YYYY-MM-DD (dushanba) | month:YYYY-MM
+    kind      TEXT NOT NULL,           -- week | month
+    first_day TEXT NOT NULL,           -- mahalliy sana
+    last_day  TEXT NOT NULL,
+    sent_at   TEXT,                    -- UTC; NULL — avtomatik yuborilmagan (faqat ko'rilgan)
+    summary   TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 # Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)

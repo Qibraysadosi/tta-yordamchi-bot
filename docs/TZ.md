@@ -251,7 +251,7 @@ Umumiy asos (TZ-11 da quriladi, qolganlari shundan foydalanadi): `bot/scheduler.
 | --- | --- | --- |
 | v1.7.0 | Guruh rejimi (jim yozib borish), lid kartochkasi, reaksiya + izoh statuslari (AI tahlil), kunlik hisobot, belgilanmagan lid eslatmasi, `/hisobot`, `/guruhlar`; Mini App: bo'lim tanlovi, Hisobotlar → Bugun / Operatorlar / Sozlamalar (kirish ham) | ✅ |
 | v1.8.0 | Vazifalar: egasi «#vazifa» / «Vazifa:» / /vazifa bilan guruhda yoki botga lichkada beradi (belgisiz xabar vazifa emas; muddat bo'lmasa tugma bilan so'raladi, ✍️ — qabul qilindi, takroriy vazifalar); muddatda «📋 Vazifalar» guruhida ijrochini @username bilan belgilab «Bajardingizmi?» — «Ha» → egasiga xabar, «Yo'q» → 3 soatdan keyin qayta, javob bo'lmasa 2 soatdan keyin; 3 marta javobsiz — egasiga xabar; faqat ish vaqtida; tugmalarni faqat ijrochi bosa oladi; Mini App «Vazifalar» tabi (rahbarlar ko'radi). Ovozli vazifa — keyin (STT kaliti kerak) | ✅ |
-| v1.9.0 | Kundalik (20:00, faqat egasiga lichkada); haftalik (dushanba 09:00) va oylik (1-kun 09:00) Excel hisobot — guruhga telefonlari yashirilgan, egasiga to'liq nusxa; Mini App «Arxiv» | navbatda |
+| v1.9.0 | Kundalik (20:00, faqat egasiga lichkada; tarkibi — call center raqamlari va vazifalar, AI xulosasiz); haftalik (dushanba 09:00) va oylik (1-kun 09:00) Excel hisobot (Umumiy / Kunlar / Lidlar / Vazifalar) — rahbarlar guruhiga telefonlari yashirilgan, egasiga to'liq nusxa; `/kundalik`, `/excel`; Mini App «Arxiv» (kunlik, haftalik, oylik, kundalik) va Sozlamalar → «Kundalik va Excel» | ✅ |
 | keyin | Mini App'da grafikli dashboard | — |
 
 ### TZ-18. Guruh va kanal rejimi

@@ -121,7 +121,7 @@ def test_people_statuses_schedule_and_groups(tmp_path):
             assert [s["emoji"] for s in settings["statuses"]] == ["👍", "👎", "🆒", "🤔", "🤝", "💔"]
             assert settings["schedule"]["time"] == "19:00" and settings["schedule"]["days_label"] == "Du–Sh"
             assert settings["groups"] == [] and settings["model"] == "Haiku 5.5"
-            assert settings["role_labels"] == {"leads": "Lidlar", "leaders": "Rahbarlar"}
+            assert settings["role_labels"] == {"leads": "Lidlar", "leaders": "Rahbarlar", "tasks": "Vazifalar"}
             fire = await api.call("POST", "/api/report/statuses", {"emoji": "🔥", "label": "juda qiziqdi", "positive": True})
             await api.call("POST", "/api/report/statuses", {"emoji": "🔥", "label": "takror"}, status=409)
             await api.call("POST", "/api/report/statuses", {"emoji": "", "label": "x"}, status=400)
@@ -184,7 +184,8 @@ def test_overview_payload_and_send_now(tmp_path):
             await api.call("GET", "/api/report/overview?day=21.10", status=400)
 
             me = await api.call("GET", "/api/me")
-            assert me["report"] == {"calls": 1, "positive": 1, "positive_emoji": "👍", "new_leads": 1, "unmarked": 0}
+            assert me["report"] == {"calls": 1, "positive": 1, "positive_emoji": "👍", "new_leads": 1, "unmarked": 0,
+                                    "tasks_open": 0, "tasks_overdue": 0}
 
             env.session.clear()
             res = await api.call("POST", "/api/report/send", {})

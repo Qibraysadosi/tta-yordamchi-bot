@@ -184,7 +184,7 @@ async def setup_groups(env):
     prompt = env.session.of("SendMessage")[-1]
     assert prompt.chat_id == OWNER and "KOMMENTARIYA TA LIDLAR" in prompt.text and "Lidlar" in prompt.text
     data = [b.callback_data for row in prompt.reply_markup.inline_keyboard for b in row]
-    assert data == [f"rg:{LEADS}:leads", f"rg:{LEADS}:leaders", f"rg:{LEADS}:done", f"rg:{LEADS}:off"]
+    assert data == [f"rg:{LEADS}:leads", f"rg:{LEADS}:leaders", f"rg:{LEADS}:tasks", f"rg:{LEADS}:done", f"rg:{LEADS}:off"]
     await env.press(f"rg:{LEADS}:leads")
     await env.press(f"rg:{LEADS}:done")
     summary = env.session.of("EditMessageText")[-1].text

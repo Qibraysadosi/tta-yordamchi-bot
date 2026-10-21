@@ -22,10 +22,21 @@ from aiogram.types import (
 from .render import split_message
 from .service import ROLE_LABELS, ReportService
 from .stats import current_day
+from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
 
 log = logging.getLogger(__name__)
 
 GROUP_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
+TASK_HELP = (
+    "📋 <b>Vazifa berish</b>\n\n"
+    "«#vazifa @username nima qilish kerak, qachongacha» — shu yerda yoki «📋 Vazifalar» guruhida.\n"
+    "Misollar:\n"
+    "• <code>#vazifa @malika_op ertaga 15:00 gacha oylik hisobotni topshirsin</code>\n"
+    "• <code>Vazifa: @sardor_op har dushanba 10:00 da lidlar ro'yxatini tekshirsin</code>\n"
+    "• Guruhda odamning xabariga reply qilib: <code>#vazifa jumagacha shartnomani tayyorlang</code>\n\n"
+    "Muddat aytilmasa — keyingi ish kuni, sizdan tugma bilan so'rayman. Muddatida guruhda ijrochidan "
+    "«Bajardingizmi?» deb so'rayman. Ro'yxat: /vazifalar"
+)
 NO_GROUPS_TEXT = (
     "👥 <b>Kuzatiladigan guruhlar</b>\n\n"
     "Hali guruh yo'q. Botni lidlar guruhiga (arizalar va operatorlar izohi tushadigan) va rahbarlar guruhiga "
@@ -222,6 +233,158 @@ async def cb_group_open(callback: CallbackQuery, ctx) -> None:
         )
 
 
+# --------------------------------------------------------------------------- vazifalar
+def _bot_username(ctx) -> str | None:
+    service = _service(ctx)
+    return service.bot_info.get("username") if service is not None else None
+
+
+async def is_owner_task(message: Message, ctx) -> bool:
+    """Lichkadagi «#vazifa …» / «Vazifa: @… …» — faqat egasidan (boshqalarniki va uzatilgan matn — AI suhbatiga)."""
+    user = message.from_user
+    return (user is not None and ctx.is_owner(user.id) and is_explicit(message)
+            and task_body(message.text or message.caption, _bot_username(ctx)) is not None)
+
+
+async def on_private_task(message: Message, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    if service is not None:
+        body = task_body(message.text or message.caption, _bot_username(ctx)) or ""
+        await service.tasks.from_message(bot, message, body, group_chat=None)
+
+
+async def cmd_task(message: Message, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Vazifani faqat bot egasi beradi.")
+        return
+    body = task_body(message.text or message.caption, _bot_username(ctx)) or ""
+    if not body:
+        await message.answer(TASK_HELP, parse_mode=ParseMode.HTML)
+        return
+    await service.tasks.from_message(bot, message, body, group_chat=None)
+
+
+async def cmd_tasks(message: Message, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    text = await service.tasks.list_text(service.now())
+    button = service.app_button("vazifalar", "📋 Mini App'da ochish")
+    markup = InlineKeyboardMarkup(inline_keyboard=[[button]]) if button else None
+    for index, part in enumerate(parts := split_message(text)):
+        await message.answer(part, parse_mode=ParseMode.HTML, reply_markup=markup if index == len(parts) - 1 else None)
+
+
+async def cb_task_answer(callback: CallbackQuery, bot: Bot, ctx) -> None:
+    """«Bajardingizmi?» tugmalari: faqat ijrochi (yoki egasi) bosa oladi."""
+    service = _service(ctx)
+    parts = (callback.data or "").split(":")
+    if service is None or len(parts) != 3 or not parts[1].isdigit():
+        await callback.answer()
+        return
+    tasks = service.tasks
+    task = await tasks.store.get(int(parts[1]))
+    message = callback.message if isinstance(callback.message, Message) else None
+    if task is None:
+        await callback.answer("Vazifa topilmadi", show_alert=True)
+        return
+    if not tasks.may_answer(task, callback.from_user):
+        await callback.answer(f"Bu savol {task.who} uchun", show_alert=True)
+        return
+    pressed = (message.chat.id, message.message_id) if message is not None else None
+    toast, footer = await tasks.answer(bot, task.id, callback.from_user, parts[2] == "y", service.now(), pressed)
+    await callback.answer(toast)
+    task = await tasks.store.get(task.id) or task
+    if message is not None:
+        with contextlib.suppress(TelegramBadRequest):
+            if footer is None:  # allaqachon yopilgan — tugmalar olinadi
+                await message.edit_reply_markup(reply_markup=None)
+            else:
+                await message.edit_text(tasks.poll_text(task, footer), parse_mode=ParseMode.HTML)
+
+
+async def cb_task_owner(callback: CallbackQuery, bot: Bot, ctx) -> None:
+    """Egasining tugmalari: muddat, bekor qilish, yopish, qayta so'rash."""
+    service = _service(ctx)
+    if service is None or not ctx.is_owner(callback.from_user.id):
+        await callback.answer("⛔ Faqat bot egasi uchun", show_alert=True)
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) < 3 or not parts[1].isdigit():
+        await callback.answer()
+        return
+    tasks = service.tasks
+    task = await tasks.store.get(int(parts[1]))
+    message = callback.message if isinstance(callback.message, Message) else None
+    if task is None:
+        await callback.answer("Vazifa topilmadi", show_alert=True)
+        return
+    action, now = parts[2], service.now()
+    schedule = await service.schedule()
+    if action in ("d", "due", "ask") and task.status != OPEN:
+        await callback.answer("Vazifa allaqachon yopilgan", show_alert=True)
+        return
+    if action == "d":
+        due = preset_due(parts[3] if len(parts) > 3 else "", now, schedule)
+        if due is None:
+            await callback.answer("Bu tugma eskirgan — muddatni Mini App'da o'zgartiring", show_alert=True)
+            return
+        task = await tasks.set_due(task, due, callback.from_user.id)
+        await callback.answer("Muddat saqlandi")
+        if message is not None:
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_text(await tasks.confirm_text(task), parse_mode=ParseMode.HTML,
+                                        reply_markup=tasks.owner_keyboard(task, now, presets=False, schedule=schedule))
+        return
+    if action == "due":
+        await callback.answer()
+        if message is not None:
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_reply_markup(reply_markup=tasks.owner_keyboard(task, now, presets=True, schedule=schedule))
+        return
+    if action == "rs":
+        if task.repeat:
+            await tasks.stop_repeat(task, callback.from_user.id)
+        await callback.answer("Takror to'xtatildi — keyingi nusxalar bo'lmaydi")
+        fresh = await tasks.store.get(task.id) or task
+        if message is not None:
+            old = message.reply_markup.inline_keyboard if message.reply_markup else []
+            alert = any((b.callback_data or "").endswith(":ask") for row in old for b in row)
+            markup = None
+            if fresh.status == OPEN:  # boshqa tugmalar qoladi (⏹ siz)
+                markup = tasks.alert_keyboard(fresh) if alert else tasks.owner_keyboard(fresh, now, presets=False,
+                                                                                         schedule=schedule)
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_text(f"{message.html_text}\n\n⏹ <i>Takror to'xtatildi</i>", parse_mode=ParseMode.HTML,
+                                        reply_markup=markup)
+        return
+    if action == "ask":
+        ok = await tasks.ask_now(bot, task, now)
+        await callback.answer("So'rov guruhga yuborildi" if ok else "Yuborib bo'lmadi — sababi sizga yozildi", show_alert=not ok)
+        return
+    if action in ("x", "ok"):
+        if task.status == OPEN:
+            if action == "x":
+                await tasks.cancel(bot, task, callback.from_user.id, now)
+            else:
+                await tasks.close(bot, task, callback.from_user.id, now)
+        done = (await tasks.store.get(task.id) or task).status
+        note = {DONE: "✅ <i>Bajarildi deb yopildi</i>"}.get(
+            done, "🗑 <i>Bekor qilindi" + (" — takror ham to'xtatildi" if task.repeat else "") + "</i>")
+        await callback.answer("Saqlandi")
+        if message is not None:
+            with contextlib.suppress(TelegramBadRequest):
+                await message.edit_text(f"{message.html_text}\n\n{note}", parse_mode=ParseMode.HTML)
+        return
+    await callback.answer()
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -231,6 +394,11 @@ def build_router() -> Router:
     private = F.chat.type == ChatType.PRIVATE
     router.message.register(cmd_report, Command("hisobot", "report"), private)
     router.message.register(cmd_groups, Command("guruhlar", "groups"), private)
+    router.message.register(cmd_task, Command("vazifa", "task"), private, F.forward_origin.is_(None))
+    router.message.register(cmd_tasks, Command("vazifalar", "tasks"), private)
+    router.message.register(on_private_task, private, is_owner_task)
+    router.callback_query.register(cb_task_answer, F.data.startswith("tq:"))
+    router.callback_query.register(cb_task_owner, F.data.startswith("tk:"))
     router.callback_query.register(cb_group_role, F.data.startswith("rg:"))
     router.callback_query.register(cb_group_open, F.data.startswith("rgo:"))
     router.callback_query.register(cb_report, F.data.startswith("rp:"))

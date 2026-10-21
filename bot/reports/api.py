@@ -15,6 +15,7 @@ from ..prompt import MONTHS, WEEKDAYS
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, neighbour_day
 from .store import PEOPLE_KINDS, ROLES, clean_username, iso
+from .tasks import CANCELLED, DONE, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -70,6 +71,11 @@ class ReportAPI:
         add("DELETE", "/api/report/statuses/{status_id}", self.delete_status)
         add("PATCH", "/api/report/schedule", self.update_schedule)
         add("POST", "/api/report/send", self.send_now)
+        add("GET", "/api/report/tasks", self.tasks_list)
+        add("POST", "/api/report/tasks", self.add_task)
+        add("GET", "/api/report/tasks/{task_id}", self.task_detail)
+        add("PATCH", "/api/report/tasks/{task_id}", self.update_task)
+        add("POST", "/api/report/tasks/{task_id}/ask", self.ask_task)
 
     async def _body(self, request: web.Request) -> dict:
         try:
@@ -86,7 +92,9 @@ class ReportAPI:
             return None
         ov = await service.overview()
         everyone = [ov.totals] + ov.extras  # ro'yxatdagilar jami + ro'yxatda yo'qlar (Bugun ekrani bilan bir xil)
-        return {"calls": sum(r.total for r in everyone), "positive": sum(ov.positive(r) for r in everyone),
+        counts = await service.tasks.store.task_counts(iso(service.now()))
+        return {"tasks_open": counts["open"], "tasks_overdue": counts["overdue"],
+                "calls": sum(r.total for r in everyone), "positive": sum(ov.positive(r) for r in everyone),
                 "positive_emoji": next((s.emoji for s in ov.statuses if s.positive), "👍"),
                 "new_leads": ov.new_leads, "unmarked": ov.unmarked}
 
@@ -133,6 +141,7 @@ class ReportAPI:
             "reasons": [{"label": r, "count": n} for r, n in reasons], "reasons_grouped": clustered,
             "sent": report is not None, "sent_at": report.get("sent_at") if report else None,
             "has_groups": bool(await service.store.groups_with("leads")),
+            "tasks": await service.tasks.store.task_counts(iso(now)),
             "schedule": {"time": schedule.time, "days": schedule.days_label()},
             "role": "owner" if access.get("owner") else "leader",
         })
@@ -243,7 +252,7 @@ class ReportAPI:
             await store.set_group_active(chat_id, bool(body["active"]))
         group = await store.group(chat_id)
         is_admin = group.is_admin if group else False
-        if group is not None and group.has("leads"):
+        if group is not None and (group.has("leads") or group.has("tasks")):  # ikkalasida ham bot xabarlarni o'qishi kerak
             checked = await self.service.check_admin(self.bot, chat_id)
             is_admin = bool(checked) if checked is not None else is_admin
         return _json({"ok": True, "roles": list(group.roles) if group else [], "active": bool(group and group.active),
@@ -326,3 +335,151 @@ class ReportAPI:
         leaders = await service.store.groups_with("leaders")
         target = "leaders" if leaders and not fallback else "owner"
         return _json({"ok": True, "sent": sent, "target": target})
+
+    # ------------------------------------------------------------------ vazifalar
+    def _task(self, task: Task, now: datetime, groups: dict[int, str]) -> dict:
+        tasks = self.service.tasks
+        due = tasks.local(task.due_at)
+        closed = tasks.local(task.done_at)
+        created = tasks.local(task.created_at)
+        return {
+            "id": task.id, "text": task.text, "who": task.who, "username": task.assignee_username,
+            "user_id": task.assignee_id, "due": due.strftime("%Y-%m-%dT%H:%M") if due else None,
+            "due_label": due_label(due) if due else None, "due_set": task.due_set, "repeat": task.repeat or "",
+            "repeat_label": repeat_label(task.repeat), "status": task.status, "state": tasks.state_of(task, now),
+            "asks": task.asks, "no_count": task.no_count, "group": groups.get(task.poll_chat) if task.poll_chat else None,
+            "created_label": due_label(created) if created else None, "closed_label": due_label(closed) if closed else None,
+        }
+
+    async def _groups(self) -> dict[int, str]:
+        return {g.chat_id: g.title or str(g.chat_id) for g in await self.service.store.groups()}
+
+    async def _task_or_404(self, request: web.Request) -> Task | None:
+        try:
+            return await self.service.tasks.store.get(int(request.match_info["task_id"]))
+        except ValueError:
+            return None
+
+    async def tasks_list(self, request: web.Request) -> web.Response:
+        service = self.service
+        await service.ensure()
+        status = request.query.get("status", OPEN)
+        if status not in (OPEN, DONE, CANCELLED, "all"):
+            status = OPEN
+        now = service.now()
+        groups = await self._groups()
+        items = await service.tasks.store.tasks(None if status == "all" else status, 200)
+        payload: dict[str, Any] = {
+            "status": status, "items": [self._task(t, now, groups) for t in items],
+            "counts": await service.tasks.store.task_counts(iso(now)),
+            "has_group": bool(await service.store.groups_with("tasks")),
+        }
+        if request[self.access_key].get("owner"):
+            schedule = await service.schedule()
+            payload["people"] = await service.tasks.store.known_people()
+            payload["default_due"] = default_due(now, schedule).strftime("%Y-%m-%dT%H:%M")
+        return _json(payload)
+
+    async def task_detail(self, request: web.Request) -> web.Response:
+        task = await self._task_or_404(request)
+        if task is None:
+            return _error("Vazifa topilmadi", 404, "not_found")
+        tasks = self.service.tasks
+        data = self._task(task, self.service.now(), await self._groups())
+        labels = {"created": "qayd etildi", "asked": "«Bajardingizmi?» so'raldi", "yes": "✅ bajarildi",
+                  "no": "❌ «Yo'q» dedi", "escalated": "⚠️ javob bermadi — sizga xabar", "due": "⏰ muddat o'zgardi",
+                  "cancelled": "🗑 bekor qilindi", "reopened": "↩️ qayta ochildi", "nogroup": "⚠️ guruh yo'q edi",
+                  "sendfail": "⚠️ guruhga yozib bo'lmadi", "norepeat": "🔁 takror to'xtatildi"}
+        data["history"] = [
+            {"label": labels.get(h["kind"], h["kind"]), "at": due_label(moment) if (moment := tasks.local(h["created_at"])) else ""}
+            for h in await tasks.store.history(task.id)
+        ]
+        return _json(data)
+
+    async def add_task(self, request: web.Request) -> web.Response:
+        service = self.service
+        body = await self._body(request)
+        who = str(body.get("who") or "").strip()
+        text = " ".join(str(body.get("text") or "").split())
+        if not text or len(text) > TEXT_LIMIT:
+            return _error(f"Vazifa matnini yozing ({TEXT_LIMIT} belgigacha)")
+        if who.lstrip("-").isdigit():
+            person = await service.tasks.resolve(int(who), None)
+        else:
+            username = clean_username(who)
+            if username is None:
+                return _error("Kimga: @username yoki Telegram ID")
+            person = await service.tasks.resolve(None, username)
+        now = service.now()
+        due = self._parse_due(body.get("due"), now)
+        if isinstance(due, web.Response):
+            return due
+        repeat = str(body.get("repeat") or "").strip()
+        if repeat and not REPEAT_RE.fullmatch(repeat):
+            return _error("Takror noto'g'ri")
+        poll_chat = await service.tasks.pick_group(self.bot, person)
+        task = await service.tasks.create(creator_id=request[self.uid_key], assignee=person, text=text, due=due,
+                                          repeat=repeat or None, poll_chat=poll_chat, now=now)
+        return _json({"ok": True, "task": self._task(task, now, await self._groups())})
+
+    @staticmethod
+    def _parse_due(raw: Any, now: datetime) -> datetime | None | web.Response:
+        value = str(raw or "").strip()
+        if not value:
+            return None
+        try:
+            due = datetime.strptime(value[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=now.tzinfo)
+        except ValueError:
+            return _error("Muddat noto'g'ri")
+        if due < now - timedelta(minutes=5):
+            return _error("Muddat o'tib ketgan vaqt bo'lmasin")
+        return due
+
+    async def update_task(self, request: web.Request) -> web.Response:
+        task = await self._task_or_404(request)
+        if task is None:
+            return _error("Vazifa topilmadi", 404, "not_found")
+        service = self.service
+        tasks = service.tasks
+        body = await self._body(request)
+        now = service.now()
+        uid = request[self.uid_key]
+        if "text" in body:
+            text = " ".join(str(body["text"] or "").split())
+            if not text or len(text) > TEXT_LIMIT:
+                return _error(f"Vazifa matnini yozing ({TEXT_LIMIT} belgigacha)")
+            await tasks.store.update(task.id, text=text)
+        if "repeat" in body:
+            repeat = str(body["repeat"] or "").strip()
+            if repeat and not REPEAT_RE.fullmatch(repeat):
+                return _error("Takror noto'g'ri")
+            if repeat:
+                await tasks.store.update(task.id, repeat=repeat)
+            else:
+                await tasks.stop_repeat(task, uid)
+        if body.get("due"):
+            due = self._parse_due(body["due"], now)
+            if isinstance(due, web.Response):
+                return due
+            if due is not None:
+                await tasks.set_due(task, due, uid)
+        status = body.get("status")
+        task = await tasks.store.get(task.id) or task
+        if status == DONE and task.status == OPEN:
+            await tasks.close(self.bot, task, uid, now)
+        elif status == CANCELLED and task.status == OPEN:
+            await tasks.cancel(self.bot, task, uid, now)
+        elif status == OPEN and task.status != OPEN:
+            await tasks.reopen(task, uid, now)
+        task = await tasks.store.get(task.id) or task
+        return _json({"ok": True, "task": self._task(task, now, await self._groups())})
+
+    async def ask_task(self, request: web.Request) -> web.Response:
+        task = await self._task_or_404(request)
+        if task is None:
+            return _error("Vazifa topilmadi", 404, "not_found")
+        if task.status != OPEN:
+            return _error("Vazifa yopilgan", 409, "closed")
+        if not await self.service.tasks.ask_now(self.bot, task, self.service.now()):
+            return _error("So'rov yuborilmadi: «📋 Vazifalar» guruhi yo'q yoki bot u yerga yoza olmaydi", 409, "not_sent")
+        return _json({"ok": True})

@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from ..db import Database
 
-ROLES = ("leads", "leaders")  # v1.8 da «tasks» qo'shiladi
+ROLES = ("leads", "leaders", "tasks")
 PEOPLE_KINDS = ("operator", "excluded", "leader")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 DEFAULT_STATUSES = (  # (emoji, ma'nosi, asosiy natija)

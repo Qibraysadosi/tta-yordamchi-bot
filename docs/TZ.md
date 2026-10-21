@@ -250,7 +250,7 @@ Umumiy asos (TZ-11 da quriladi, qolganlari shundan foydalanadi): `bot/scheduler.
 | Versiya | Tarkib | Holat |
 | --- | --- | --- |
 | v1.7.0 | Guruh rejimi (jim yozib borish), lid kartochkasi, reaksiya + izoh statuslari (AI tahlil), kunlik hisobot, belgilanmagan lid eslatmasi, `/hisobot`, `/guruhlar`; Mini App: bo'lim tanlovi, Hisobotlar → Bugun / Operatorlar / Sozlamalar (kirish ham) | ✅ |
-| v1.8.0 | Vazifalar: egasi guruhdagi xabari yoki botga lichkada beradi (muddat bo'lmasa tugma bilan so'raladi, ✍️ — qabul qilindi, takroriy vazifalar); muddatda guruhda ijrochini @username bilan belgilab «Bajardingizmi?» — «Ha» → egasiga xabar, «Yo'q» → 3 soatdan keyin qayta so'raladi, javob bo'lmasa 2 soatdan keyin; 3 marta javobsiz — egasiga xabar; faqat ish vaqtida; tugmalarni faqat ijrochi bosa oladi | navbatda |
+| v1.8.0 | Vazifalar: egasi «#vazifa» / «Vazifa:» / /vazifa bilan guruhda yoki botga lichkada beradi (belgisiz xabar vazifa emas; muddat bo'lmasa tugma bilan so'raladi, ✍️ — qabul qilindi, takroriy vazifalar); muddatda «📋 Vazifalar» guruhida ijrochini @username bilan belgilab «Bajardingizmi?» — «Ha» → egasiga xabar, «Yo'q» → 3 soatdan keyin qayta, javob bo'lmasa 2 soatdan keyin; 3 marta javobsiz — egasiga xabar; faqat ish vaqtida; tugmalarni faqat ijrochi bosa oladi; Mini App «Vazifalar» tabi (rahbarlar ko'radi). Ovozli vazifa — keyin (STT kaliti kerak) | ✅ |
 | v1.9.0 | Kundalik (20:00, faqat egasiga lichkada); haftalik (dushanba 09:00) va oylik (1-kun 09:00) Excel hisobot — guruhga telefonlari yashirilgan, egasiga to'liq nusxa; Mini App «Arxiv» | navbatda |
 | keyin | Mini App'da grafikli dashboard | — |
 

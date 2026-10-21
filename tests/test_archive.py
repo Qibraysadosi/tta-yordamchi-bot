@@ -2,7 +2,7 @@
 import io
 from datetime import date, datetime, timezone
 
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 
 from bot.reports.archive import MONTH, WEEK, due_period, parse_key, period_key, period_label, previous_period
 from bot.reports.excel import format_phone, mask_phone
@@ -312,6 +312,37 @@ def test_delivery_rules(tmp_path):
     run(go())
 
 
+
+def test_warning_waits_for_telegram(tmp_path):
+    """Ogohlantirish egasiga yetmasa (aloqa yo'q) — «aytildi» deb hisoblanmaydi, keyingi urinishda yuboriladi."""
+    async def go():
+        env = await start(tmp_path)
+        try:
+            await seed_week(env)
+            await queue_analysis(env)
+            archive = env.ctx.reports.archive
+            original = env.session.make_request
+
+            async def offline(bot_, method, timeout=None):
+                raise TelegramNetworkError(method=method, message="Request timeout error")
+
+            async def group_refuses(bot_, method, timeout=None):
+                if type(method).__name__ == "SendDocument" and method.chat_id == LEADERS:
+                    raise TelegramForbiddenError(method=method, message="Forbidden: bot was kicked")
+                return await original(bot_, method, timeout)
+            env.session.make_request = offline
+            assert await archive.check_exports(env.bot, local(NEXT_MON, "09:01")) == 0
+            env.session.make_request = group_refuses
+            env.session.clear()
+            assert await archive.check_exports(env.bot, local(NEXT_MON, "09:12")) == 0
+            assert [d.chat_id for d in env.session.of("SendDocument")] == [OWNER]
+            assert [m.chat_id for m in env.session.of("SendMessage") if "rahbarlar guruhiga yuborilmadi" in m.text] == [OWNER]
+            row = await archive.store.export("week:2026-10-19")
+            assert row["sent_at"] is None and archive.store.recipients(row) == {OWNER}
+        finally:
+            await env.close()
+    run(go())
+
 # --------------------------------------------------------------------------- kundalik
 def test_journal(tmp_path):
     async def go():
@@ -338,6 +369,9 @@ def test_journal(tmp_path):
             assert (await archive.store.journal("2026-10-21"))["text"] == text
             assert await archive.check_journal(bot, local(WED, "20:30")) is False  # bir kunga bitta
 
+            # yarim tundan keyin yozilgan chorshanba kundaligi: «yaqin muddatlar» chorshanbadan hisoblanadi
+            late = await archive.journal_text(local(THU, "00:30"), day=WED)
+            assert "KUNDALIK · 21.10.2026 (chorshanba)" in late and "⏰ Yaqin muddatlar (22.10 gacha): 1" in late
             # ertasi: muddati o'tgan vazifa; 4 soatdan ko'p kechiksa — yuborilmaydi
             assert await archive.check_journal(bot, local(date(2026, 10, 23), "00:01")) is False  # juma 20:00 emas
             assert await archive.check_journal(bot, local(THU, "23:59")) is True
@@ -442,6 +476,16 @@ def test_archive_api(tmp_path):
             assert res == {"ok": True, "masked": True}
             again = await api.call("POST", "/api/report/archive/week:2026-10-19/send", {}, user=leader, status=429)
             assert "hozirgina" in again["message"]
+            # fayl yasalmasa — 500, cheklov qo'yilmaydi (keyingi urinish darrov mumkin)
+            archive = reports.archive
+            collect = archive.collect
+
+            async def crash(*args, **kwargs):
+                raise RuntimeError("sinov")
+            archive.collect = crash
+            failed = await api.call("POST", "/api/report/archive/month:2026-10/send", {}, status=500)
+            assert failed["error"] == "build_failed"
+            archive.collect = collect
             doc = env.session.of("SendDocument")[-1]
             assert doc.chat_id == LEADER and "🔒" in doc.caption
             assert "***" in column(workbook(env.session.documents[-1][1])["Lidlar"], "Telefon")[0]
@@ -477,15 +521,19 @@ def test_excel_hardening(tmp_path):
             malika, sardor = person(MALIKA, "Malika", "malika_op"), person(SARDOR, "Sardor", "sardor")
             lola = await g.post("Ism: Lola (onasi 91 765 43 21)\nTuman: Chilonzor 9, qo'shimcha 93 111 22 33\nKurs: =1+2",
                                 ts(MON, "10:00"))
+            odd = await g.post("Ism: Ali\uffff Valiyev, ukasi 97 / 111 / 44 / 55\nTelefon: +998 93\u2011765\u201143\u201121"
+                               "\nKurs: Excel", ts(MON, "12:00"))
             evil = await g.post('Ism: =HYPERLINK("http://evil.example/?x","Aziza")\nTelefon: 90 222 33 44\nKurs: Excel',
                                 ts(MON, "11:00"))
             await g.comment(lola, malika, "qildim", ts(MON, "10:05"))  # natijasi aniqlanmadi → dushanba ❔
             await g.react(lola["message_id"], malika, "👎", ts(TUE, "10:00"))  # haftada — 👎
             await g.comment(evil, sardor, "=SUM(1,2) 90 12 34 567 ga yozdim", ts(MON, "11:30"))
+            await g.comment(odd, sardor, "22.10.2026 18.00 da keladi, onasi +998 90–123–45–67", ts(MON, "12:30"))
             pending = await reports.store.pending_comments(10)
             env.api.responses.append(classify(
                 {"id": pending[0].id, "call": True, "status": "", "reason": "", "callback": ""},
-                {"id": pending[1].id, "call": True, "status": "👎", "reason": "", "callback": ""}))
+                {"id": pending[1].id, "call": True, "status": "👎", "reason": "", "callback": ""},
+                {"id": pending[2].id, "call": True, "status": "👍", "reason": "", "callback": "22.10.2026 18.00"}))
             tasks = reports.tasks
             await tasks.create(creator_id=OWNER, assignee=await tasks.resolve(MALIKA, "malika_op", "Malika"),
                                text="Hisobot\u0007 tayyorlash", due=local(THU, "18:00"), repeat=None, poll_chat=None)
@@ -507,9 +555,12 @@ def test_excel_hardening(tmp_path):
 
             hidden = workbook(masked)
             flat = " ".join(str(v) for ws in hidden for row in ws.iter_rows(values_only=True) for v in row if v)
-            for raw in ("765 43 21", "111 22 33", "222 33 44", "12 34 567"):
+            for raw in ("765 43 21", "111 22 33", "222 33 44", "12 34 567", "111 / 44 / 55", "765\u201143", "123–45–67"):
                 assert raw not in flat
             assert "Lola (onasi [raqam])" in flat and "qo'shimcha [raqam]" in flat and "[raqam] ga yozdim" in flat
+            assert "Ali Valiyev, ukasi [raqam]" in flat  # U+FFFF olib tashlandi, fayl yasaldi
+            assert "22.10.2026 18.00 da keladi, onasi [raqam]" in flat  # sana va soat joyida
+            assert column(hidden["Lidlar"], "Qayta qo'ng'iroq")[2] == "22.10.2026 18.00"
         finally:
             await env.close()
     run(go())

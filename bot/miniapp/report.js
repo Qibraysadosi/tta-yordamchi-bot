@@ -190,7 +190,8 @@
     function periodRow(it) {
       const sm = it.summary;
       const sub = it.live ? 'joriy davr · hozircha' : sm ? '📞 ' + sm.calls + pct(sm) : 'bosing — natijalar va Excel';
-      const badge = it.live ? '<span class="badge">joriy</span>' : it.sent ? '<span class="badge ok">yuborildi</span>' : '';
+      const badge = it.live ? '<span class="badge">joriy</span>' : it.sent ? '<span class="badge ok">yuborildi</span>'
+        : it.partial ? '<span class="badge warn">qisman</span>' : '';
       return row('xlsx', 'table', esc(it.label), sub, badge + chev(), 'r-period', 'data-key="' + esc(it.key) + '"');
     }
     async function renderArchive(live) {
@@ -250,7 +251,8 @@
       }
       html += '<div class="btn-row"><button class="btn" data-action="r-xl-send" data-key="' + esc(d.key) + '">' + icon('send') + 'Excel\'ni chatga yuborish</button></div>';
       html += '<p class="note">' + (d.masked ? '🔒 Telefon raqamlari yashirilgan nusxa keladi.' : '🔓 Sizga to\'liq nusxa (telefon raqamlari bilan) keladi.') +
-        (d.sent ? ' Avtomatik yuborilgan: ' + esc(d.sent_label) + '.' : '') + ' Varaqlar: Umumiy, Kunlar, Lidlar, Vazifalar.</p>';
+        (d.sent ? ' Avtomatik yuborilgan: ' + esc(d.sent_label) + '.' : d.partial ? ' ⚠️ Avtomatik nusxa hammaga yetmagan (rahbarlar guruhiga yuborilmadi).' : '') +
+        ' Varaqlar: Umumiy, Kunlar, Lidlar, Vazifalar.</p>';
       openSheet(html);
     }
     async function journalSheet(key) {

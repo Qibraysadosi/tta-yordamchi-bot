@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import re
+import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
@@ -22,10 +23,19 @@ GOOD_FILL = "E8F5E9"
 WARN_FILL = "FFF4E5"
 MUTED = "6B7280"
 NOTE_LIMIT = 300
-CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")  # Excel (openpyxl) qabul qilmaydigan belgilar
-# Odatiy shakldan tashqari raqamlar ham (90 12 34 567, 0901234567, 90/123/45/67, +7 …): 9–15 ta raqam.
-# Sana (21.10.2026) va summa (1 250 000) 9 raqamdan kam — tegilmaydi; «19:00» dagi soat qismiga yopishmaydi.
-LOOSE_NUMBER_RE = re.compile(r"(?<![\w+])\+?(?:\d{9,15}|\d{1,4}(?:[\s\-./()]{1,2}\d{1,4}){2,6})(?![\d:])")
+# Excel (XML) qabul qilmaydigan belgilar: boshqaruv belgilari, yolg'iz surrogatlar, U+FFFE / U+FFFF
+CONTROL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+# Rahbarlar nusxasi uchun «raqamlar zanjiri»: raqam guruhlari orasida 1–3 ta belgi (bo'shliq, tire, nuqta, «/», «_» …).
+# Kamida 7 raqamli zanjir yashiriladi (yopiq bo'lib qolish afzal), sana / soat / summa / «ID …» bundan mustasno.
+RUN_RE = re.compile(r"(?<!ID )(?<![\w+])\+?\d+(?:(?:[^\w\n]|_){1,3}\d+)*")
+_DAY, _MONTH = r"(?:0?[1-9]|[12]\d|3[01])", r"(?:0?[1-9]|1[0-2])"
+_DATE = rf"(?:{_DAY}[./-]{_MONTH}[./-](?:(?:19|20)\d{{2}}|\d{{2}})|(?:19|20)\d{{2}}-{_MONTH}-{_DAY})"
+_TIME = r"(?:[01]?\d|2[0-3])[:.][0-5]\d"
+_AMOUNT = r"\d{1,3}(?: \d{3})* 000"  # 1 250 000 · 125 000 000 (minglik bo'shliq bilan, «000» bilan tugaydi)
+_ITEM = rf"(?:{_DATE}(?: {{1,3}}{_TIME})?|{_DAY}[./]{_MONTH}|{_TIME}|{_AMOUNT})"
+# Zanjir faqat shu qiymatlardan iborat bo'lsa tegilmaydi (21.10.26-25.10.26 · 17.10 19:00 → 24.10 19:00);
+# bitta raqam guruhi ham ortiqcha bo'lsa (masalan, «90 123 12.30») — butun zanjir yashiriladi.
+KEEP_RE = re.compile(rf"{_ITEM}(?:(?:[^\w\n]|_){{1,3}}{_ITEM})*")
 
 
 @dataclass
@@ -117,11 +127,31 @@ def mask_phone(phone: str) -> str:
     return "***"
 
 
+def _plain_separators(text: str) -> str:
+    """Har xil tire (‑ – —), bo'shliq va ko'rinmas belgilarni oddiy «-» / « » ga almashtiradi — uzunlik o'zgarmaydi."""
+    out = []
+    for ch in text:
+        category = unicodedata.category(ch)
+        out.append("-" if category == "Pd" else " " if category in ("Zs", "Cf") else ch)
+    return "".join(out)
+
+
 def hide_numbers(text: str) -> str:
-    """Matndagi telefon raqamlari (odatiy va noodatiy yozilganlari) → «[raqam]»."""
-    def repl(match: re.Match) -> str:
-        return "[raqam]" if 9 <= len(_digits(match.group(0))) <= 15 else match.group(0)
-    return LOOSE_NUMBER_RE.sub(repl, mask_phones(text or ""))
+    """Matndagi telefon raqamlari (odatiy va noodatiy yozilganlari) → «[raqam]».
+
+    Avval odatiy shakl (mask_phones), keyin 7 va undan ko'p raqamli har qanday zanjir — sana, soat, summa va
+    «ID 123…» dan tashqari. Shubhali joyda yashiriladi: rahbarlar nusxasida raqam ko'rinmasligi muhimroq."""
+    text = mask_phones(text or "")
+    plain = _plain_separators(text)
+    parts, last = [], 0
+    for match in RUN_RE.finditer(plain):
+        chunk = match.group(0)
+        if len(_digits(chunk)) < 7 or KEEP_RE.fullmatch(chunk):
+            continue
+        parts += [text[last:match.start()], "[raqam]"]
+        last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def masked_report(report: "ExcelReport") -> "ExcelReport":

@@ -28,7 +28,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..prompt import MONTHS, WEEKDAYS
-from .excel import DayLine, ExcelReport, LeadLine, OpLine, TaskLine, build_workbook
+from .excel import DayLine, ExcelReport, LeadLine, OpLine, TaskLine, build_workbook, hide_numbers
 from .leads import message_link
 from .render import split_message
 from .stats import (
@@ -332,7 +332,7 @@ class ArchiveService:
         given = await store.created_count(start, upto)
         refused = await store.events_count("no", start, upto)
         open_tasks = await store.tasks(OPEN, 1000)
-        horizon = datetime.combine(next_work_day(now.date(), s) + timedelta(days=1), time(0), tzinfo=self.tz)
+        horizon = datetime.combine(next_work_day(day, s) + timedelta(days=1), time(0), tzinfo=self.tz)
         silent = [t for t in open_tasks if t.escalated]
         overdue = [t for t in open_tasks if not t.escalated and t.due_at and t.due_at < iso(now)]
         upcoming = [t for t in open_tasks if not t.escalated and t.due_at and iso(now) <= t.due_at < iso(horizon)]
@@ -570,7 +570,8 @@ class ArchiveService:
         lines.append(head)
         lines.append(f"📥 Yangi lidlar: {s['new_leads']} · belgilanmagan: {s['unmarked']}")
         if s["top"]:
-            lines.append("🏆 " + " · ".join(f"{html.escape(str(name))} {total}" for name, total, _ in s["top"][:3]))
+            show = hide_numbers if masked else str
+            lines.append("🏆 " + " · ".join(f"{html.escape(show(str(name)))} {total}" for name, total, _ in s["top"][:3]))
         if s["tasks_due"]:
             lines.append(f"📋 Vazifalar: {s['tasks_due']} · bajarildi {s['tasks_done']}")
         lines.append("🔒 Telefon raqamlari yashirilgan" if masked else "🔓 To'liq nusxa — telefon raqamlari bilan")
@@ -596,13 +597,14 @@ class ArchiveService:
         return export
 
     async def _warn_owners(self, bot: Bot, key: str, text: str) -> None:
-        """Egasiga ogohlantirish — har davr va holat uchun bir marta (har 10 daqiqalik urinishda emas)."""
+        """Egasiga ogohlantirish — har davr va holat uchun bir marta (har urinishda emas). Xabar hech kimga
+        yetmasa (Telegram bilan aloqa yo'q) — keyingi urinishda yana yuboriladi."""
         if key in self._warned:
             return
-        self._warned.add(key)
         for owner_id in self.reports.owners():
             try:
                 await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
+                self._warned.add(key)
             except TelegramAPIError:
                 pass
 
@@ -704,8 +706,9 @@ class ArchiveService:
                     summary = json.loads(row["summary"]) or None
                 except ValueError:
                     summary = None
-            items.append({"key": period.key, "label": period.label, "live": period.live,
-                          "sent": sent is not None, "sent_label": due_label(sent) if sent else None, "summary": summary})
+            partial = sent is None and bool(self.store.recipients(row))  # egasiga yetgan, guruhga — yo'q
+            items.append({"key": period.key, "label": period.label, "live": period.live, "sent": sent is not None,
+                          "partial": partial, "sent_label": due_label(sent) if sent else None, "summary": summary})
             first, last = previous_period(kind, first)
         return items
 
@@ -718,8 +721,8 @@ class ArchiveService:
         row = await self.store.export(period.key)
         sent = self.local(row["sent_at"]) if row and row["sent_at"] else None
         return {"key": period.key, "kind": kind, "label": period.label, "title": period.title, "live": period.live,
-                "sent": sent is not None, "sent_label": due_label(sent) if sent else None, "summary": summary,
-                "filename": period.filename}
+                "sent": sent is not None, "partial": sent is None and bool(self.store.recipients(row)),
+                "sent_label": due_label(sent) if sent else None, "summary": summary, "filename": period.filename}
 
     def excel_keyboard(self, now: datetime) -> InlineKeyboardMarkup:
         today = now.date()

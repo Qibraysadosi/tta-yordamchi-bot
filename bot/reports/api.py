@@ -74,7 +74,8 @@ class ReportAPI:
         self.ctx = ctx
         self.bot = bot
         self.uid_key, self.user_key, self.access_key = uid_key, user_key, access_key
-        self._sent_at: dict[int, float] = {}  # Excel so'ragan odam → oxirgi so'rov (monotonic)
+        self._sent_at: dict[int, float] = {}  # Excel olgan odam → oxirgi muvaffaqiyatli yuborish (monotonic)
+        self._building: set[int] = set()  # hozir fayli yasalayotganlar
 
     @property
     def service(self) -> ReportService:
@@ -565,22 +566,27 @@ class ReportAPI:
         if period is None:
             return _error("Davr topilmadi", 404, "not_found")
         uid = request[self.uid_key]
-        moment = time.monotonic()
-        if moment - self._sent_at.get(uid, -SEND_COOLDOWN) < SEND_COOLDOWN:
+        if uid in self._building:
+            return _error("Fayl tayyorlanmoqda — bir oz kuting.", 429, "busy")
+        if time.monotonic() - self._sent_at.get(uid, -SEND_COOLDOWN) < SEND_COOLDOWN:
             return _error("Fayl hozirgina yuborildi — chatni tekshiring yoki birozdan keyin qayta urining.", 429, "too_fast")
-        self._sent_at[uid] = moment
         owner = bool(request[self.access_key].get("owner"))
+        self._building.add(uid)  # bir odam bir vaqtda bitta faylni yasaydi
         try:
             await service.archive.send_to(self.bot, uid, *period, service.now(), masked=not owner)
         except TelegramForbiddenError:
-            self._sent_at.pop(uid, None)
             return _error("Bot sizga yoza olmaydi: botni oching va /start bosing, keyin qayta urinib ko'ring.", 409,
                           "blocked")
         except TelegramAPIError as exc:
-            self._sent_at.pop(uid, None)
             log.warning("Excel yuborilmadi: %s", exc)
             return _error("Fayl yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502,
                           "send_failed")
+        except Exception:  # noqa: BLE001 — xato foydalanuvchiga tushunarli, tafsiloti logda
+            log.exception("Excel tayyorlanmadi (%s)", request.match_info["key"])
+            return _error("Faylni tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.", 500, "build_failed")
+        finally:
+            self._building.discard(uid)
+        self._sent_at[uid] = time.monotonic()  # faqat muvaffaqiyatli yuborilgandan keyin
         return _json({"ok": True, "masked": not owner})
 
     async def _period(self, key: str) -> tuple[str, date, date] | None:

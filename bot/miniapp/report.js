@@ -5,6 +5,22 @@
   const DAYS = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sh', 'Ya'];
   const AVATAR = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#e11d48', '#7c3aed', '#0284c7', '#c026d3'];
   const REMIND = [[0, 'O\'chiq'], [15, '15 daqiqa'], [30, '30 daqiqa'], [60, '1 soat'], [120, '2 soat']];
+  // vazifa holati: [belgi, yozuv, rang]
+  const TSTATE = {
+    waiting: ['⏳', 'kutilmoqda', ''],
+    overdue: ['🔴', 'muddati o\'tdi', 'bad'],
+    asked: ['🔔', 'so\'raldi', 'warn'],
+    no: ['❌', '«Yo\'q» dedi', 'warn'],
+    silent: ['⚠️', 'javob yo\'q', 'bad'],
+    done: ['✅', 'bajarildi', 'ok'],
+    cancelled: ['🗑', 'bekor', ''],
+  };
+  const TFILTERS = [['open', 'Ochiq'], ['done', 'Bajarilgan'], ['cancelled', 'Bekor qilingan']];
+  const ROLE_UI = {
+    leads: ['report', 'inbox', 'lid postlari va izohlar'],
+    leaders: ['leader', 'eye', 'kunlik hisobot shu yerga'],
+    tasks: ['task', 'listCheck', '«#vazifa» va «Bajardingizmi?»'],
+  };
   const KIND = {
     operator: { title: 'Operator qo\'shish', hint: 'Lidlarga qo\'ng\'iroq qiladigan xodim. Hisobotda alohida qatorda ko\'rinadi.' },
     excluded: { title: 'Istisno qo\'shish', hint: 'Bu odamning reaksiya va izohlari hisobotda umuman sanalmaydi (masalan, rahbarlar).' },
@@ -20,6 +36,7 @@
 
     const TABS = [
       { id: 'r-today', label: 'Bugun', icon: 'chart' },
+      { id: 'r-tasks', label: 'Vazifalar', icon: 'listCheck' },
       { id: 'r-ops', label: 'Operatorlar', icon: 'users' },
       { id: 'r-set', label: 'Sozlamalar', icon: 'sliders', owner: true },
     ];
@@ -90,6 +107,10 @@
         '<span class="when">' + esc(period(d)) + '</span>' +
         '<button class="pill" ' + (d.next ? 'data-action="r-day" data-day="' + esc(d.next) + '"' : 'disabled') + ' aria-label="Keyingi kun">' + icon('chevronRight') + '</button></div>';
 
+      if (d.tasks && d.tasks.open) {
+        html += '<div class="group" style="margin-top:12px">' + row('task', 'listCheck', 'Vazifalar', d.tasks.open + ' ta ochiq' +
+          (d.tasks.overdue ? ' · ' + d.tasks.overdue + ' tasi muddati o\'tgan' : ''), chev(), 'r-goto', 'data-to="r-tasks"') + '</div>';
+      }
       html += '<div class="section"><div class="section-h">Operatorlar' + (d.has_operator_list ? '' : ' · ro\'yxat kiritilmagan') + '</div>';
       html += d.rows.length ? '<div class="group">' + d.rows.map((r) => opRow(d, r, 'none')).join('') + '</div>'
         : '<div class="group">' + emptyState('phone', 'Hali qo\'ng\'iroq yo\'q', 'Operatorlar lidlarga reaksiya yoki izoh qoldirgach, shu yerda ko\'rinadi.') + '</div>';
@@ -122,6 +143,40 @@
       if (d.conflicts) html += '<p class="note">Ziddiyatda eng so\'nggi belgi (reaksiya yoki izoh) olinadi.</p>';
       html += '<p class="note">' + (d.sent ? 'Bu davr uchun kunlik hisobot yuborilgan.' : d.live ? 'Kunlik hisobot ' + esc(d.schedule.time) + ' da (' + esc(d.schedule.days) + ') rahbarlar guruhiga keladi.'
         : 'Bu davr uchun kunlik hisobot yuborilmagan.') + '</p>';
+      $screen.innerHTML = html;
+    }
+
+    // ---------------------------------------------------------- VAZIFALAR
+    function taskRow(t) {
+      const st = TSTATE[t.state] || TSTATE.waiting;
+      const sub = [esc(t.who)];
+      if (t.due_label) sub.push('⏰\u00a0' + esc(t.due_label).replace(/ /g, '\u00a0') + (t.repeat ? '\u00a0🔁' : ''));
+      else if (t.repeat) sub.push('🔁');
+      if (t.no_count) sub.push('«Yo\'q» ×' + t.no_count);
+      return '<button class="row task" data-action="r-task" data-id="' + t.id + '">' + avatar(t.who) +
+        '<span class="body"><div class="label">' + esc(t.text) + '</div><div class="sub">' + sub.join(' · ') + '</div></span>' +
+        '<span class="tstate ' + st[2] + '">' + st[0] + ' ' + st[1] + '</span></button>';
+    }
+
+    async function renderTasks(live) {
+      const f = cache.taskFilter || 'open';
+      $screen.innerHTML = '<div class="title">Vazifalar</div>' + skeleton(5);
+      const d = await api('api/report/tasks?status=' + f);
+      if (!live()) return;
+      cache.tasks = d;
+      const isOwner = owner();
+      const c = d.counts;
+      let html = '<div class="title">Vazifalar<small>' + c.open + ' ta ochiq' + (c.overdue ? ' · ' + c.overdue + ' tasi muddati o\'tgan' : '') + '</small></div>';
+      html += '<div class="seg" role="tablist">' + TFILTERS.map((x) => '<button role="tab" aria-selected="' + (x[0] === f) + '" class="' + (x[0] === f ? 'on' : '') +
+        '" data-action="r-tfilter" data-f="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
+      html += '<div class="section"><div class="section-h">' + (f === 'open' ? 'Muddati bo\'yicha' : 'Oxirgilari') +
+        (isOwner ? '<button data-action="r-task-add">+ Vazifa</button>' : '') + '</div>';
+      html += '<div class="group">' + (d.items.length ? d.items.map(taskRow).join('') : emptyState('listCheck',
+        f === 'open' ? 'Ochiq vazifa yo\'q' : 'Hali yo\'q',
+        f === 'open' ? 'Vazifa berish: «#vazifa @username nima qilish kerak, qachongacha» — guruhda yoki botga lichkada.' : '')) + '</div></div>';
+      html += '<p class="note">' + (!d.has_group && isOwner
+        ? '⚠️ «📋 Vazifalar» guruhi belgilanmagan — «Bajardingizmi?» so\'rovlari yuborilmaydi. Sozlamalar → Guruhlar.'
+        : 'Muddatida bot guruhda ijrochini belgilab «Bajardingizmi?» deb so\'raydi: «Yo\'q» — 3 soatdan, javobsiz — 2 soatdan keyin yana; 3 marta javobsiz — rahbarga xabar.') + '</p>';
       $screen.innerHTML = html;
     }
 
@@ -171,11 +226,12 @@
       cache.people = people;
       const sc = s.schedule;
       const roleText = (g) => g.active && g.roles.length ? g.roles.map((r) => s.role_labels[r] || r).join(', ') : 'kuzatilmaydi';
+      const needsAdmin = (g) => g.active && (g.roles.indexOf('leads') >= 0 || g.roles.indexOf('tasks') >= 0) && !g.is_admin;
       const leadersGroup = s.groups.some((g) => g.active && g.roles.indexOf('leaders') >= 0);
       let html = '<div class="title">Sozlamalar<small>Hisobotlar bo\'limi · faqat siz ko\'rasiz</small></div>';
 
       html += '<div class="section"><div class="section-h">Guruhlar</div><div class="group">' + (s.groups.length ? s.groups.map((g) =>
-        row('group', 'users', esc(g.title || String(g.chat_id)), esc(roleText(g)) + (g.active && g.roles.indexOf('leads') >= 0 && !g.is_admin ? ' · ⚠️ bot admin emas' : ''),
+        row('group', 'users', esc(g.title || String(g.chat_id)), esc(roleText(g)) + (needsAdmin(g) ? ' · ⚠️ bot admin emas' : ''),
           chev(), 'r-group', 'data-chat="' + g.chat_id + '"')).join('') :
         emptyState('users', 'Hali guruh yo\'q', 'Botni lidlar va rahbarlar guruhiga qo\'shing — bot sizdan guruh turini so\'raydi.')) + '</div>' +
         '<p class="note">Lidlar guruhida botni admin qiling (huquqlar shart emas) — aks holda reaksiyalarni ko\'rmaydi.</p></div>';
@@ -239,13 +295,17 @@
     }
     function groupSheet(g) {
       const s = cache.settings;
-      const toggle = (role) => '<label class="row"><span class="tile ' + (role === 'leads' ? 'report' : 'leader') + '">' + icon(role === 'leads' ? 'inbox' : 'eye') + '</span><span class="body"><div class="label">' + esc(s.role_labels[role]) + '</div>' +
-        '<div class="sub">' + (role === 'leads' ? 'lid postlari va izohlar' : 'kunlik hisobot shu yerga') + '</div></span>' +
-        '<span class="switch"><input type="checkbox" data-rtoggle="r-role" data-chat="' + g.chat_id + '" data-role="' + role + '"' + (g.active && g.roles.indexOf(role) >= 0 ? ' checked' : '') + '><span></span></span></label>';
+      const toggle = (role) => {
+        const ui = ROLE_UI[role];
+        return '<label class="row"><span class="tile ' + ui[0] + '">' + icon(ui[1]) + '</span><span class="body"><div class="label">' + esc(s.role_labels[role] || role) + '</div>' +
+          '<div class="sub">' + ui[2] + '</div></span>' +
+          '<span class="switch"><input type="checkbox" data-rtoggle="r-role" data-chat="' + g.chat_id + '" data-role="' + role + '"' + (g.active && g.roles.indexOf(role) >= 0 ? ' checked' : '') + '><span></span></span></label>';
+      };
+      const reads = g.roles.indexOf('leads') >= 0 || g.roles.indexOf('tasks') >= 0;
       openSheet('<h3 class="sheet-title">' + esc(g.title || String(g.chat_id)) + '</h3><p class="sheet-sub">' +
-        (g.roles.indexOf('leads') >= 0 ? (g.is_admin ? 'Bot guruhda admin ✅' : '⚠️ Bot admin emas — reaksiyalar ko\'rinmaydi') : 'Guruh turini belgilang') + '</p>' +
-        '<div class="group">' + toggle('leads') + toggle('leaders') + '</div>' +
-        '<p class="note">Bot guruhga hech narsa yozmaydi — faqat o\'qiydi. Ikkalasi o\'chirilsa, guruh kuzatilmaydi.</p>');
+        (reads ? (g.is_admin ? 'Bot guruhda admin ✅' : '⚠️ Bot admin emas — reaksiya va «#vazifa» xabarlarini ko\'rmaydi') : 'Guruh turini belgilang') + '</p>' +
+        '<div class="group">' + toggle('leads') + toggle('leaders') + toggle('tasks') + '</div>' +
+        '<p class="note">Bot faqat «Vazifalar» guruhida «Bajardingizmi?» so\'rovlarini yozadi, qolganini jim o\'qiydi. Hammasi o\'chirilsa, guruh kuzatilmaydi.</p>');
     }
     function statusSheet(st) {
       const edit = !!st;
@@ -260,6 +320,73 @@
         (edit ? '<div class="btn-row"><button class="btn danger" data-action="r-status-delete" data-id="' + st.id + '">' + icon('trash') + 'Statusni o\'chirish</button></div>' +
           '<p class="note">O\'chirilsa, shu emoji bo\'yicha eski natijalar «❔ aniqlanmagan» ustuniga o\'tadi.</p>' : ''));
     }
+    async function taskSheet(id) {
+      const t = await api('api/report/tasks/' + id);
+      const isOwner = owner();
+      const open = t.status === 'open';
+      const st = TSTATE[t.state] || TSTATE.waiting;
+      cache.task = t;
+      let html = '<h3 class="sheet-title">' + esc(t.text) + '</h3><p class="sheet-sub">' + esc(t.who) +
+        (t.username && t.who !== '@' + t.username ? ' · @' + esc(t.username) : '') + (t.group ? ' · «' + esc(t.group) + '»' : '') + '</p>';
+      html += '<div class="group">' +
+        row('clock', 'clock', 'Muddat', t.due_set ? '' : 'aytilmagan — standart qo\'yildi', value(esc(t.due_label || '—')) + (isOwner && open ? chev() : ''),
+          isOwner && open ? 'r-task-due' : 'none') +
+        (t.repeat ? row('history', 'history', 'Takror', '', value(esc(t.repeat_label)), 'none') : '') +
+        row('bell', 'bell', 'Holat', t.no_count ? '«Yo\'q» — ' + t.no_count + ' marta' : '', '<span class="tstate ' + st[2] + '">' + st[0] + ' ' + st[1] + '</span>', 'none') +
+        '</div>';
+      if (t.history && t.history.length) {
+        html += '<div class="section"><div class="section-h">Tarix</div><div class="group">' +
+          t.history.map((h) => '<div class="hist"><span>' + esc(h.label) + '</span><span>' + esc(h.at) + '</span></div>').join('') + '</div></div>';
+      }
+      if (isOwner) {
+        html += '<div class="btn-row">' + (open
+          ? '<button class="btn" data-action="r-task-set" data-status="done">' + icon('check') + 'Bajarildi</button>' +
+            '<button class="btn secondary" data-action="r-task-ask">' + icon('bell') + 'Hozir so\'rash</button>'
+          : '<button class="btn secondary" data-action="r-task-set" data-status="open">' + icon('rotate') + 'Qayta ochish</button>') + '</div>';
+        if (open) {
+          html += '<div class="btn-row">' + (t.repeat ? '<button class="btn ghost" data-action="r-task-norepeat">🔁 Takrorni to\'xtatish</button>' : '') +
+            '<button class="btn danger" data-action="r-task-set" data-status="cancelled">' + icon('trash') + 'Bekor qilish</button></div>';
+        }
+      }
+      openSheet(html);
+    }
+    function taskAddSheet() {
+      const d = cache.tasks || {};
+      const people = (d.people || []).map((p) => '<option value="@' + esc(p.username) + '">' + esc(p.name || '') + '</option>').join('');
+      openSheet('<h3 class="sheet-title">Yangi vazifa</h3><p class="sheet-sub">Muddatida guruhda ijrochidan «Bajardingizmi?» deb so\'raladi</p>' +
+        '<form data-form="r-task-add">' +
+        '<div class="field"><label>Kimga</label><input name="who" list="r-people" required maxlength="64" placeholder="@username" autocomplete="off" autocapitalize="off">' +
+        '<datalist id="r-people">' + people + '</datalist></div>' +
+        '<div class="field"><label>Vazifa</label><textarea name="text" rows="3" maxlength="500" required placeholder="Masalan: oylik hisobotni topshirish"></textarea></div>' +
+        '<div class="field-row"><div class="field"><label>Muddat</label><input type="datetime-local" name="due" required value="' + esc(d.default_due || '') + '"></div>' +
+        '<div class="field"><label>Takror</label><select name="repeat"><option value="">Yo\'q</option><option value="daily">Har kuni</option>' +
+        '<option value="weekly">Har hafta</option><option value="monthly">Har oy</option></select></div></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>', (el) => { const i = el.querySelector('input[name=who]'); if (i) i.focus(); });
+    }
+    function taskDueSheet() {
+      const t = cache.task;
+      if (!t) return;
+      openSheet('<h3 class="sheet-title">Muddat</h3><p class="sheet-sub">' + esc(t.text) + '</p>' +
+        '<form data-form="r-task-due"><div class="field"><label>Yangi muddat</label><input type="datetime-local" name="due" required value="' + esc(t.due || '') + '"></div>' +
+        '<button class="btn" type="submit">Saqlash</button></form>');
+    }
+    function repeatValue(kind, due) {
+      if (!kind || !due) return '';
+      const d = new Date(due);
+      if (kind === 'weekly') return 'weekly:' + ((d.getDay() + 6) % 7);
+      if (kind === 'monthly') return 'monthly:' + Math.min(d.getDate(), 28);
+      return kind;
+    }
+    async function taskPatch(body, text) {
+      const t = cache.task;
+      if (!t) return;
+      await api('api/report/tasks/' + t.id, { method: 'PATCH', body });
+      closeSheet();
+      notify('success');
+      toast(text);
+      rerender();
+    }
+
     function timeSheet() {
       const sc = cache.settings.schedule;
       openSheet('<h3 class="sheet-title">Yuborish vaqti</h3><p class="sheet-sub">Hisobot davri — oldingi hisobot vaqtidan shu vaqtgacha</p>' +
@@ -305,6 +432,23 @@
     // ---------------------------------------------------------- hodisalar
     const actions = {
       'r-day': (el) => { location.hash = '#r-today/' + el.dataset.day; },
+      'r-goto': (el) => { location.hash = '#' + el.dataset.to; },
+      'r-tfilter': (el) => { cache.taskFilter = el.dataset.f; rerender(); },
+      'r-task': (el) => guard(() => taskSheet(el.dataset.id)),
+      'r-task-add': () => taskAddSheet(),
+      'r-task-due': () => taskDueSheet(),
+      'r-task-set': (el) => guard(() => taskPatch({ status: el.dataset.status },
+        { done: 'Vazifa yopildi', cancelled: 'Vazifa bekor qilindi', open: 'Vazifa qayta ochildi' }[el.dataset.status] || 'Saqlandi')),
+      'r-task-norepeat': () => guard(() => taskPatch({ repeat: '' }, 'Takror to\'xtatildi')),
+      'r-task-ask': () => guard(async () => {
+        const t = cache.task;
+        if (!t) return;
+        await api('api/report/tasks/' + t.id + '/ask', { method: 'POST', body: {} });
+        closeSheet();
+        notify('success');
+        toast('So\'rov guruhga yuborildi');
+        rerender();
+      }),
       'r-extra': (el) => { const r = findRow(el.dataset.key); if (r) extraSheet(r); },
       'r-promote': (el) => guard(async () => {
         const r = findRow(el.dataset.key);
@@ -339,6 +483,16 @@
       return 'operator';
     }
     const forms = {
+      'r-task-add': (fd) => guard(async () => {
+        const due = fd.get('due');
+        await api('api/report/tasks', { method: 'POST', body: { who: fd.get('who'), text: fd.get('text'), due, repeat: repeatValue(fd.get('repeat'), due) } });
+        closeSheet();
+        notify('success');
+        toast('Vazifa qo\'shildi');
+        cache.taskFilter = 'open';
+        rerender();
+      }),
+      'r-task-due': (fd) => guard(() => taskPatch({ due: fd.get('due') }, 'Muddat saqlandi')),
       'r-person': (fd) => guard(async () => {
         const kind = fd.get('kind');
         await api('api/report/people', { method: 'POST', body: { kind, who: fd.get('who'), name: fd.get('name') } });
@@ -391,6 +545,6 @@
       if (cache.dirty && state.route === 'r-set') { cache.dirty = false; rerender(); }
     }
 
-    return { tabs: TABS, render: { 'r-today': renderToday, 'r-ops': renderOperators, 'r-set': renderSettings }, actions, forms, change, onSheetClosed };
+    return { tabs: TABS, render: { 'r-today': renderToday, 'r-tasks': renderTasks, 'r-ops': renderOperators, 'r-set': renderSettings }, actions, forms, change, onSheetClosed };
   };
 })();

@@ -172,6 +172,41 @@ CREATE TABLE IF NOT EXISTS rp_reports (
     text         TEXT NOT NULL,
     insights     TEXT
 );
+CREATE TABLE IF NOT EXISTS rp_tasks (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_chat       INTEGER,                    -- vazifa berilgan chat (guruh yoki egasining lichkasi)
+    origin_msg        INTEGER,                    -- egasining xabari (✍️ reaksiya)
+    poll_chat         INTEGER,                    -- «Bajardingizmi?» chiqadigan guruh (NULL — so'rovda aniqlanadi)
+    creator_id        INTEGER NOT NULL,
+    assignee_id       INTEGER,
+    assignee_username TEXT,
+    assignee_name     TEXT    NOT NULL DEFAULT '',
+    text              TEXT    NOT NULL,
+    due_at            TEXT,                       -- UTC
+    due_set           INTEGER NOT NULL DEFAULT 1, -- 0 — muddat aytilmagan, standart qo'yilgan
+    repeat            TEXT,                       -- daily | weekly:N | monthly:D
+    status            TEXT    NOT NULL DEFAULT 'open',  -- open | done | cancelled
+    asks              INTEGER NOT NULL DEFAULT 0, -- oxirgi javobdan beri chiqqan so'rovlar
+    no_count          INTEGER NOT NULL DEFAULT 0, -- «Yo'q» javoblari
+    next_ask_at       TEXT,
+    ask_chat          INTEGER,
+    ask_msg           INTEGER,
+    escalated         INTEGER NOT NULL DEFAULT 0,
+    spawned           INTEGER NOT NULL DEFAULT 0, -- takroriy vazifaning keyingi nusxasi yaratilganmi
+    parent_id         INTEGER,
+    created_at        TEXT    NOT NULL,
+    done_at           TEXT,
+    done_by           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_rp_tasks_ask ON rp_tasks (status, next_ask_at);
+CREATE TABLE IF NOT EXISTS rp_task_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL,
+    kind       TEXT    NOT NULL,   -- created | asked | yes | no | escalated | due | cancelled | reopened | nogroup
+    user_id    INTEGER,
+    created_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rp_task_events ON rp_task_events (task_id);
 """
 
 # Eski bazalarga qo'shiladigan ustunlar (jadval: ustun -> ta'rif)

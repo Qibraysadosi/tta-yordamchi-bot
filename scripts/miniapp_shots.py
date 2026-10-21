@@ -137,6 +137,7 @@ async def seed(env: Env, store: FileStore) -> None:
 
 async def seed_reports(env: Env) -> None:
     """Hisobotlar bo'limi: lidlar va rahbarlar guruhi, operatorlar, bir kunlik lidlar, reaksiyalar, tahlil qilingan izohlar."""
+    from bot.reports.store import iso
     from test_reports import LEADERS, LEADS, WED, AdminSession, Group, local, person, ts
 
     env.session = AdminSession()
@@ -188,6 +189,32 @@ async def seed_reports(env: Env) -> None:
             callback = "ertaga 10:00" if status == "🤔" else None
             await store.save_analysis(row["id"], is_call=True, status=status, reason=reason, callback=callback)
     await store.commit()
+    # vazifalar: turli holatlar (kutilmoqda, so'raldi, «Yo'q», javobsiz, muddati o'tgan, bajarilgan)
+    office = -1004444444444
+    await g.join(office, "TTA jamoasi")
+    await store.set_group_roles(office, ["tasks"])
+    tasks = reports.tasks
+    now = local(WED, "16:40")
+    plan = [
+        ("Malika", "malika_op", 601, "Oylik hisobotni Word'da topshirish", local(WED, "18:00"), None, {}),
+        ("Sardor", "sardor_op", 602, "Yangi lidlar bazasini Excel'ga ko'chirish", local(WED, "12:00"), None, {"asks": 1}),
+        ("Nilufar", "nilufar_op", 603, "Shartnomalarni tekshirib, imzoga tayyorlash", local(WED, "10:00"), None, {"no_count": 2}),
+        ("Jasur", "jasur_op", 604, "Kurs jadvalini yangilash", local(WED, "09:30"), None, {"asks": 3, "escalated": 1}),
+        ("Malika", "malika_op", 601, "Har dushanba lidlar ro'yxatini tekshirish", local(WED - timedelta(days=2), "10:00"),
+         "weekly:0", {}),
+        ("Dilshod aka", "dilshod_tta", None, "Hamkorlik shartnomasi bo'yicha uchrashuv", local(WED + timedelta(days=2), "15:00"), None, {}),
+    ]
+    from bot.reports.tasks import Assignee
+    for name, username, uid, text, due, repeat, extra in plan:
+        task = await tasks.store.create(
+            poll_chat=office, creator_id=OWNER, assignee_id=uid, assignee_username=username, assignee_name=name,
+            text=text, due_at=iso(due), due_set=1, repeat=repeat, next_ask_at=iso(due),
+        )
+        if extra:
+            await tasks.store.update(task.id, **extra)
+    done = await tasks.create(creator_id=OWNER, assignee=Assignee(602, "sardor_op", "Sardor"), text="Zalni seminar uchun tayyorlash",
+                              due=local(WED, "11:00"), repeat=None, poll_chat=office, now=now)
+    await tasks.store.update(done.id, status="done", done_at=iso(local(WED, "10:40")), done_by=602)
 
 
 async def main() -> None:
@@ -252,10 +279,11 @@ async def main() -> None:
     print("saved to", OUT)
 
 
-REPORT_SCREENS = [("choose", None), ("r-today", "#r-today"), ("r-ops", "#r-ops"), ("r-set", "#r-set")]
+REPORT_SCREENS = [("choose", None), ("r-today", "#r-today"), ("r-tasks", "#r-tasks"), ("r-ops", "#r-ops"), ("r-set", "#r-set")]
 AI_NAMES = [("home", "Bosh sahifa"), ("sheet-model", "Model tanlash"), ("history", "Tarix"), ("conversation", "Suhbat"),
             ("files", "Fayllar"), ("stats", "Xarajat"), ("admin", "Admin panel")]
-REPORT_NAMES = [("choose", "Bo'lim tanlovi"), ("r-today", "Hisobot · Bugun"), ("r-ops", "Operatorlar"), ("r-set", "Sozlamalar")]
+REPORT_NAMES = [("choose", "Bo'lim tanlovi"), ("r-today", "Hisobot · Bugun"), ("r-tasks", "Vazifalar"), ("r-ops", "Operatorlar"),
+                ("r-set", "Sozlamalar")]
 
 
 def compose_overview(names: list[tuple[str, str]], out_name: str) -> None:

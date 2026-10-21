@@ -1,6 +1,7 @@
 """Hisobot xizmati: guruhlardagi lidlar va harakatlarni yozib borish, izoh tahlili, kunlik hisobot va eslatmalar.
 
-Bot guruhlarda hech narsa yozmaydi — faqat o'qiydi. Hisobot rahbarlar guruhiga (bo'lmasa egasiga) boradi."""
+Lidlar guruhiga bot hech narsa yozmaydi — faqat o'qiydi. Hisobot rahbarlar guruhiga (bo'lmasa egasiga) boradi;
+«📋 Vazifalar» guruhida faqat «Bajardingizmi?» so'rovlari (bot/reports/tasks.py)."""
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +42,7 @@ from .stats import (
     period_bounds,
 )
 from .store import Group, Lead, ReportStore, iso
+from .tasks import TaskService, task_body
 
 if TYPE_CHECKING:
     from ..handlers import AppContext
@@ -57,10 +59,11 @@ REPORT_RETRY = timedelta(minutes=5)  # kunlik hisobot hech qayerga bormasa — s
 REMIND_GAP = timedelta(minutes=15)  # operatorlarga eslatmalar orasidagi eng kam vaqt (yangi lidlar yig'ilib boradi)
 FLUSH_BATCHES = 5
 REMIND_SHOWN = 10
-ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar"}
+ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar", "tasks": "📋 Vazifalar"}
 ROLE_HELP = (
     "📥 <b>Lidlar</b> — arizalar va operatorlar izohi tushadigan guruh: statuslar shu yerdan olinadi\n"
-    "👔 <b>Rahbarlar</b> — kunlik hisobot shu guruhga yuboriladi"
+    "👔 <b>Rahbarlar</b> — kunlik hisobot shu guruhga yuboriladi\n"
+    "📋 <b>Vazifalar</b> — siz «#vazifa @username …» deb vazifa berasiz, bot muddatida «Bajardingizmi?» deb so'raydi"
 )
 
 
@@ -90,6 +93,7 @@ class ReportService:
         self._remind_after: datetime | None = None
         self._reasons_cache: tuple[str, tuple, list] | None = None  # (davr, xom sabablar, guruhlangan)
         self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
+        self.tasks = TaskService(self)
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -148,7 +152,8 @@ class ReportService:
             for role, label in ROLE_LABELS.items()
         ]
         return InlineKeyboardMarkup(inline_keyboard=[
-            toggles,
+            toggles[:2],
+            toggles[2:],
             [
                 InlineKeyboardButton(text="✅ Tayyor", callback_data=f"rg:{group.chat_id}:done"),
                 InlineKeyboardButton(text="🚫 Kuzatilmasin", callback_data=f"rg:{group.chat_id}:off"),
@@ -166,7 +171,7 @@ class ReportService:
             head = f"⚙️ <b>«{title}»</b> guruhi."
         return (
             f"{head}\nBu guruh nima uchun? Bir nechtasini tanlash mumkin:\n\n" + ROLE_HELP + "\n\n"
-            "Bot guruhga hech narsa yozmaydi — faqat o'qiydi."
+            "Bot guruhga faqat «Bajardingizmi?» so'rovlarini yozadi (📋 Vazifalar guruhida); qolganini jim o'qiydi."
         )
 
     async def ask_roles(self, bot: Bot, group: Group, by: User | None = None, *, force: bool = False) -> None:
@@ -209,6 +214,14 @@ class ReportService:
                 f"Kunlik hisobot shu guruhga har kuni {schedule.time} da keladi ({schedule.days_label()}). "
                 "Vaqtini Mini App → Hisobotlar → Sozlamalar'da o'zgartirasiz."
             )
+        if "tasks" in group.roles:
+            lines.append("Vazifa berish: «#vazifa @username nima qilish kerak, qachongacha» — bot ✍️ qo'yadi va muddatida "
+                         "ijrochidan «Bajardingizmi?» deb so'raydi.")
+            if "leads" not in group.roles and not self.bot_info.get("can_read_all", True):
+                is_admin = await self.check_admin(bot, group.chat_id)
+                if is_admin is False:
+                    lines.append("⚠️ Bot bu guruhda admin emas — «#vazifa» xabarlarini ko'rmaydi. Botni admin qiling "
+                                 "(huquqlar shart emas) yoki «/vazifa @username …» buyrug'idan foydalaning.")
         return "\n".join(lines)
 
     async def on_bot_membership(self, update: ChatMemberUpdated, bot: Bot) -> None:
@@ -263,6 +276,13 @@ class ReportService:
         user = message.from_user
         if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and message.sender_chat is None:
             await self.store.remember_user(user.id, user.username, user.full_name)
+            body = task_body(message.text or message.caption) if self.ctx.is_owner(user.id) else None
+            if body is not None:  # egasining vazifasi — lid ham, oddiy xabar ham emas
+                if "tasks" in group.roles:
+                    await self.tasks.from_message(bot, message, body, group_chat=chat.id)
+                else:
+                    await self.tasks.maybe_hint(bot, chat.id, group.title, user.id, self.now())
+                return
         if "leads" in group.roles and not await self._record_lead_message(message):
             await self.store.mark_seen(chat.id, message.message_id)
 
@@ -426,6 +446,15 @@ class ReportService:
         except (TelegramAPIError, asyncio.TimeoutError, OSError) as exc:  # tarmoq xatosi — eski ma'lumot qoladi
             log.warning("getMe bajarilmadi: %s", exc)
 
+    def app_button(self, param: str, text: str) -> InlineKeyboardButton | None:
+        """Mini App tugmasi: Main Mini App yoqilgan bo'lsa — kerakli bo'limga (startapp), bo'lmasa — oddiy ochish."""
+        username = self.bot_info.get("username")
+        if self.bot_info.get("has_main_web_app") and username and self.ctx.settings.webapp_url:
+            return InlineKeyboardButton(text=text, url=f"https://t.me/{username}?startapp={param}")
+        if self.ctx.settings.webapp_url:
+            return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=self.ctx.settings.webapp_url))
+        return None
+
     def details_markup(self, day: date | None = None) -> InlineKeyboardMarkup | None:
         username = self.bot_info.get("username")
         if not (self.bot_info.get("has_main_web_app") and username and self.ctx.settings.webapp_url):
@@ -577,6 +606,7 @@ class ReportService:
             ("izohlar tahlili", lambda: self.analyze_pending(max_batches=2)),
             ("eslatmalar", lambda: self.check_reminders(bot, now)),
             ("kunlik hisobot", lambda: self.check_daily(bot, now)),
+            ("vazifalar", lambda: self.tasks.tick(bot, now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:

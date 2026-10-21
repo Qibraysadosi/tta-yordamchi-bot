@@ -7,7 +7,7 @@ from test_reports import CARD_1, CARD_2, LEADERS, LEADS, MALIKA, SARDOR, WED, Gr
 from test_reports_api import LEADER, MEMBER, Api, init_data
 
 TABS = "() => Array.from(document.querySelectorAll('#tabs [data-tab]')).map((b) => b.dataset.tab)"
-TEXT = "() => document.querySelector('#screen').textContent"  # innerText CSS uppercase'ni ham qaytaradi
+TEXT = "() => document.querySelector('#screen').textContent.replace(/\\u00a0/g, ' ')"  # innerText CSS uppercase'ni ham qaytaradi
 AI_TABS = ["home", "history", "files", "stats", "admin"]
 
 
@@ -43,7 +43,7 @@ def test_owner_chooser_and_report_section(tmp_path):
 
                 await navigate(page, lambda: page.click(".choice.report"))
                 assert await page.evaluate("location.hash") == "#r-today"
-                assert await page.evaluate(TABS) == ["r-today", "r-ops", "r-set", "choose"]
+                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops", "r-set", "choose"]
                 text = await page.evaluate(TEXT)
                 assert "2 ta lidga qo'ng'iroq" in text and "jonli" in text and "Malika" in text
                 assert "Ro'yxatda yo'q" in text and "Sardor" in text
@@ -133,7 +133,7 @@ def test_leader_sees_only_reports(tmp_path):
                 await page.goto(base)
                 await settled(page)
                 assert await page.evaluate("location.hash") == "#r-today"
-                assert await page.evaluate(TABS) == ["r-today", "r-ops"]  # sozlamalar va bo'limlar yo'q
+                assert await page.evaluate(TABS) == ["r-today", "r-tasks", "r-ops"]  # sozlamalar va bo'limlar yo'q
                 text = await page.evaluate(TEXT)
                 assert "2 ta lidga qo'ng'iroq" in text and "Malika" in text
                 assert "rahbarlarga yuborish" not in text and "operator qilish" not in text
@@ -196,3 +196,64 @@ def test_stranger_is_locked(tmp_path):
         finally:
             await api.close()
     run(go())
+
+
+def test_tasks_tab(tmp_path):
+    async def go():
+        api = await Api().start(tmp_path)
+        try:
+            await prepare(api)
+            env = api.env
+            store = env.ctx.reports.store
+            g = Group(env)
+            await g.join(-1005555555555, "Ofis")
+            await store.set_group_roles(-1005555555555, ["tasks"])
+            made = await api.call("POST", "/api/report/tasks", {"who": "@malika_op", "text": "Oylik hisobotni topshirish",
+                                                              "due": "2026-10-22T18:00"})
+            async with chromium() as open_page:
+                page, base = await open_page(api, start_param="vazifalar")  # «📋 Mini App'da ochish» tugmasi
+                await page.goto(base)
+                await settled(page)
+                assert await page.evaluate("location.hash") == "#r-tasks"
+                text = await page.evaluate(TEXT)
+                assert "1 ta ochiq" in text and "Oylik hisobotni topshirish" in text and "Malika" in text
+                assert "kutilmoqda" in text and "22.10 (pa) 18:00" in text
+
+                # yangi vazifa — panel orqali
+                await page.click("[data-action=r-task-add]")
+                await page.fill(".sheet input[name=who]", "@sardor_op")
+                await page.fill(".sheet textarea[name=text]", "Zalni tayyorlash")
+                await page.select_option(".sheet select[name=repeat]", "weekly")
+                async with page.expect_response(lambda r: r.url.endswith("/api/report/tasks") and r.request.method == "POST"):
+                    await page.click(".sheet button[type=submit]")
+                await page.wait_for_function("!document.querySelector('.sheet') && !document.querySelector('.skeleton')"
+                                             " && document.querySelector('#screen').textContent.includes('Zalni tayyorlash')")
+                added = [t for t in await env.ctx.reports.tasks.store.tasks() if t.text == "Zalni tayyorlash"][0]
+                assert added.assignee_username == "sardor_op" and added.repeat == "weekly:3"  # 22.10 — payshanba
+
+                # tafsilot → bajarildi
+                await page.click(f"[data-action=r-task][data-id='{made['task']['id']}']")
+                await page.wait_for_selector(".sheet .hist")
+                assert "qayd etildi" in await page.evaluate("document.querySelector('.sheet').textContent")
+                async with page.expect_response(lambda r: f"/api/report/tasks/{made['task']['id']}" in r.url):
+                    await page.click(".sheet [data-action=r-task-set][data-status=done]")
+                await page.wait_for_function("!document.querySelector('.sheet') && !document.querySelector('.skeleton')"
+                                             " && !document.querySelector('#screen').textContent.includes('Oylik hisobot')")
+                await page.click("[data-action=r-tfilter][data-f=done]")
+                await page.wait_for_function("document.querySelector('#screen').textContent.includes('Oylik hisobotni topshirish')"
+                                             " && document.querySelector('.seg .on').dataset.f === 'done'")
+                assert "bajarildi" in await page.evaluate(TEXT)
+
+                # rahbar: ko'radi, qo'sha olmaydi
+                page, base = await open_page(api, init=init_data(LEADER, "rahbar_1"))
+                await page.goto(base + "#r-tasks")
+                await settled(page)
+                assert "Zalni tayyorlash" in await page.evaluate(TEXT)
+                assert await page.locator("[data-action=r-task-add]").count() == 0
+                await page.click("[data-action=r-task]")
+                await page.wait_for_selector(".sheet .hist")
+                assert await page.locator(".sheet [data-action=r-task-set]").count() == 0
+        finally:
+            await api.close()
+    run(go())
+

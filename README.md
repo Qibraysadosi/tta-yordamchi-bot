@@ -6,6 +6,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 
 - **Mini App (📱 /ilova):** Telegram ichidagi ilova — sozlamalar (model, fikrlash, qidiruv, rejim), suhbatlar tarixi va qidiruv, yaratilgan fayllar galereyasi, xarajat grafiklari, egasi uchun admin panel; Telegram mavzusiga mos yorug'/qorong'i ko'rinish. Chatning menyu tugmasidan yoki /ilova bilan ochiladi (sozlash: pastda «Mini App»)
 - **Call center hisobotlari (📊 /hisobot):** bot lidlar guruhida operatorlarning reaksiya va izohlarini o'qiydi (izohni AI tahlil qiladi) va har kuni 19:00 da rahbarlar guruhiga jadval yuboradi: kim nechta lidga qo'ng'iroq qildi, nechtasi keladi / ko'tarmadi / kelmaydi, kurslar va rad sabablari. Hech kim belgilamagan lid haqida operatorlarga eslatadi. Sozlash — Mini App → Hisobotlar (pastda «Call center hisobotlari»)
+- **Vazifalar (📋 /vazifa):** «#vazifa @username nima qilish kerak, qachongacha» — guruhda yoki botga lichkada. Bot ✍️ qo'yadi, muddatida «📋 Vazifalar» guruhida ijrochini belgilab «Bajardingizmi?» deb so'raydi (Ha / Yo'q), javob bo'lmasa qayta so'raydi va sizga xabar beradi. Takroriy vazifalar («har dushanba») ham bor; ro'yxat — /vazifalar va Mini App
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
@@ -69,7 +70,9 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/kod` | Botning joriy kodi (.zip) — yangi funksiya so'raganda Claude'ga yuborish uchun |
 | `/zaxira` | Bazaning zaxira nusxasini hozir olish |
 | `/hisobot` (`/report`) | Call center hisoboti — hozirgi holat; «Rahbarlarga yuborish» tugmasi |
-| `/guruhlar` (`/groups`) | Bot kuzatayotgan guruhlar va ularning turi (lidlar / rahbarlar) |
+| `/guruhlar` (`/groups`) | Bot kuzatayotgan guruhlar va ularning turi (lidlar / rahbarlar / vazifalar) |
+| `/vazifa` (`/task`) | Vazifa berish: `/vazifa @username nima qilish kerak, qachongacha` (yoki shunchaki `#vazifa …`) |
+| `/vazifalar` (`/tasks`) | Ochiq vazifalar va ularning holati |
 
 ## Mini App (Telegram ichidagi ilova)
 
@@ -114,7 +117,7 @@ AI bo'limi nimalarni qiladi: model/fikrlash/qidiruv/rejimni almashtiradi, chatga
 
 ## Call center hisobotlari
 
-Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorlarning unga qo'ygan reaksiyasini va izohini yozib boradi. Guruhlarga hech narsa yozmaydi — faqat o'qiydi.
+Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorlarning unga qo'ygan reaksiyasini va izohini yozib boradi. Lidlar guruhiga hech narsa yozmaydi — faqat o'qiydi (bot guruhga faqat «📋 Vazifalar» guruhida «Bajardingizmi?» so'rovlarini va rahbarlar guruhiga kunlik hisobotni yozadi).
 
 **Sozlash (bir marta):**
 
@@ -133,6 +136,25 @@ Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorla
 **Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish»; `/guruhlar` — guruhlar turini o'zgartirish.
 
 **Xarajat:** izoh tahlili arzon modelda (100 ta izoh ≈ $0.01 dan kam), `/xarajat` da «📊 Guruh tahlili» qatorida ko'rinadi.
+
+## Vazifalar
+
+Vazifani faqat siz (egasi) berasiz — xabar **`#vazifa`** yoki **`Vazifa:`** bilan boshlanadi (belgisiz xabar vazifa emas):
+
+- `#vazifa @malika_op ertaga 15:00 gacha oylik hisobotni topshirsin`
+- `Vazifa: @sardor_op har dushanba 10:00 da lidlar ro'yxatini tekshirsin` (takroriy)
+- guruhda odamning xabariga reply qilib: `#vazifa jumagacha shartnomani tayyorlang`
+
+**Sozlash:** botni vazifalar beriladigan guruhga qo'shing va admin qiling (aks holda `#vazifa` xabarlarini ko'rmaydi; adminsiz faqat `/vazifa …` buyrug'i ishlaydi) → lichkada **📋 Vazifalar** → **✅ Tayyor**. Bir guruh bir nechta turda bo'lishi mumkin (masalan, rahbarlar guruhi ham vazifalar guruhi).
+
+**Qanday ishlaydi:**
+- Bot xabaringizga ✍️ qo'yadi va sizga lichkada tasdiq yuboradi (ijrochi, vazifa, muddat; **🗑 Bekor qilish**). Muddat va takrorni arzon AI ajratadi; muddat aytilmasa — keyingi ish kuni 18:00 qo'yiladi va tugmalar bilan o'zgartirasiz (Bugun / Ertaga / 3 kun / 1 hafta).
+- Botga lichkada yozilgan vazifa so'rovi ijrochi a'zo bo'lgan «📋 Vazifalar» guruhiga chiqadi.
+- Muddatida (faqat ish vaqtida) bot guruhda ijrochini @ bilan belgilab so'raydi: **✅ Ha** — vazifa yopiladi, sizga xabar keladi; **❌ Yo'q** — 3 soatdan keyin yana so'raydi (har 3-«Yo'q»da sizga xabar). Javob bo'lmasa 2 soatdan keyin yana; 3 marta javobsiz qolsa — sizga xabar (**🔔 Yana so'rash / ✅ Bajarildi / 🗑 Bekor**), so'rash to'xtaydi.
+- Tugmalarni faqat ijrochi (yoki siz) bosa oladi; boshqalarga «Bu savol … uchun» deb chiqadi.
+- Takroriy vazifa: birinchi so'rov chiqqanda keyingi nusxasi yaratiladi; to'xtatish — Mini App'da **🔁 Takrorni to'xtatish** yoki keyingi nusxani bekor qilish.
+
+**Mini App → Hisobotlar → Vazifalar:** ochiq / bajarilgan / bekor qilingan ro'yxat, holati (kutilmoqda, so'raldi, «Yo'q» dedi, javob yo'q, muddati o'tgan), tarixi. Siz qo'shasiz, muddatni o'zgartirasiz, yopasiz, hozir so'ratasiz; rahbarlar faqat ko'radi. Ovozli vazifa hozircha yo'q — faqat matn.
 
 ## Ishlab chiquvchilar uchun
 

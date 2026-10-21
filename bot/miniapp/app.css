@@ -298,12 +298,13 @@ a { color: var(--link); }
 .option .mark { color: var(--link); width: 22px; height: 22px; }
 .field { margin-bottom: 12px; }
 .field label { display: block; font-size: 13px; color: var(--hint); margin: 0 0 5px 4px; }
-.field input, .field textarea {
+.field input, .field textarea, .field select {
   width: 100%; padding: 11px 13px; border-radius: 12px; border: 1px solid var(--sep); background: var(--surface);
-  outline: none; color: var(--text);
+  outline: none; color: var(--text); font: inherit; min-height: 44px;
 }
+.field select { appearance: none; -webkit-appearance: none; }
 .field textarea { min-height: 96px; resize: vertical; }
-.field input:focus, .field textarea:focus { border-color: var(--link); }
+.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--link); }
 
 /* --- holatlar --- */
 .empty { text-align: center; color: var(--hint); padding: 36px 16px; }
@@ -410,7 +411,35 @@ a { color: var(--link); }
 .day-chips input:focus-visible + span { outline: 2px solid var(--link); outline-offset: 2px; }
 .field-row { display: flex; gap: 10px; }
 .field-row .field { flex: 1; }
-.field input[type="time"] { font-variant-numeric: tabular-nums; }
+.field input[type="time"], .field input[type="datetime-local"] { font-variant-numeric: tabular-nums; }
+
+/* --- vazifalar --- */
+.tile.task { background: #2563eb; }
+.seg {
+  display: flex; gap: 4px; padding: 4px; margin: 2px 0 4px; border-radius: 12px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+.seg button {
+  flex: 1; min-width: 0; border: 0; background: none; padding: 8px 4px; border-radius: 9px; font-size: 14px;
+  color: var(--hint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.seg button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); }
+.seg button:focus-visible { outline: 2px solid var(--link); outline-offset: -2px; }
+.row.task { align-items: flex-start; }
+.row.task .avatar { margin-top: 2px; }
+.row.task .label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.row.task .sub { white-space: normal; }
+.tstate {
+  flex: none; align-self: center; font-size: 12px; line-height: 1.2; padding: 4px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--hint); white-space: nowrap;
+}
+.tstate.warn { color: color-mix(in srgb, var(--warn) 75%, var(--text)); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.tstate.bad { color: color-mix(in srgb, var(--bad) 80%, var(--text)); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.tstate.ok { color: color-mix(in srgb, var(--ok) 75%, var(--text)); background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.hist { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; font-size: 14px; }
+.hist + .hist { border-top: 1px solid var(--sep); }
+.hist span:last-child { color: var(--hint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sheet .btn-row { flex-wrap: wrap; }
 
 /* --- toast --- */
 .toast {

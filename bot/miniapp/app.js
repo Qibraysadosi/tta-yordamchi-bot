@@ -167,14 +167,16 @@
   function defaultRoute(first) {
     const a = access();
     // hisobot ostidagi «📊 Batafsil» tugmasi (t.me/<bot>?startapp=hisobot_YYYYMMDD) — faqat ochilishda
-    const m = first && /^hisobot(?:_(\d{4})(\d{2})(\d{2}))?$/.exec(startParam());
+    const sp = first ? startParam() : '';
+    const m = /^hisobot(?:_(\d{4})(\d{2})(\d{2}))?$/.exec(sp);
     if (m && a.report && report()) return ['r-today', m[1] ? m[1] + '-' + m[2] + '-' + m[3] : null];
+    if (sp === 'vazifalar' && a.report && report()) return ['r-tasks', null];
     if (bothSections()) return ['choose', null];
     if (a.report && !a.ai && report()) return ['r-today', null];
     return ['home', null];
   }
   function parseRoute() {
-    const h = (location.hash || '').slice(1).split('/');
+    const h = (location.hash || '').slice(1).split('?')[0].split('/');  // «#r-tasks?tgWebAppData=…» ham bo'lishi mumkin
     let route = h[0] || '';
     let param = h[1] || null;
     const a = access();
@@ -261,14 +263,15 @@
     if (!live()) return;
     const g = me.report;
     const aiMeta = me.spend ? '<i>Bugun ' + money(me.spend.today) + '</i><i>' + me.spend.today_requests + ' so\'rov</i>' : '';
-    const reportMeta = g ? '<i>' + g.calls + ' ta qo\'ng\'iroq</i><i>' + esc(g.positive_emoji) + ' ' + g.positive + '</i><i>' + g.new_leads + ' yangi lid</i>'
+    const reportMeta = g ? '<i>' + g.calls + ' ta qo\'ng\'iroq</i><i>' + esc(g.positive_emoji) + ' ' + g.positive + '</i><i>' + g.new_leads + ' yangi lid</i>' +
+      (g.tasks_open ? '<i>' + g.tasks_open + ' ta vazifa</i>' : '')
       : '<i>Lidlar guruhi hali ulanmagan</i>';
     $screen.innerHTML = '<div class="chooser"><div class="chooser-head">' + MARK + '<div><div class="hello">Salom, ' + esc(me.user.name) + '</div>' +
       '<div class="big">TTA Yordamchi</div></div></div>' +
       '<button class="choice ai" data-action="go" data-to="home"><span class="choice-ic">' + icon('sparkles') + '</span>' +
       '<span class="body"><b>AI yordamchi</b><span>Savol-javob, fayllar, suhbatlar tarixi va xarajat</span><span class="meta">' + aiMeta + '</span></span>' + chev() + '</button>' +
       '<button class="choice report" data-action="go" data-to="r-today"><span class="choice-ic">' + icon('chart') + '</span>' +
-      '<span class="body"><b>Hisobotlar</b><span>Call center natijalari, operatorlar va sozlamalar</span><span class="meta">' + reportMeta + '</span></span>' + chev() + '</button>' +
+      '<span class="body"><b>Hisobotlar</b><span>Call center natijalari, vazifalar, operatorlar va sozlamalar</span><span class="meta">' + reportMeta + '</span></span>' + chev() + '</button>' +
       '</div><p class="note" style="text-align:center">Bo\'limni tanlang · keyin pastdagi «Bo\'limlar» tugmasi bilan almashtirasiz</p>';
   }
 

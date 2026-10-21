@@ -84,6 +84,8 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="kod", description="💾 Botning joriy kodi (.zip)"),
     BotCommand(command="hisobot", description="📊 Call center hisoboti (hozirgi holat)"),
     BotCommand(command="guruhlar", description="👥 Kuzatiladigan guruhlar"),
+    BotCommand(command="vazifa", description="📋 Vazifa berish (#vazifa @username …)"),
+    BotCommand(command="vazifalar", description="🗂 Ochiq vazifalar"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -156,7 +158,9 @@ ADMIN_HELP = (
     "💾 /zaxira — bazaning zaxira nusxasini hozir olish (har kuni avtomatik ham keladi)\n"
     "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz\n"
     "📊 /hisobot — call center hisoboti: hozirgi holat va rahbarlarga yuborish\n"
-    "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar) va ularning turi"
+    "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar, vazifalar) va ularning turi\n"
+    "📋 /vazifa — vazifa berish: «#vazifa @username nima, qachongacha» (guruhda yoki shu yerda)\n"
+    "🗂 /vazifalar — ochiq vazifalar va ularning holati"
 )
 
 MODE_TEXT = (
@@ -310,7 +314,9 @@ class AccessMiddleware(BaseMiddleware):
     ) -> Any:
         ctx: AppContext = data["ctx"]
         if isinstance(event, Message) and event.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
-            return await handler(event, data)  # faqat hisobot yozuvchisi ishlaydi (bot/reports), u hech narsa yozmaydi
+            return await handler(event, data)  # faqat hisobot yozuvchisi ishlaydi (bot/reports)
+        if isinstance(event, CallbackQuery) and (event.data or "").startswith("tq:"):
+            return await handler(event, data)  # «Bajardingizmi?» — ijrochini handler o'zi tekshiradi
         user = data.get("event_from_user")
         if user is None:
             return None

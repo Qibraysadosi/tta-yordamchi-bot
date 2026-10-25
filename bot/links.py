@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+from urllib.parse import urljoin, urlsplit
 
 import httpx2
 
@@ -27,6 +30,8 @@ BLOCK_TAGS = {
 }
 HEADING_TAGS = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### "}
 SKIP_HOSTS = ("t.me", "telegram.me")
+MAX_REDIRECTS = 5
+URL_SHOWN = 80  # xato xabaridagi havola uzunligi (uzun havolalar xabarni Telegram chegarasidan oshirmasin)
 
 
 class LinkError(Exception):
@@ -154,29 +159,69 @@ def html_to_text(html: str) -> tuple[str, str]:
     return unescape(" ".join(parser.title.split())), parser.text()
 
 
-async def fetch(url: str, max_bytes: int, client: httpx2.AsyncClient | None = None) -> Fetched:
+def shown_url(url: str) -> str:
+    return url if len(url) <= URL_SHOWN else url[: URL_SHOWN - 1] + "…"
+
+
+async def check_public(url: str) -> None:
+    """Faqat ochiq internet: localhost, ichki tarmoq (10.x, 192.168.x, 172.16–31.x), server o'zi va maxsus
+    manzillar o'qilmaydi — bot orqali serverdagi ichki xizmatlarga kirib bo'lmasin."""
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError as exc:
+        raise LinkError("havola noto'g'ri") from exc
+    if parts.scheme not in ("http", "https") or not host:
+        raise LinkError("havola noto'g'ri")
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, port or (443 if parts.scheme == "https" else 80), type=socket.SOCK_STREAM
+        )
+    except (socket.gaierror, UnicodeError) as exc:
+        raise LinkError("sayt topilmadi (manzil noto'g'ri yoki internet yo'q)") from exc
+    for info in infos:
+        address = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+        if not address.is_global:
+            raise LinkError("ichki tarmoq manzili — bunday havola o'qilmaydi")
+
+
+async def _download(client: httpx2.AsyncClient, url: str, max_bytes: int, *, guard: bool) -> tuple[bytes, str, str | None]:
+    """(baytlar, content-type, charset). guard — har qadamda (yo'naltirishlar ham) manzil tekshiriladi."""
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        if guard:
+            await check_public(current)
+        async with client.stream("GET", current) as response:
+            if guard and response.is_redirect:
+                current = urljoin(current, response.headers.get("location", ""))
+                continue
+            if response.status_code >= 400:
+                raise LinkError(f"sahifa {response.status_code} xato qaytardi")
+            content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise LinkError(f"fayl {max(1, max_bytes // (1024 * 1024))} MB dan katta")
+                chunks.append(chunk)
+            return b"".join(chunks), content_type, response.charset_encoding
+    raise LinkError("sahifa juda ko'p marta boshqa manzilga yo'naltirdi")
+
+
+async def fetch(url: str, max_bytes: int, client: httpx2.AsyncClient | None = None, *,
+                transport: httpx2.AsyncBaseTransport | None = None) -> Fetched:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; TTAYordamchiBot/1.0; +https://t.me/TTA_yordamchi_bot)",
         "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5",
         "Accept-Language": "uz,ru;q=0.8,en;q=0.6",
     }
     own = client is None
-    client = client or httpx2.AsyncClient(follow_redirects=True, timeout=TIMEOUT, headers=headers)
+    # O'z mijozimiz: yo'naltirishlarni o'zimiz kuzatamiz — har bir manzil ichki tarmoqqa olib bormasligi tekshiriladi
+    client = client or httpx2.AsyncClient(follow_redirects=False, timeout=TIMEOUT, headers=headers, transport=transport)
     try:
         try:
-            async with client.stream("GET", url) as response:
-                if response.status_code >= 400:
-                    raise LinkError(f"sahifa {response.status_code} xato qaytardi")
-                content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size > max_bytes:
-                        raise LinkError(f"fayl {max(1, max_bytes // (1024 * 1024))} MB dan katta")
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-                header_charset = response.charset_encoding
+            data, content_type, header_charset = await _download(client, url, max_bytes, guard=own)
         except httpx2.TimeoutException as exc:
             raise LinkError("sahifa juda sekin ochildi (vaqt tugadi)") from exc
         except httpx2.HTTPError as exc:
@@ -214,7 +259,7 @@ async def read_links(text: str, max_bytes: int) -> tuple[list[dict], list[str]]:
         if isinstance(result, Fetched):
             blocks.append(result.block)
         elif isinstance(result, LinkError):
-            errors.append(f"⚠️ {url} — {result}")
+            errors.append(f"⚠️ {shown_url(url)} — {result}")
         else:
-            errors.append(f"⚠️ {url} — o'qib bo'lmadi")
+            errors.append(f"⚠️ {shown_url(url)} — o'qib bo'lmadi")
     return blocks, errors

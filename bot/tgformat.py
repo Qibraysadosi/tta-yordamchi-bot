@@ -391,9 +391,21 @@ def format_answer(
     return out
 
 
+def split_plain(text: str, limit: int = 4000) -> list[str]:
+    """Oddiy matnni Telegram xabarlariga bo'ladi (UTF-16 hisobida: emoji — 2 birlik), qator yoki so'z chegarasida."""
+    return _hard_split(text, limit) or [""]
+
+
 def preview(text: str, limit: int = PREVIEW_LIMIT) -> str:
-    """Javob yozilayotganda ko'rsatiladigan oddiy matn (oxirgi qismi)."""
+    """Javob yozilayotganda ko'rsatiladigan oddiy matn (oxirgi qismi, UTF-16 hisobida limit'gacha)."""
     text = text.strip()
-    if len(text) <= limit:
+    if _u16(text) <= limit:
         return text
-    return "…" + text[-limit:]
+    units, start = 0, len(text)  # oxirgi limit birlik (+ boshida «…»)
+    while start > 0:
+        step = 2 if ord(text[start - 1]) > 0xFFFF else 1
+        if units + step > limit:
+            break
+        units += step
+        start -= 1
+    return "…" + text[start:]

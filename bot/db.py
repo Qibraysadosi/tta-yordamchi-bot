@@ -479,10 +479,12 @@ class Database:
         await self._conn.commit()
 
     async def new_conversation(self, user_id: int) -> None:
-        # Yangi raqam — shu foydalanuvchining eng katta suhbat raqamidan keyingisi (tarixdan qaytilgan bo'lsa ham)
+        # Yangi raqam — shu foydalanuvchining eng katta suhbat raqamidan keyingisi (tarixdan qaytilgan bo'lsa ham).
+        # Joriy raqam ham hisobga olinadi: birinchi javob hali yozilayotganda /new bosilsa, o'sha suhbat hali bazada
+        # yo'q — yangi suhbat baribir yangi raqam olsin (eski savol-javob kontekstga kirmasin)
         await self._conn.execute(
-            "UPDATE settings SET conv_id = (SELECT COALESCE(MAX(conv_id), 0) FROM messages WHERE user_id = ?) + 1,"
-            " history_start_id = 0, model_override = NULL WHERE user_id = ?",
+            "UPDATE settings SET conv_id = MAX((SELECT COALESCE(MAX(conv_id), 0) FROM messages WHERE user_id = ?),"
+            " conv_id) + 1, history_start_id = 0, model_override = NULL WHERE user_id = ?",
             (user_id, user_id),
         )
         await self._conn.commit()

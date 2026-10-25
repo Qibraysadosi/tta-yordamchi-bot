@@ -13,9 +13,10 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.enums import ChatType, ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import AiogramError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     BotCommand,
@@ -42,7 +43,7 @@ from .prompt import MONTHS, PromptLoader
 from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
 from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
 from .reports.assistant import REPORT_GUIDE, leader_system
-from .tgformat import format_answer
+from .tgformat import format_answer, split_plain
 from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
 from .updater import (
@@ -59,6 +60,8 @@ from .updater import (
 log = logging.getLogger(__name__)
 
 MAX_DOWNLOAD = 20 * 1024 * 1024  # Telegram Bot API faqat 20 MB gacha faylni beradi
+# Haqiqiy buyruq ko'rinishi: «/so'z» yoki «/so'z@bot» — «/etc/nginx…», «// izoh» kabi matn Claude'ga boradi
+COMMAND_LIKE = r"^/[A-Za-z0-9_]{1,32}(?:@\w+)?(?:\s|$)"
 PENDING_TTL = 3600  # izohsiz yuborilgan fayl 1 soat savolni kutadi
 
 COMMANDS = [
@@ -344,10 +347,10 @@ class AccessMiddleware(BaseMiddleware):
             if role == "leader" and text and not text.startswith("/"):
                 await leader_answer(event, data["bot"], ctx)  # rahbar savoli — AI hisobotdan javob beradi
                 return None
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await ctx.reports.staff_message(event, role)
             return None
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             if isinstance(event, CallbackQuery):
                 await event.answer("⛔ Ruxsat yo'q")
             elif isinstance(event, Message) and event.chat.type == ChatType.PRIVATE:
@@ -386,7 +389,7 @@ async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User)
         return
     wait = ctx.limiter.locked_for(user.id)
     if wait:
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await message.delete()
         await message.answer(f"⏳ Juda ko'p xato urinish. {math.ceil(wait / 60)} daqiqadan keyin qayta urinib ko'ring.")
         return
@@ -395,7 +398,7 @@ async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User)
         # Birinchi xabar odatda salomlashish — xato urinish deb hisoblamaymiz, avval nima kerakligini aytamiz
         await branding.send_banner(bot, ctx.db, message.chat.id, "locked", LOCKED_TEXT)
         return
-    with contextlib.suppress(TelegramAPIError):
+    with contextlib.suppress(AiogramError):
         await message.delete()  # parol (yoki uning taxmini) chatda qolmasin
     if not correct:
         left = ctx.limiter.fail(user.id)
@@ -410,7 +413,7 @@ async def password_gate(message: Message, bot: Bot, ctx: AppContext, user: User)
     await send_welcome(bot, ctx, message.chat.id, user)
     who = html.escape(user.full_name or "Nomsiz") + (f" (@{html.escape(user.username)})" if user.username else "")
     for owner_id in ctx.settings.owner_ids:
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await bot.send_message(
                 chat_id=owner_id,
                 text=f"👤 Yangi foydalanuvchi parol bilan kirdi: <b>{who}</b>, ID {user.id}\nRo'yxat: /foydalanuvchilar",
@@ -794,7 +797,7 @@ async def cmd_password(message: Message, command: CommandObject, ctx: AppContext
         await ctx.db.delete_config(PASSWORD_KEY)
         await message.answer("🔓 Parol o'chirildi: yangi odamlar kira olmaydi. Avval kirganlar qoladi — /foydalanuvchilar")
         return
-    with contextlib.suppress(TelegramAPIError):
+    with contextlib.suppress(AiogramError):
         await message.delete()  # parol chatda ochiq qolmasin
     if len(value) < MIN_PASSWORD_LENGTH:
         await message.answer(f"⚠️ Parol kamida {MIN_PASSWORD_LENGTH} belgidan iborat bo'lsin.")
@@ -1091,7 +1094,7 @@ async def handle_update_upload(message: Message, bot: Bot, ctx: AppContext) -> N
     except UpdateError as exc:
         await status.edit_text(f"❌ Yangilanish rad etildi: {exc}\n\nJoriy versiya o'zgarmadi.")
         return
-    except TelegramAPIError as exc:
+    except AiogramError as exc:
         log.warning("Yangilanish arxivini yuklab bo'lmadi: %s", exc)
         await status.edit_text("❌ Arxivni Telegram'dan yuklab bo'lmadi. Qayta urinib ko'ring: /yangilash")
         return
@@ -1415,8 +1418,12 @@ def _source_text(message: Message, args: str | None) -> str | None:
 
 
 async def _send_long(message: Message, text: str) -> None:
-    for start in range(0, len(text), 4000):
-        await message.answer(text[start : start + 4000], parse_mode=None)
+    for part in split_plain(text):  # emoji 2 birlik: 4000 belgi 4096 dan oshib ketmasin
+        try:
+            await message.answer(part, parse_mode=None)
+        except AiogramError as exc:
+            log.warning("Uzun matn bo'lagi yuborilmadi: %s", exc)
+            return
 
 
 async def cmd_cyrillic(message: Message, command: CommandObject, ctx: AppContext) -> None:
@@ -1476,6 +1483,8 @@ async def quick_task(bot: Bot, ctx: AppContext, uid: int, chat_id: int, reply_to
     )
     messages = [{"role": "user", "content": [{"type": "text", "text": f"{instruction}\n\n<matn>\n{source}\n</matn>"}]}]
     async with ctx.lock_for(uid):
+        if not await still_allowed(ctx, uid):
+            return
         live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
         notes: list[str] = []
         try:
@@ -1613,6 +1622,12 @@ async def read_attachment(bot: Bot, message: Message, max_edge: int) -> tuple[li
     return [await asyncio.to_thread(media.build_block, kind, data, name, max_edge)], [RawFile(name, kind, data)]
 
 
+def _attachment_name(message: Message) -> str:
+    if message.document is not None:
+        return message.document.file_name or "fayl"
+    return "rasm"
+
+
 async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
     if _expecting_update(ctx, message):
         await handle_update_upload(message, bot, ctx)
@@ -1639,9 +1654,12 @@ async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
                     raws.extend(item_raws)
                 except media.MediaError as exc:
                     errors.append(f"⚠️ {exc}")
-                except TelegramAPIError as exc:
+                except (AiogramError, aiohttp.ClientError, TimeoutError) as exc:
                     log.warning("Faylni yuklab bo'lmadi: %s", exc)
-                    errors.append("⚠️ Faylni Telegram'dan yuklab bo'lmadi.")
+                    errors.append(f"⚠️ «{_attachment_name(item)}» ni Telegram'dan yuklab bo'lmadi — qayta yuboring.")
+                except Exception:  # noqa: BLE001 — buzuq fayl (masalan, Excel ichidagi XML) javobsiz qolmasin
+                    log.exception("Faylni o'qishda xato")
+                    errors.append(f"⚠️ «{_attachment_name(item)}» ni o'qib bo'lmadi — fayl buzilgan bo'lishi mumkin.")
         finally:
             ctx.busy.pop(uid, None)
         if errors:
@@ -1690,11 +1708,12 @@ async def on_text(message: Message, bot: Bot, ctx: AppContext) -> None:
     async with await _user_lock(ctx, bot, uid, message.chat.id):
         link_blocks: list[dict] = []
         if ctx.settings.link_reading and links.find_links(text):
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await bot.send_chat_action(message.chat.id, "typing")
             link_blocks, errors = await links.read_links(text, ctx.settings.link_max_bytes)
             if errors:
-                await message.answer("\n".join(errors) + "\n\nSavolga havolasiz javob beraman.")
+                with contextlib.suppress(AiogramError):
+                    await message.answer("\n".join(errors) + "\n\nSavolga havolasiz javob beraman.")
         pending = ctx.take_pending(uid)
         await _chat(
             uid, message.chat.id, collected[-1].message_id, bot, ctx,
@@ -1832,9 +1851,20 @@ async def _user_lock(
             text = "⏳ Oldingi fayl hali yuklanmoqda — bu xabar undan keyin ko'riladi."
         else:
             text = BUSY_QUEUED_TEXT
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await bot.send_message(chat_id=chat_id, text=text)
     return lock
+
+
+async def still_allowed(ctx: AppContext, uid: int) -> bool:
+    """Egasi yoki faol a'zo: navbatda turgan xabar uchun kirish qayta tekshiriladi (a'zo chiqarilgan bo'lishi mumkin)."""
+    if ctx.is_owner(uid):
+        return True
+    member = await ctx.db.member(uid)
+    if member is None or not member.active:
+        log.info("Kirishi yopilgan foydalanuvchining navbatdagi xabari o'tkazib yuborildi (%s)", uid)
+        return False
+    return True
 
 
 async def run_chat_for(
@@ -1891,7 +1921,7 @@ async def check_budget(ctx: AppContext, bot: Bot) -> None:
         elif ctx.settings.budget_economy_percent:
             text += f"{ctx.settings.budget_economy_percent}% dan keyin hamma tejamkor modelga o'tadi ({label(ctx.settings.economy_model)})."
         for owner_id in ctx.settings.owner_ids:
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
 
 
@@ -1926,7 +1956,7 @@ class _Silent:
 
 async def _keep_typing(bot: Bot, chat_id: int) -> None:
     while True:
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await bot.send_chat_action(chat_id=chat_id, action="typing")
         await asyncio.sleep(4.5)
 
@@ -1940,7 +1970,7 @@ async def _send_chunks(bot: Bot, chat_id: int, chunks: list[tuple[str | None, st
                 if html_text is None:
                     raise
                 await bot.send_message(chat_id, plain, parse_mode=None)  # HTML rad etilsa — oddiy matn
-        except TelegramAPIError as exc:
+        except AiogramError as exc:
             log.warning("Javob yuborilmadi (%s): %s", chat_id, exc)
             return
 
@@ -1956,7 +1986,7 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
     limit = ctx.settings.leader_daily_limit
     memory = reports.leader_memory
     if not memory.allowed(uid, ctx.now().date(), limit):
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await message.answer(f"⏳ Bugungi savollar chegarasi ({limit} ta) tugadi — ertaga yana so'rang.")
         return
     async with await _user_lock(ctx, bot, uid, chat_id):
@@ -1978,12 +2008,12 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
         except ClaudeError as exc:
             if exc.cost:
                 await ctx.db.log_usage(uid, model, exc.numbers, exc.cost)
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await message.answer(exc.user_message)
             return
         except Exception:
             log.exception("Rahbar savoliga javobda xato")
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await message.answer("⚠️ Javob tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.")
             return
         finally:
@@ -1991,7 +2021,7 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
         await ctx.db.log_usage(uid, model, result.numbers, result.cost)
         memory.count(uid, ctx.now().date())
         if result.refused:
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await message.answer("🚫 Bu savolga javob berilmadi. Hisobot yoki vazifalar haqida boshqacha so'rab ko'ring.")
             return
         answer = result.text.strip() or "Javob bo'sh qaytdi — savolni boshqacha yozib ko'ring."
@@ -2006,10 +2036,12 @@ async def _chat(
 ) -> int | None:
     """Javob yozadi va saqlaydi; yangi javob id'si yoki None (xato, rad, bo'sh ⏹).
     restore — vaqtinchalik xatoda kutish navbatiga qaytadigan fayllar; replace — 🔄 almashtiriladigan javob."""
+    if not await still_allowed(ctx, uid):  # navbatda turganida kirishi yopilgan bo'lsa — javob yozilmaydi
+        return None
     s = await ctx.user_settings(uid)
     replaced = await ctx.db.last_turn(uid, s.conv_id, replace) if replace is not None else None
     if replace is not None and replaced is None:
-        with contextlib.suppress(TelegramAPIError):
+        with contextlib.suppress(AiogramError):
             await bot.send_message(chat_id=chat_id, text="🔄 Bu javob endi suhbatning oxirgisi emas — qayta yozilmadi.")
         return None
     model = s.active_model
@@ -2018,7 +2050,7 @@ async def _chat(
     notes: list[str] = []
     shown_model: str | None = None
     share = await economy_mode(ctx)
-    if share is not None and not s.model_override:
+    if share is not None:  # zaxira model (rad etilgandan keyin) ham — tejamkor rejim hammaga
         if model != ctx.settings.economy_model:
             model = ctx.settings.economy_model
             shown_model = f"💡 Tejamkor → {label(model)}"
@@ -2052,6 +2084,8 @@ async def _chat(
     system = ctx.prompt.build(extra=extra)
 
     live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
+    delivered = False
+    answer_id: int | None = None
 
     async def log_tool_usage(tool_model: str, numbers: dict, cost: float) -> None:
         await ctx.db.log_usage(uid, tool_model, numbers, cost)
@@ -2087,6 +2121,7 @@ async def _chat(
                 label(model),
             )
             tool_ctx.model = model
+            shown_model = None  # javob ostida haqiqatda javob bergan model ko'rinsin
             result = await _generate(
                 ctx, uid, live, model=model, system=system, messages=messages,
                 effort=effort, web_search=s.web_search, notes=notes, tool_ctx=tool_ctx,
@@ -2104,12 +2139,22 @@ async def _chat(
         text = result.text
         if not text.strip() and tool_ctx.sent:
             text = "📎 Fayl yuborildi: " + ", ".join(tool_ctx.sent)
-        answer_id = await save_turn(text or "(bo'sh javob)")
+        # Javob tayyor va to'langan: saqlash yoki pastki qator xato bersa ham foydalanuvchi uni ko'radi
+        answer_id: int | None = None
+        try:
+            answer_id = await save_turn(text or "(bo'sh javob)")
+        except Exception:  # noqa: BLE001
+            log.exception("Javob tarixga saqlanmadi")
+            notes.append("⚠️ Javob suhbat tarixiga saqlanmadi — keyingi savolda bu javob hisobga olinmaydi.")
         notes.extend(_stop_notes(result, ctx.settings.long_context_tokens))
-        footer = await _footer(ctx, uid, s, model, effort, result, shown_model, tool_ctx)
-        await live.finish(format_answer(text, result.sources, notes, footer), answer_keyboard(answer_id))
-        await check_budget(ctx, bot)
-        return answer_id
+        try:
+            footer = await _footer(ctx, uid, s, model, effort, result, shown_model, tool_ctx)
+        except Exception:  # noqa: BLE001
+            log.exception("Javob ostidagi qator tayyorlanmadi")
+            footer = label(model)
+        markup = answer_keyboard(answer_id) if answer_id is not None else None
+        await live.finish(format_answer(text, result.sources, notes, footer), markup)
+        delivered = True
     except Cancelled:
         partial = live.text.strip()
         if partial:
@@ -2134,6 +2179,12 @@ async def _chat(
         )
     finally:
         await live.stop_ticker()
+    if delivered:
+        try:  # kredit ogohlantirishi — javob ko'rsatilgandan keyin, xatosi javobni buzmaydi
+            await check_budget(ctx, bot)
+        except Exception:  # noqa: BLE001
+            log.exception("Kredit tekshiruvida xato")
+        return answer_id
     return None
 
 
@@ -2167,7 +2218,7 @@ def build_router() -> Router:
     router.message.register(cmd_password, Command("parol", "password"))
     router.message.register(cmd_members, Command("foydalanuvchilar", "users"))
     router.message.register(cmd_source, Command("kod", "source"))
-    router.message.register(on_unknown_command, F.text.startswith("/"))
+    router.message.register(on_unknown_command, F.text.regexp(COMMAND_LIKE))
     router.message.register(on_attachment, F.photo | F.document)
     router.message.register(on_unsupported, F.voice | F.audio | F.video | F.video_note | F.sticker)
     router.message.register(on_text, F.text)

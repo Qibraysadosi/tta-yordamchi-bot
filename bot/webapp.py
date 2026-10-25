@@ -688,6 +688,8 @@ class WebApp:
                        "economy_percent": ctx.settings.budget_economy_percent, "reset_day": ctx.settings.budget_reset_day,
                        "cycle_start": cycle_start.strftime("%Y-%m-%d")},
             "backup_time": ctx.settings.backup_time,
+            "backup_label": (scheduler.schedule_label(ctx.settings.backup_time, ctx.settings.backup_day)
+                             if ctx.settings.backup_time else None),
             "owner_ids": sorted(ctx.settings.owner_ids),
             "default_model": label(ctx.settings.default_model),
             "github_repo": ctx.github.repo if ctx.github is not None else None,

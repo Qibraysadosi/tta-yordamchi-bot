@@ -26,6 +26,24 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value.strip()
 
 
+BACKUP_DAYS = ("dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba")
+BACKUP_DAYS_EN = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+DAILY_WORDS = ("har kuni", "harkuni", "kunlik", "daily", "every day")
+
+
+def _backup_day() -> int | None:
+    """BACKUP_DAY: haftalik zaxira kuni (0 — dushanba … 6 — yakshanba) yoki None — har kuni."""
+    raw = " ".join((_env("BACKUP_DAY", "dushanba") or "").lower().replace("ʻ", "'").replace("’", "'").split())
+    if raw in DAILY_WORDS:
+        return None
+    if raw.isdigit() and 1 <= int(raw) <= 7:
+        return int(raw) - 1
+    for names in (BACKUP_DAYS, BACKUP_DAYS_EN):
+        if raw in names:
+            return names.index(raw)
+    raise ConfigError("BACKUP_DAY hafta kuni bo'lsin (dushanba … yakshanba yoki 1–7) yoki «har kuni»")
+
+
 def _int(name: str, default: int, low: int, high: int) -> int:
     raw = _env(name)
     if raw is None:
@@ -96,6 +114,7 @@ class Settings:
     report_model: str = "claude-haiku-5-5"  # hisobot: lid izohlarini tahlil qiluvchi arzon model
     leader_daily_limit: int = 30  # rahbarning AI'ga kunlik savollari (0 — cheklanmagan)
     update_probation: int = 30  # yangi versiya shuncha soniya ishlab tursa — yangilanish muvaffaqiyatli
+    backup_day: int | None = 0  # avtomatik zaxira kuni: 0 — dushanba … 6 — yakshanba; None — har kuni
 
 
 OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
@@ -239,4 +258,5 @@ def load_settings() -> Settings:
         report_model=report_model,
         leader_daily_limit=_int("LEADER_DAILY_LIMIT", 30, 0, 10_000),
         update_probation=_int("UPDATE_PROBATION", 30, 0, 600),
+        backup_day=_backup_day(),
     )

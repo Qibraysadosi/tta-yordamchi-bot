@@ -545,7 +545,7 @@
       (a.members.length ? '<div class="group">' + active.map(member).join('') + removed.map(member).join('') + '</div><p class="note">Tumbler o\'chirilsa, odam botga kira olmaydi; qayta yoqish mumkin.</p>' :
         '<div class="group">' + emptyState('users', 'Hali hech kim kirmagan', 'Parolni o\'rnatib, kerakli odamga ayting.') + '</div>') + '</div>' +
       '<div class="section"><div class="section-h">Zaxira va versiyalar</div><div class="group">' +
-      row('backup', 'database', 'Zaxira nusxa', a.backup_time ? 'baza har kuni ' + esc(a.backup_time) + ' da chatga keladi' : 'avtomatik zaxira o\'chiq', '<span class="value">hozir olish</span>' + chev(), 'backup') +
+      row('backup', 'database', 'Zaxira nusxa', a.backup_time ? 'baza ' + esc(a.backup_label || ('har kuni ' + a.backup_time + ' da')) + ' chatga keladi' : 'avtomatik zaxira o\'chiq', '<span class="value">hozir olish</span>' + chev(), 'backup') +
       (a.backups.length ? a.backups.map((v, i) => row('history', 'rotate', 'v' + esc(v.version), v.created_at ? when(v.created_at, true) + ' da saqlangan' : '', i === 0 ? '<span class="value">qaytish</span>' + chev() : '', i === 0 ? 'restore' : 'none')).join('') :
         row('history', 'rotate', 'Oldingi versiya yo\'q', 'zaxira birinchi /yangilash da paydo bo\'ladi', '', 'none')) +
       '</div><p class="note">Qaytish tasdig\'i chatga keladi — bot 10–30 soniyaga qayta ishga tushadi.</p></div>' +

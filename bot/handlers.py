@@ -162,7 +162,7 @@ ADMIN_HELP = (
     "↩️ /qaytarish — oldingi versiyaga qaytish\n"
     "🔐 /parol — kirish parolini o'rnatish yoki o'zgartirish\n"
     "👥 /foydalanuvchilar — parol bilan kirganlar, chiqarib yuborish\n"
-    "💾 /zaxira — bazaning zaxira nusxasini hozir olish (har kuni avtomatik ham keladi)\n"
+    "💾 /zaxira — bazaning zaxira nusxasini hozir olish ({backup})\n"
     "💾 /kod — botning joriy kodi (.zip): yangi funksiya so'raganda Claude'ga yuborasiz\n"
     "📊 /hisobot — call center hisoboti: hozirgi holat va rahbarlarga yuborish\n"
     "👥 /guruhlar — kuzatiladigan guruhlar (lidlar, rahbarlar, vazifalar) va ularning turi\n"
@@ -513,7 +513,10 @@ async def admin_panel_text(ctx: AppContext) -> str:
     password = "o'rnatilgan ✅" if has_password else "o'rnatilmagan ⚠️ (/parol)"
     status = f"🏷 Versiya: <b>v{version}</b>\n🔐 Parol: {password}\n👥 Foydalanuvchilar: {active} ta\n\n"
     title, _, commands = ADMIN_HELP.partition("\n\n")
-    return f"{title}\n\n{status}{commands}"
+    at = ctx.settings.backup_time
+    backup = (f"{scheduler.schedule_label(at, ctx.settings.backup_day)} avtomatik ham keladi" if at
+              else "avtomatik zaxira o'chiq")
+    return f"{title}\n\n{status}{commands.replace('{backup}', backup)}"
 
 
 async def cmd_start(message: Message, bot: Bot, ctx: AppContext) -> None:

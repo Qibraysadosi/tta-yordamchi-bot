@@ -144,20 +144,23 @@ async def announce_update(bot: Bot, ctx: AppContext) -> None:
 
 
 def start_backup_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | None:
-    """Kunlik zaxira: belgilangan vaqtda egasiga bot.db nusxasi; o'tkazib yuborilgan bo'lsa — hozir."""
+    """Avtomatik zaxira: haftada bir marta (BACKUP_DAY, standart dushanba; «har kuni» ham mumkin) BACKUP_TIME da
+    egasiga bot.db nusxasi; o'tkazib yuborilgan bo'lsa — ishga tushganda."""
     at = ctx.settings.backup_time
     if not at:
         return None
     owners = sorted(ctx.settings.owner_ids)
+    weekday = ctx.settings.backup_day
+    title = "Kunlik zaxira" if weekday is None else "Haftalik zaxira"
 
-    async def run_backup(reason: str = "Kunlik zaxira") -> None:
+    async def run_backup(reason: str = title) -> None:
         await scheduler.send_backup(bot, ctx.db, ctx.settings.db_path, owners, ctx.settings.timezone, reason=reason)
 
     async def catch_up() -> None:
-        if await scheduler.missed_backup(ctx.db, ctx.settings.timezone, at):
-            await run_backup("Kunlik zaxira (kechikkan)")
+        if await scheduler.missed_backup(ctx.db, ctx.settings.timezone, at, weekday):
+            await run_backup(f"{title} (kechikkan)")
 
-    job = scheduler.DailyJob("backup", at, ctx.settings.timezone, run_backup)
+    job = scheduler.DailyJob("backup", at, ctx.settings.timezone, run_backup, weekday=weekday)
     job.start(catch_up)
     return job
 

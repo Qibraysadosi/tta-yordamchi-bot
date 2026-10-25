@@ -1,5 +1,5 @@
-"""Belgilangan vaqtda ishlaydigan vazifalar: kunlik zaxira va GitHub'da yangi versiya tekshiruvi
-(keyingi bosqichlarda eslatma, dayjest)."""
+"""Belgilangan vaqtda ishlaydigan vazifalar: avtomatik zaxira (standart — har dushanba, BACKUP_DAY) va kunlik
+GitHub'da yangi versiya tekshiruvi."""
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +19,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
+from .config import BACKUP_DAYS
 from .db import Database
 from .github import GitHubClient, GitHubError, Release, is_newer
 from .updater import CALLBACK_GITHUB_INSTALL
@@ -32,21 +33,32 @@ BACKUP_MAX_BYTES = 49 * 1024 * 1024  # Telegram bot fayl yuklash chegarasi 50 MB
 ATTACHMENT_PLACEHOLDER = "[ilova (PDF/rasm) zaxiraga kiritilmagan]"
 
 
-class DailyJob:
-    """Har kuni HH:MM da (mahalliy vaqt) bitta vazifani bajaradi; o'tkazib yuborilgan kun — ishga tushganda."""
+def schedule_label(at: str, weekday: int | None) -> str:
+    """«har dushanba 03:30 da» yoki «har kuni 03:30 da»."""
+    return f"har {'kuni' if weekday is None else BACKUP_DAYS[weekday]} {at} da"
 
-    def __init__(self, name: str, at: str, timezone: str, run: Callable[[], Awaitable[None]], catch_up: bool = True):
+
+class DailyJob:
+    """Har kuni (weekday berilsa — haftada bir marta, o'sha kuni) HH:MM da (mahalliy vaqt) bitta vazifani bajaradi;
+    o'tkazib yuborilgani — ishga tushganda (catch_up)."""
+
+    def __init__(self, name: str, at: str, timezone: str, run: Callable[[], Awaitable[None]], catch_up: bool = True,
+                 weekday: int | None = None):
         self.name = name
         self.hour, self.minute = (int(x) for x in at.split(":"))
         self.tz = ZoneInfo(timezone)
         self.run = run
         self.catch_up = catch_up
+        self.weekday = weekday  # 0 — dushanba … 6 — yakshanba; None — har kuni
         self._task: asyncio.Task | None = None
         self.catch_up_task: asyncio.Task | None = None  # ishga tushganda o'tkazib yuborilgan ishni bajaradi
 
     def next_run(self, now: datetime) -> datetime:
         planned = now.replace(hour=self.hour, minute=self.minute, second=0, microsecond=0)
-        return planned if planned > now else planned + timedelta(days=1)
+        if self.weekday is None:
+            return planned if planned > now else planned + timedelta(days=1)
+        planned += timedelta(days=(self.weekday - now.weekday()) % 7)
+        return planned if planned > now else planned + timedelta(days=7)
 
     def start(self, catch_up: Callable[[], Awaitable[None]] | None = None) -> None:
         self._task = asyncio.create_task(self._loop(), name=f"job:{self.name}")
@@ -201,9 +213,19 @@ async def _missed_today(db: Database, timezone: str, at: str, key: str) -> bool:
     return last != now.strftime("%Y-%m-%d")
 
 
-async def missed_backup(db: Database, timezone: str, at: str) -> bool:
-    """Bugungi zaxira vaqti o'tgan, lekin zaxira yuborilmagan bo'lsa — True."""
-    return await _missed_today(db, timezone, at, BACKUP_STAMP_KEY)
+async def missed_backup(db: Database, timezone: str, at: str, weekday: int | None = None) -> bool:
+    """Oxirgi rejali zaxira vaqti (bugun yoki — haftalik bo'lsa — shu/o'tgan haftaning o'sha kuni) o'tgan, lekin
+    o'shandan beri zaxira yuborilmagan bo'lsa — True (bot o'chiq turgan bo'lishi mumkin)."""
+    if weekday is None:
+        return await _missed_today(db, timezone, at, BACKUP_STAMP_KEY)
+    now = datetime.now(ZoneInfo(timezone))
+    hour, minute = (int(x) for x in at.split(":"))
+    planned = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    planned -= timedelta(days=(now.weekday() - weekday) % 7)
+    if planned > now:
+        planned -= timedelta(days=7)
+    last = await db.get_config(BACKUP_STAMP_KEY) or ""
+    return last < planned.strftime("%Y-%m-%d")
 
 
 async def missed_update_check(db: Database, timezone: str, at: str) -> bool:

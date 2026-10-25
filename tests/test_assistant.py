@@ -368,3 +368,18 @@ def test_leader_answer_masks_phone_numbers(tmp_path):
         finally:
             await env.close()
     run(go())
+
+
+def test_leader_can_log_in_with_multiword_password(tmp_path):
+    async def go():
+        from bot.access import hash_password
+        from bot.handlers import PASSWORD_KEY
+        env = await start(tmp_path, [fakes.simple_answer("Javob")])
+        try:
+            await env.db.set_config(PASSWORD_KEY, hash_password("mening parolim 2026"))
+            await env.ctx.reports.store.add_person("leader", username=None, user_id=LEADER, name="Rahbar")
+            await env.send_text("mening parolim 2026", user_id=LEADER)
+            assert await env.db.member(LEADER) is not None and env.api.requests == []
+        finally:
+            await env.close()
+    run(go())

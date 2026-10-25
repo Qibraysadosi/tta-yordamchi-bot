@@ -350,6 +350,7 @@ class AccessMiddleware(BaseMiddleware):
                     # bloklangan paytda parolga o'xshash matn AI'ga ham, xotiraga ham ketmaydi
                     with contextlib.suppress(AiogramError):
                         await event.delete()
+                    with contextlib.suppress(AiogramError):
                         await event.answer("⏳ Juda ko'p xato urinish — parolni keyinroq yozing. Savolni so'z bilan yozing.")
                     return None
                 await leader_answer(event, data["bot"], ctx)  # rahbar savoli — AI hisobotdan javob beradi
@@ -369,23 +370,26 @@ class AccessMiddleware(BaseMiddleware):
 
 
 def password_like(text: str) -> bool:
-    """Parolga o'xshash matn: bitta so'z (bo'shliqsiz), MIN_PASSWORD_LENGTH–64 belgi, «/» bilan boshlanmaydi.
+    """Parolga o'xshash matn: bitta so'z (bo'shliqsiz), MIN_PASSWORD_LENGTH–128 belgi, «/» bilan boshlanmaydi.
     Rahbar yoki operatorning oddiy savoli (bir nechta so'z) parol urinishi hisoblanmaydi."""
-    return MIN_PASSWORD_LENGTH <= len(text) <= 64 and not text.startswith("/") and not any(c.isspace() for c in text)
+    return MIN_PASSWORD_LENGTH <= len(text) <= 128 and not text.startswith("/") and not any(c.isspace() for c in text)
 
 
 async def is_password(message: Message, ctx: AppContext, user: User) -> bool:
     """Xodim (operator, rahbar) botga yozgan matn kirish paroli bo'lsa True — odatdagidek a'zo bo'ladi.
 
-    Parolga o'xshash (bitta so'z, kamida MIN_PASSWORD_LENGTH belgi) noto'g'ri matn urinishlar chegarasiga kiradi:
-    xodim yo'li parolni cheksiz taxmin qilish uchun ishlatilmasin. Bloklansa ham yo'riqnoma xabari chiqaveradi."""
+    Parol bo'shliqli ham bo'lishi mumkin, shuning uchun har matn tekshiriladi; lekin faqat parolga o'xshash (bitta so'z)
+    noto'g'ri matn urinishlar chegarasiga kiradi — oddiy savollar (bir nechta so'z) xodimni bloklab qo'ymasin.
+    Bloklansa ham yo'riqnoma xabari chiqaveradi."""
     stored = await ctx.db.get_config(PASSWORD_KEY)
     attempt = (message.text or "").strip()
-    if not stored or not password_like(attempt) or ctx.limiter.locked_for(user.id):
+    if (not stored or len(attempt) < MIN_PASSWORD_LENGTH or len(attempt) > 256 or attempt.startswith("/")
+            or ctx.limiter.locked_for(user.id)):
         return False
     if await asyncio.to_thread(verify_password, attempt, stored):
         return True
-    ctx.limiter.fail(user.id)
+    if password_like(attempt):
+        ctx.limiter.fail(user.id)
     return False
 
 

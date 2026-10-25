@@ -1,7 +1,9 @@
 """SQLite: foydalanuvchi sozlamalari, suhbat tarixi va xarajatlar jurnali."""
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -361,13 +363,22 @@ def _search_text(content: Any) -> str:
     return "\n".join(p for p in parts if isinstance(p, str)).casefold()
 
 
+def _vacuum_copy(source: Path, target: Path) -> None:
+    conn = sqlite3.connect(source, timeout=60)
+    try:
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+
 class Database:
     _SETTINGS_FIELDS = frozenset(
         {"model", "effort", "web_search", "show_cost", "conv_id", "history_start_id", "model_override", "mode"}
     )
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection, path: Path | None = None) -> None:
         self._conn = conn
+        self.path = path  # zaxira nusxa alohida ulanishda olinadi
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -385,7 +396,7 @@ class Database:
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.executescript(SCHEMA)
             await conn.commit()
-            db = cls(conn)
+            db = cls(conn, path)
             await db._migrate()
         except BaseException:
             # yopilmagan ulanish oqimi jarayonni to'xtatmay qo'yadi (launcher orqaga qaytara olmaydi)
@@ -426,8 +437,12 @@ class Database:
         await self._conn.close()
 
     async def vacuum_into(self, target: Path) -> None:
-        """Bazaning izchil nusxasini alohida faylga yozadi (zaxira uchun)."""
-        await self._conn.execute("VACUUM INTO ?", (str(target),))
+        """Bazaning izchil nusxasini alohida faylga yozadi (zaxira uchun). Alohida ulanishda: asosiy ulanishdagi ochiq
+        tranzaksiya (masalan, izohlar tahlili yozayotgan payt) «cannot VACUUM from within a transaction» bermasin."""
+        if self.path is None:
+            await self._conn.execute("VACUUM INTO ?", (str(target),))
+            return
+        await asyncio.to_thread(_vacuum_copy, self.path, target)
 
     # --- sozlamalar ---
     async def get_settings(self, user_id: int, default_model: str, default_web_search: bool) -> UserSettings:

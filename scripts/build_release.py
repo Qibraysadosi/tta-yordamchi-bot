@@ -233,6 +233,9 @@ def main() -> int:
         print(f"❌ {args.notes} topilmadi — chiqarish izohini yozing (5–8 qator, o'zbekcha).")
         return 1
     problems: list[str] = []
+    notes_found = scan_secrets(notes_path, notes_path.read_bytes())
+    if notes_found:
+        problems.append(f"{args.notes}: {notes_found}")
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in iter_files():
             data = path.read_bytes()

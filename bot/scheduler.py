@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import logging
+import secrets
 import sqlite3
 import zipfile
 from datetime import datetime, timedelta
@@ -95,14 +96,19 @@ def _strip_attachments(node) -> int:
 
 
 def slim_backup(path: Path) -> int:
-    """Zaxira NUSXASIDAN (asl bazadan emas) PDF/rasm baytlarini olib tashlaydi; nechta ilova olinganini qaytaradi."""
+    """Zaxira NUSXASIDAN (asl bazadan emas) PDF/rasm baytlarini olib tashlaydi; nechta ilova olinganini qaytaradi.
+
+    Qatorlar bittadan o'qiladi: ilovalar ko'paygan sari xotira o'smasin (hammasini birdan o'qish — OOM)."""
     conn = sqlite3.connect(path)
     try:
-        rows = conn.execute("SELECT id, content FROM messages WHERE content LIKE '%\"base64\"%'").fetchall()
+        ids = [row[0] for row in conn.execute("SELECT id FROM messages WHERE content LIKE '%\"base64\"%' ORDER BY id")]
         removed = 0
-        for row_id, content in rows:
+        for row_id in ids:
+            row = conn.execute("SELECT content FROM messages WHERE id = ?", (row_id,)).fetchone()
+            if row is None:
+                continue
             try:
-                value = json.loads(content)
+                value = json.loads(row[0])
             except ValueError:
                 continue
             count = _strip_attachments(value)
@@ -129,12 +135,12 @@ async def make_backup(db: Database, db_path: Path, label: str) -> tuple[bytes, s
 
     Nusxadan ilovalar (base64 PDF/rasm) olib tashlanadi; baribir katta bo'lsa — .zip qilinadi.
     """
-    target = db_path.with_name(f"backup-{label}.db")
-    target.unlink(missing_ok=True)
+    name = f"backup-{label}.db"
+    target = db_path.with_name(f".{name}.{secrets.token_hex(4)}")  # bir daqiqada ikki nusxa bir-birini o'chirmasin
     try:
         await db.vacuum_into(target)
         await asyncio.to_thread(slim_backup, target)
-        data, name = target.read_bytes(), target.name
+        data = target.read_bytes()
     finally:
         target.unlink(missing_ok=True)
     if len(data) > BACKUP_MAX_BYTES:
@@ -152,8 +158,10 @@ async def send_backup(bot: Bot, db: Database, db_path: Path, chat_ids: list[int]
     now = datetime.now(ZoneInfo(timezone))
     try:
         data, name = await make_backup(db, db_path, now.strftime("%Y%m%d-%H%M"))
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.exception("Zaxira nusxa olishda xato")
+        await _notify_backup_failed(bot, chat_ids, f"⚠️ {reason}: zaxira nusxa olinmadi ({type(exc).__name__}). "
+                                                   "/zaxira bilan qayta urinib ko'ring; takrorlansa — server loglari.")
         return False
     size_mb = len(data) / (1024 * 1024)
     if len(data) > BACKUP_MAX_BYTES:
@@ -166,8 +174,9 @@ async def send_backup(bot: Bot, db: Database, db_path: Path, chat_ids: list[int]
         return False
     restore_hint = "zip ichidagi faylni" if name.endswith(".zip") else "faylni"
     caption = (
-        f"💾 {reason}: {now:%d.%m.%Y %H:%M}\n"
-        f"Hajmi: {len(data) / 1024:.0f} KB. Tiklash: {restore_hint} serverdagi data/bot.db o'rniga qo'ying."
+        f"💾 {reason}: {now:%d.%m.%Y %H:%M}\nHajmi: {len(data) / 1024:.0f} KB.\n"
+        f"Tiklash: docker compose stop → data/bot.db-wal va data/bot.db-shm ni o'chiring → {restore_hint} "
+        "data/bot.db o'rniga qo'ying → docker compose start (aks holda baza buziladi)."
     )
     sent = False
     for chat_id in chat_ids:

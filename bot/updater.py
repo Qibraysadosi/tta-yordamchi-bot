@@ -45,8 +45,12 @@ STAMP_FORMAT = "%Y%m%d-%H%M%S"
 REQ_STAMP_DEFAULT = "/usr/local/share/claude-bot/requirements.sha256"
 PIP_ERROR_FILE = "pip_error.json"
 
-# Zaxiraga olinadigan va tiklanadigan qismlar (launcher.py da ham xuddi shu ro'yxat)
-RELEASE_ITEMS = ("bot", "prompts", "requirements.txt", "VERSION")
+# Zaxiraga olinadigan va tiklanadigan qismlar (launcher.py da ham xuddi shu ro'yxat): yangilanish o'rnatadigan
+# hamma narsa — orqaga qaytilganda docker-compose.yml va o'rnatish skriptlari ham eski versiyaniki bo'lsin
+RELEASE_ITEMS = (
+    "bot", "prompts", "requirements.txt", "VERSION", "README.md", ".env.example", "docker-compose.yml",
+    "install.sh", "install-test.sh", "install-miniapp.sh",
+)
 # Yangilanish arxivida ruxsat etilgan narsalar; qolganlari (.env, data/, Dockerfile, launcher.py ...) e'tiborsiz qoladi
 ALLOWED_TOP = frozenset(
     {

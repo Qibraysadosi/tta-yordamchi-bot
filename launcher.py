@@ -18,7 +18,10 @@ from collections import deque
 from pathlib import Path
 
 RESTART_CODE = 75
-RELEASE_ITEMS = ("bot", "prompts", "requirements.txt", "VERSION")
+RELEASE_ITEMS = (  # bot/updater.py dagi ro'yxat bilan bir xil
+    "bot", "prompts", "requirements.txt", "VERSION", "README.md", ".env.example", "docker-compose.yml",
+    "install.sh", "install-test.sh", "install-miniapp.sh",
+)
 
 APP = Path(os.environ.get("APP_DIR", Path(__file__).resolve().parent))
 UPDATE_DIR = APP / "data" / "update"

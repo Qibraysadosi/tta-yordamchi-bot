@@ -320,3 +320,103 @@ def test_links_do_not_reach_internal_addresses(dns):
         with pytest.raises(links.LinkError, match="topilmadi"):
             await links.fetch("http://yoq.example/", 1_000_000, transport=transport)
     run(go())
+
+
+# ----------------------------------------------------------------------------- ichki tarmoq: DNS hiylalari
+SECRET = "ICHKI-SIR "
+
+
+async def _local_site(seen):
+    from aiohttp import web
+    app = web.Application()
+
+    async def page(request):
+        seen.append(request.headers.get("Host"))
+        return web.Response(text="<title>Admin</title><p>" + SECRET * 40 + "</p>", content_type="text/html")
+    app.router.add_get("/admin", page)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    return runner, site._server.sockets[0].getsockname()[1]
+
+
+@pytest.fixture
+def no_proxy(monkeypatch):
+    for var in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _patch_resolver(answer):
+    loop = asyncio.get_running_loop()
+    real = loop.getaddrinfo
+
+    async def resolver(host, port, *args, **kwargs):
+        name = host.decode() if isinstance(host, bytes) else host
+        ip = answer(name)
+        if ip is None:
+            return await real(host, port, *args, **kwargs)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, int(port)))]
+    loop.getaddrinfo = resolver
+    return lambda: setattr(loop, "getaddrinfo", real)
+
+
+def test_dns_rebinding_cannot_reach_internal(no_proxy):
+    async def go():
+        seen = []
+        runner, port = await _local_site(seen)
+        answers = []
+
+        def rebinding(name):
+            if name != "rebind.attacker.test":
+                return None
+            ip = "93.184.216.34" if not answers else "127.0.0.1"  # TTL 0: avval ochiq, keyin ichki manzil
+            answers.append(ip)
+            return ip
+        restore = _patch_resolver(rebinding)
+        try:
+            with pytest.raises(links.LinkError, match="ichki tarmoq"):
+                await links.fetch(f"http://rebind.attacker.test:{port}/admin", 1_000_000)
+        finally:
+            restore()
+            await runner.cleanup()
+        assert seen == []  # ichki sahifaga so'rov bormadi
+    run(go())
+
+
+def test_idna_name_is_checked_as_connected(no_proxy):
+    async def go():
+        seen = []
+        runner, port = await _local_site(seen)
+        records = {"strasse.evil.test": "93.184.216.34", "xn--strae-oqa.evil.test": "127.0.0.1"}
+        restore = _patch_resolver(lambda name: records.get(name.encode("idna").decode()))
+        try:
+            blocks, errors = await links.read_links(f"Mana: http://straße.evil.test:{port}/admin", 1_000_000)
+        finally:
+            restore()
+            await runner.cleanup()
+        assert blocks == [] and "ichki tarmoq" in errors[0] and seen == []
+    run(go())
+
+
+def test_connection_goes_to_checked_address(no_proxy, monkeypatch):
+    async def go():
+        seen = []
+        runner, port = await _local_site(seen)
+        monkeypatch.setattr(links, "is_public", lambda address: True)  # sinov: mahalliy serverni «ochiq» deb olamiz
+        restore = _patch_resolver(lambda name: "127.0.0.1" if name == "sayt.test" else None)
+        try:
+            page = await links.fetch(f"http://sayt.test:{port}/admin", 1_000_000)
+        finally:
+            restore()
+            await runner.cleanup()
+        assert page.title == "Admin" and seen == [f"sayt.test:{port}"]  # IP'ga ulanildi, Host — asl nom
+    run(go())
+
+
+def test_embedded_ipv4_in_ipv6_is_checked():
+    import ipaddress
+    for value in ("::ffff:127.0.0.1", "64:ff9b::a00:1", "2002:7f00:1::1", "::1", "fe80::1", "fc00::5"):
+        assert not links.is_public(ipaddress.ip_address(value)), value
+    assert links.is_public(ipaddress.ip_address("2606:4700:4700::1111"))
+    assert links.is_public(ipaddress.ip_address("93.184.216.34"))

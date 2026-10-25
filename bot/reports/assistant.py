@@ -262,11 +262,11 @@ class ReportTools:
         return labels
 
     def _row(self, ov: Overview, row: Any, labels: dict[str, str]) -> dict:
-        data = {"name": row.name, "calls": row.total,
+        data = {"name": self._hide(row.name), "calls": row.total,
                 "by_status": {f"{e} {labels.get(e, '')}".strip(): n for e, n in row.counts.items() if n},
                 "main_result": ov.positive(row)}
         if row.username:
-            data["username"] = "@" + row.username
+            data["username"] = "@" + self._hide(row.username)
         return data
 
     # -------------------------------------------------------------- report_stats
@@ -302,8 +302,8 @@ class ReportTools:
             ranked = sorted(everyone, key=lambda r: (-r.total, r.name.lower()))
             found = [r for r in ranked if _matches(operator, r.name, r.username)]
             if not found:
-                raise ReportToolError(
-                    f"«{operator}» topilmadi. Bu davrdagi operatorlar: " + (", ".join(r.name for r in ranked) or "yo'q"))
+                raise ReportToolError(f"«{operator}» topilmadi. Bu davrdagi operatorlar: "
+                                      + (", ".join(self._hide(r.name) for r in ranked) or "yo'q"))
             row = found[0]
             data = {"period": data["period"], "operator": self._row(ov, row, labels),
                     "rank": ranked.index(row) + 1, "operators_total": len([r for r in ranked if r.total]),
@@ -361,17 +361,30 @@ class ReportTools:
         notes = await reports.archive.store.lead_notes(ids)
         name_of = await reports.archive._names()
         labels = self._labels(ov)
+        matching: set[int] | None = None
+        if operator:  # ism yoki @username bo'yicha; bu davrda lid belgilaganlar orasidan
+            users = await store.users()
+            listed = {p.user_id: p.username for p in await store.people() if p.user_id is not None and p.username}
+            touched_all = {uid for people in ov.lead_people.values() for uid in people}
+            matching = {uid for uid in touched_all
+                        if _matches(operator, name_of(uid), listed.get(uid), users.get(uid, (None, ""))[0])}
+            if not matching:
+                known = sorted({self._hide(name_of(uid)) for uid in touched_all})
+                raise ReportToolError(f"«{operator}» bu davrda lid belgilamagan. Belgilaganlar: "
+                                      + (", ".join(known[:30]) or "yo'q"))
         rows = []
         for lead in sorted(leads.values(), key=lambda item: (item.created_at or "", item.id)):
             status = outcome.lead_status.get(lead.id)
             if wanted and status not in wanted:
                 continue
             touched_by = ov.lead_people.get(lead.id, [])
-            if operator and not any(_matches(operator, name_of(uid)) for uid in touched_by):
+            if matching is not None and not matching.intersection(touched_by):
                 continue
             if course and course not in _norm(lead.course):
                 continue
-            if search and not (search in _norm(lead.name) or (len(digits) >= 3 and digits in re.sub(r"\D", "", lead.phones))):
+            # rahbarga: ism ham raqamsiz ko'rinishda solishtiriladi (ism ichidagi raqam bo'laklari bilan taxmin qilib bo'lmasin)
+            if search and not (search in _norm(self._hide(lead.name))
+                               or (len(digits) >= 3 and digits in re.sub(r"\D", "", lead.phones))):
                 continue
             note = notes.get(lead.id) or {}
             created = reports.tasks.local(lead.created_at)
@@ -391,8 +404,10 @@ class ReportTools:
             }
             rows.append({k: v for k, v in item.items() if v is not None})
         limit = _limit(args.get("limit"), LEADS_LIMIT, LEADS_MAX)
-        data = {"period": window.as_dict(now), "total": len(rows), "shown": min(len(rows), limit), "leads": rows[:limit],
-                "note": "status — lidning hozirgi (so'nggi) natijasi; marked_by — uni belgilagan operatorlar"}
+        shown = rows[-limit:]  # ko'p bo'lsa — eng so'nggilari (vaqt tartibida)
+        data = {"period": window.as_dict(now), "total": len(rows), "shown": len(shown), "leads": shown,
+                "note": "status — lidning hozirgi (so'nggi) natijasi; marked_by — uni belgilagan operatorlar"
+                        + ("; ro'yxat uzun — eng so'nggi lidlar ko'rsatildi" if len(rows) > limit else "")}
         if self.masked:
             data["phones"] = "yashirilgan (rahbar uchun)"
             if re.search(r"\d{3}", search):
@@ -421,7 +436,7 @@ class ReportTools:
             if not items:
                 known = sorted(people) or sorted({t.who for t in await store.tasks(None, 300)})
                 raise ReportToolError(f"«{assignee}» uchun vazifa topilmadi. Vazifasi bor odamlar: "
-                                      + (", ".join(known[:30]) or "yo'q"))
+                                      + (", ".join(self._hide(k) for k in known[:30]) or "yo'q"))
         if search:
             items = [t for t in items if search in _norm(t.text)]
         if status == "overdue":
@@ -436,11 +451,12 @@ class ReportTools:
         service = self.reports.tasks
         due, created, closed = service.local(task.due_at), service.local(task.created_at), service.local(task.done_at)
         item: dict[str, Any] = {
-            "who": task.who, "text": self._hide(task.text), "state": STATE_TEXT.get(service.state_of(task, now), task.status),
+            "who": self._hide(task.who), "text": self._hide(task.text),
+            "state": STATE_TEXT.get(service.state_of(task, now), task.status),
             "due": due_label(due) if due else None, "given": due_label(created) if created else None,
         }
         if task.assignee_username:
-            item["username"] = "@" + task.assignee_username
+            item["username"] = "@" + self._hide(task.assignee_username)
         if task.status != OPEN and closed:
             item["closed"] = due_label(closed)
             if task.status == DONE:
@@ -490,6 +506,12 @@ class LeaderMemory:
     def count(self, uid: int, day: date) -> None:
         asked_day, count = self._asked.get(uid, (day, 0))
         self._asked[uid] = (day, count + 1 if asked_day == day else 1)
+
+    def refund(self, uid: int, day: date) -> None:
+        """Javob chiqmagan savol (xato) hisobdan qaytariladi."""
+        asked_day, count = self._asked.get(uid, (day, 0))
+        if asked_day == day and count > 0:
+            self._asked[uid] = (day, count - 1)
 
 
 def leader_system(now: datetime) -> str:

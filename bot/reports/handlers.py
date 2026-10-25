@@ -171,7 +171,9 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
     day, live = _shown_day(now, await service.schedule(), service.tz)
     if action == "send":
         await callback.answer("Yuborilmoqda…")
-        sent = await service.send_report(bot, day, now, interim=live, record=False)
+        # tugagan, lekin hali yuborilmagan kun (19:00–19:02) — shu yuborish kunlik hisobot bo'ladi (takror kelmaydi)
+        record = not live and not await service.store.report_for_day(day.isoformat())
+        sent = await service.send_report(bot, day, now, interim=live, record=record)
         fallback = service.last_fallback
         targets = await service.store.groups_with("leaders")
         if not sent:

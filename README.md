@@ -131,7 +131,7 @@ Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorla
 4. **Rahbarlar kirishi.** Mini App → Hisobotlar → Sozlamalar → «Kirish · rahbarlar»: qo'shilgan rahbar botni ochganda «📊 Hisobotlar» tugmasini oladi va faqat shu bo'limni ko'radi, sozlamalarni o'zgartira olmaydi. Parol kerak emas.
 5. **«📊 Batafsil» tugmasi (ixtiyoriy).** Kunlik hisobot ostida Mini App'ni o'sha kun bilan ochadigan tugma: @BotFather → botingiz → Bot Settings → Configure Mini App → Enable Mini App → `WEBAPP_URL` manzili. Bot buni o'zi aniqlaydi (10 daqiqagacha), qayta ishga tushirish shart emas.
 
-**Statuslar** (Mini App → Sozlamalar'da qo'shiladi va o'zgartiriladi): 👍 keladi · 👎 kelmaydi · 🆒 ko'tarmadi · 🤔 o'ylayapti · 🤝 Telegram'dan yozadi · 💔 umuman yo'q. Operator lid postiga shu emojini bosadi yoki izoh yozadi. Izohni AI (`REPORT_MODEL`, standart Haiku 5.5) o'qib, statusni, rad sababini va qayta qo'ng'iroq vaqtini ajratadi; telefon raqamlar AI'ga yuborilmaydi. Reaksiya va izoh mos kelmasa, eng so'nggisi olinadi (hisobotda «⚠️ Ziddiyat»). Bir odam bir lidni bir marta sanaydi.
+**Statuslar** (Mini App → Sozlamalar'da qo'shiladi va o'zgartiriladi): 👍 keladi · 👎 kelmaydi · 🆒 ko'tarmadi · 🤔 o'ylayapti · 🤝 Telegram'dan yozadi · 💔 umuman yo'q. Operator lid postiga shu emojini bosadi yoki izoh yozadi. Izohni AI (`REPORT_MODEL`, standart Haiku 5.5) o'qib, statusni, rad sababini va qayta qo'ng'iroq vaqtini ajratadi; izoh tahlilida telefon raqamlar AI'ga yuborilmaydi (siz AI'dan hisobot so'raganingizda esa — to'liq ma'lumot, rahbarlarga — raqamlarsiz, pastda «AI'dan hisobot so'rash»). Reaksiya va izoh mos kelmasa, eng so'nggisi olinadi (hisobotda «⚠️ Ziddiyat»). Bir odam bir lidni bir marta sanaydi.
 
 **Kunlik hisobot:** standart 19:00, dushanba–shanba (2 daqiqa kutib yig'iladi — so'nggi daqiqadagi belgilar ham kirsin). Davr — oldingi hisobot vaqtidan shu vaqtgacha (yakshanba dushanba hisobotiga qo'shiladi). Ichida: operatorlar jadvali (jami lid va har status soni), ro'yxatda yo'qlar, yangi va belgilanmagan lidlar, kurslar bo'yicha 👍, izohlardan rad sabablari va qayta qo'ng'iroq so'raganlar. Bot o'chiq paytda o'tib ketgan hisobot ishga tushgach «kechikib yuborildi» belgisi bilan keladi (36 soatgacha). Rahbarlar guruhiga yuborib bo'lmasa (bot chiqarilgan), hisobot sizga keladi; tarmoq yoki Telegram'ning vaqtinchalik xatosida 5 daqiqadan keyin qayta uriniladi (6 martagacha, keyin — sizga), hisobot olgan guruhga ikkinchi marta bormaydi. Bir kunga bitta kunlik hisobot: vaqtni o'zgartirsangiz, o'sha kun hisoboti qayta kelmaydi. Vaqt, kunlar, eslatma va ish vaqti — Mini App → Hisobotlar → Sozlamalar.
 
@@ -214,7 +214,7 @@ Yangilanishni avval sinov botida tekshirish uchun:
 1. Claude'dan yangi versiyani `.zip` qilib oling.
 2. Botga `/yangilash` yozing, keyin shu `.zip` faylni yuboring (yoki faylni `/yangilash` izohi bilan yuboring).
 3. Bot arxivni tekshiradi va nima o'zgarishini (versiya, o'zgargan fayllar, izohlar) ko'rsatadi → **✅ O'rnatish** ni bosing.
-4. Bot qayta ishga tushadi va yangi versiya 30 soniya muammosiz ishlagach «✅ Bot yangilandi: v… → v…» deb yozadi (shu vaqt ichida yiqilsa — eski versiya avtomatik tiklanadi).
+4. Bot qayta ishga tushadi va yangi versiya 30 soniya (`UPDATE_PROBATION`) muammosiz ishlagach «✅ Bot yangilandi: v… → v…» deb yozadi (shu vaqt ichida yiqilsa — eski versiya avtomatik tiklanadi).
 
 Xavfsizlik:
 - Har yangilanishdan oldin joriy versiya zaxiraga olinadi (oxirgi 5 tasi saqlanadi).

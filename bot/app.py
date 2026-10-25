@@ -5,7 +5,6 @@ import asyncio
 import contextlib
 import importlib.util
 import logging
-import os
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
@@ -31,9 +30,6 @@ from .prompt import PromptLoader
 from .updater import UpdateManager
 
 UPDATE_CHECK_DEFAULT_TIME = "03:30"  # BACKUP_TIME o'chiq bo'lsa, GitHub tekshiruvi shu vaqtda
-# Yangi versiya shuncha soniya to'liq ishlab tursa (Mini App, fon vazifalari, polling ishga tushgach) — yangilanish
-# muvaffaqiyatli deb belgilanadi. Undan oldin yiqilsa, launcher eski versiyani tiklaydi. (Testlar uchun: muhit o'zgaruvchisi)
-PROBATION_SECONDS = float(os.environ.get("BOT_UPDATE_PROBATION", "30"))
 CONNECT_ATTEMPTS = 10
 
 log = logging.getLogger("bot")
@@ -114,8 +110,9 @@ async def apply_menu_button(bot: Bot, webapp_url: str | None) -> None:
             await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
 
 
-async def announce_after_probation(bot: Bot, ctx: AppContext, delay: float = PROBATION_SECONDS) -> None:
-    """Hammasi ishga tushib, bot `delay` soniya ishlab turgach — yangilanish muvaffaqiyatli (pending.json o'chadi)."""
+async def announce_after_probation(bot: Bot, ctx: AppContext, delay: float) -> None:
+    """Hammasi ishga tushib, bot `delay` soniya (UPDATE_PROBATION) ishlab turgach — yangilanish muvaffaqiyatli
+    (pending.json o'chadi). Undan oldin yiqilsa, launcher eski versiyani tiklaydi."""
     updater = ctx.updater
     if updater is not None and updater.pending_file.exists():
         await asyncio.sleep(delay)
@@ -242,7 +239,8 @@ async def run() -> bool:
         ctx.reports.start(bot)  # izohlar tahlili, kunlik hisobot, belgilanmagan lid eslatmasi
         # Yangilanish faqat hammasi ishga tushib, bot biroz ishlab turgach «muvaffaqiyatli» bo'ladi: undan oldingi har
         # qanday yiqilishda pending.json qoladi va launcher eski versiyani tiklaydi
-        announcer = asyncio.create_task(announce_after_probation(bot, ctx), name="update-probation")
+        announcer = asyncio.create_task(announce_after_probation(bot, ctx, settings.update_probation),
+                                        name="update-probation")
         try:
             await dp.start_polling(bot)
         finally:

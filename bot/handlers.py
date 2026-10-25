@@ -43,6 +43,7 @@ from .prompt import MONTHS, PromptLoader
 from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
 from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
 from .reports.assistant import REPORT_GUIDE, leader_system
+from .reports.leads import mask_phones
 from .tgformat import format_answer, split_plain
 from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
@@ -345,6 +346,12 @@ class AccessMiddleware(BaseMiddleware):
         if role is not None and not await is_password(event, ctx, user):  # parol yozsa — odatdagidek kiradi
             text = (event.text or "").strip() if isinstance(event, Message) else ""
             if role == "leader" and text and not text.startswith("/"):
+                if password_like(text) and ctx.limiter.locked_for(user.id):
+                    # bloklangan paytda parolga o'xshash matn AI'ga ham, xotiraga ham ketmaydi
+                    with contextlib.suppress(AiogramError):
+                        await event.delete()
+                        await event.answer("⏳ Juda ko'p xato urinish — parolni keyinroq yozing. Savolni so'z bilan yozing.")
+                    return None
                 await leader_answer(event, data["bot"], ctx)  # rahbar savoli — AI hisobotdan javob beradi
                 return None
             with contextlib.suppress(AiogramError):
@@ -361,14 +368,20 @@ class AccessMiddleware(BaseMiddleware):
         return None
 
 
+def password_like(text: str) -> bool:
+    """Parolga o'xshash matn: bitta so'z (bo'shliqsiz), MIN_PASSWORD_LENGTH–64 belgi, «/» bilan boshlanmaydi.
+    Rahbar yoki operatorning oddiy savoli (bir nechta so'z) parol urinishi hisoblanmaydi."""
+    return MIN_PASSWORD_LENGTH <= len(text) <= 64 and not text.startswith("/") and not any(c.isspace() for c in text)
+
+
 async def is_password(message: Message, ctx: AppContext, user: User) -> bool:
     """Xodim (operator, rahbar) botga yozgan matn kirish paroli bo'lsa True — odatdagidek a'zo bo'ladi.
 
-    Parolga o'xshash (kamida MIN_PASSWORD_LENGTH belgi) noto'g'ri matn ham urinishlar chegarasiga kiradi:
+    Parolga o'xshash (bitta so'z, kamida MIN_PASSWORD_LENGTH belgi) noto'g'ri matn urinishlar chegarasiga kiradi:
     xodim yo'li parolni cheksiz taxmin qilish uchun ishlatilmasin. Bloklansa ham yo'riqnoma xabari chiqaveradi."""
     stored = await ctx.db.get_config(PASSWORD_KEY)
     attempt = (message.text or "").strip()
-    if not stored or len(attempt) < MIN_PASSWORD_LENGTH or attempt.startswith("/") or ctx.limiter.locked_for(user.id):
+    if not stored or not password_like(attempt) or ctx.limiter.locked_for(user.id):
         return False
     if await asyncio.to_thread(verify_password, attempt, stored):
         return True
@@ -1944,14 +1957,20 @@ async def _report_tools(ctx: AppContext, uid: int):
 
 
 class _Silent:
-    """Oqimsiz javob (rahbar savoli): oraliq matn ko'rsatilmaydi — faqat «yozmoqda…» va yakuniy javob."""
+    """Oqimsiz javob (rahbar savoli): oraliq matn ko'rsatilmaydi — faqat «yozmoqda…» va yakuniy javob.
+    Tugagan qadamlar narxi yig'iladi: kutilmagan xatoda ham sarf usage_log ga yoziladi."""
+
+    def __init__(self) -> None:
+        self.cost = 0.0
 
     async def on_message_start(self, model: str, usage: Any) -> None: ...
     async def on_thinking(self) -> None: ...
     async def on_search(self, query: str | None) -> None: ...
     async def on_text(self, text: str) -> None: ...
     async def on_tool(self, status: str) -> None: ...
-    async def on_iteration_done(self, cost: float) -> None: ...
+
+    async def on_iteration_done(self, cost: float) -> None:
+        self.cost += cost
 
 
 async def _keep_typing(bot: Bot, chat_id: int) -> None:
@@ -1985,11 +2004,16 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
     question = (message.text or "").strip()[:4000]
     limit = ctx.settings.leader_daily_limit
     memory = reports.leader_memory
-    if not memory.allowed(uid, ctx.now().date(), limit):
-        with contextlib.suppress(AiogramError):
-            await message.answer(f"⏳ Bugungi savollar chegarasi ({limit} ta) tugadi — ertaga yana so'rang.")
-        return
     async with await _user_lock(ctx, bot, uid, chat_id):
+        # Navbatda kutgan savollar ham shu yerda tekshiriladi: chegara va rahbarlik (ro'yxatdan olingan bo'lishi mumkin)
+        if "leader" not in await reports.store.roles_of(uid, message.from_user.username):
+            return
+        day = ctx.now().date()
+        if not memory.allowed(uid, day, limit):
+            with contextlib.suppress(AiogramError):
+                await message.answer(f"⏳ Bugungi savollar chegarasi ({limit} ta) tugadi — ertaga yana so'rang.")
+            return
+        memory.count(uid, day)  # oldindan band qilinadi; javob chiqmasa — qaytariladi
         model = ctx.settings.default_model
         if await economy_mode(ctx) is not None:
             model = ctx.settings.economy_model
@@ -1999,13 +2023,15 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
             model = ctx.settings.economy_model
         report_tools = reports.ai_tools(masked=True)
         messages = memory.history(uid) + [{"role": "user", "content": question}]
+        listener = _Silent()
         typing = asyncio.create_task(_keep_typing(bot, chat_id))
         try:
             result = await ctx.claude.run_turn(
                 model=model, system=leader_system(ctx.now()), messages=messages, effort=None, web_search=False,
-                listener=_Silent(), tools=report_tools.specs(), tool_runner=report_tools.run,
+                listener=listener, tools=report_tools.specs(), tool_runner=report_tools.run,
             )
         except ClaudeError as exc:
+            memory.refund(uid, day)
             if exc.cost:
                 await ctx.db.log_usage(uid, model, exc.numbers, exc.cost)
             with contextlib.suppress(AiogramError):
@@ -2013,18 +2039,21 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
             return
         except Exception:
             log.exception("Rahbar savoliga javobda xato")
+            memory.refund(uid, day)
+            if listener.cost:  # tugagan qadamlar uchun to'langan
+                await ctx.db.log_usage(uid, model, {}, listener.cost)
             with contextlib.suppress(AiogramError):
                 await message.answer("⚠️ Javob tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.")
             return
         finally:
             typing.cancel()
         await ctx.db.log_usage(uid, model, result.numbers, result.cost)
-        memory.count(uid, ctx.now().date())
         if result.refused:
             with contextlib.suppress(AiogramError):
                 await message.answer("🚫 Bu savolga javob berilmadi. Hisobot yoki vazifalar haqida boshqacha so'rab ko'ring.")
             return
-        answer = result.text.strip() or "Javob bo'sh qaytdi — savolni boshqacha yozib ko'ring."
+        # Oxirgi himoya: javobda telefon raqamiga o'xshash narsa qolsa ham — yashiriladi
+        answer = mask_phones(result.text.strip()) or "Javob bo'sh qaytdi — savolni boshqacha yozib ko'ring."
         memory.add(uid, question, answer)
         await _send_chunks(bot, chat_id, format_answer(answer, [], [], None))
     await check_budget(ctx, bot)

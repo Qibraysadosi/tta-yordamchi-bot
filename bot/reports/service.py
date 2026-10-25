@@ -330,11 +330,12 @@ class ReportService:
         thread = message.message_thread_id
         reply = message.reply_to_message
         if thread:
-            lead = await self.store.lead_by_message(chat_id, thread)
+            lead = await self.store.lead_by_message(chat_id, thread) or await self.store.album_lead(chat_id, thread)
             if lead is not None:
                 return lead
         if reply is not None:
-            lead = await self.store.lead_by_message(chat_id, reply.message_id)
+            lead = (await self.store.lead_by_message(chat_id, reply.message_id)
+                    or await self.store.album_lead(chat_id, reply.message_id))
             if lead is not None:
                 return lead
             if reply.is_automatic_forward:  # bot qo'shilishidan oldingi post — izoh orqali tanib olinadi
@@ -353,6 +354,8 @@ class ReportService:
         text = message.text or message.caption or ""
         chat_id = message.chat.id
         if message.is_automatic_forward:
+            if message.media_group_id:  # albom: izohsiz rasmlarga izoh/reaksiya kartochkali xabar lidiga boradi
+                await self.store.remember_album(chat_id, message.message_id, message.media_group_id)
             info = parse_lead(text)
             if not card_like(info):
                 return False  # kanal e'loni, stiker, albomning izohsiz rasmi — ko'rilgan deb belgilanadi
@@ -411,7 +414,8 @@ class ReportService:
         known = await self.known_statuses()
         emojis = [e for e in (getattr(r, "emoji", None) for r in update.new_reaction or []) if e]
         status = next((known[_norm(e)] for e in emojis if _norm(e) in known), None)
-        lead = await self.store.lead_by_message(update.chat.id, update.message_id)
+        lead = (await self.store.lead_by_message(update.chat.id, update.message_id)
+                or await self.store.album_lead(update.chat.id, update.message_id))
         if lead is None:
             if status is None or await self.store.is_comment_message(update.chat.id, update.message_id):
                 return

@@ -476,9 +476,13 @@ def test_report_after_closing_time_shows_finished_day(tmp_path):
             text = env.session.of("SendMessage")[-1].text
             assert "KUNLIK HISOBOT · 21.10.2026" in text and "oraliq" not in text and "Malika" in text
             await env.press("rp:send")
-            sent = texts(env, LEADERS)[-1]
-            assert "KUNLIK HISOBOT · 21.10.2026" in sent  # bo'sh keyingi davr emas
-            assert not await env.ctx.reports.store.report_for_day("2026-10-21")  # qo'lda yuborish kunni yopmaydi
+            sent = texts(env, LEADERS)
+            assert "KUNLIK HISOBOT · 21.10.2026" in sent[-1]  # bo'sh keyingi davr emas
+            # kunlik hisobot hali yuborilmagan edi — qo'lda yuborilgani o'sha kun hisoboti bo'ladi, takror kelmaydi
+            assert await env.ctx.reports.store.report_for_day("2026-10-21")
+            assert not await env.ctx.reports.check_daily(env.bot, local(WED, "19:31"))
+            await env.press("rp:send")  # yana bosilsa — qayta yuboriladi (kun allaqachon yopilgan)
+            assert len(texts(env, LEADERS)) == len(sent) + 1
         finally:
             await env.close()
     run(go())
@@ -621,6 +625,26 @@ def test_transient_poll_error_is_retried_without_alert(tmp_path):
             assert (await tasks.store.get(task.id)).next_ask_at == "2026-10-22T05:05:00"  # 5 daqiqadan keyin
             env.session.fail.clear()
             assert await tasks.tick(env.bot, now + timedelta(minutes=5)) == 1
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_album_caption_on_second_item_keeps_comments_and_reactions(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            first = await feed(env, g, **channel_post(ts(WED, "09:00"), media_group_id="a1", photo=PHOTO))
+            await feed(env, g, **channel_post(ts(WED, "09:00"), media_group_id="a1", photo=PHOTO, caption=CARD_1))
+            malika = person(MALIKA, "Malika", "malika_op")
+            await g.react(first["message_id"], malika, "👍", ts(WED, "10:00"))  # reaksiya albomning 1-rasmida
+            await g.comment(first, person(SARDOR, "Sardor", "sardor"), "ertaga keladi", ts(WED, "10:05"))
+            ov = await env.ctx.reports.overview(WED, local(WED, "15:00"))
+            assert ov.new_leads == 1  # albom — bitta lid
+            assert sorted((r.name, r.total) for r in ov.rows + ov.extras) == [("Malika", 1), ("Sardor", 1)]
+            assert await store.lead_by_message(LEADS, first["message_id"]) is None  # alohida lid ochilmadi
         finally:
             await env.close()
     run(go())

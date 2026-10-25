@@ -378,7 +378,9 @@ class ReportAPI:
         schedule = await service.schedule()
         day = display_day(now, schedule)  # 19:00 dan keyin — bugungi (tugagan) hisobot, keyingi bo'sh davr emas
         live = now < period_bounds(day, schedule, service.tz)[1]
-        sent = await service.send_report(self.bot, day, now, interim=live, record=False)
+        # tugagan, lekin hali yuborilmagan kun (19:00–19:02) — shu yuborish kunlik hisobot bo'ladi (takror kelmaydi)
+        record = not live and not await service.store.report_for_day(day.isoformat())
+        sent = await service.send_report(self.bot, day, now, interim=live, record=record)
         fallback = service.last_fallback  # keyingi await'dan oldin: parallel kunlik yuborish o'zgartirmasin
         if not sent:
             return _error("Hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502, "send_failed")

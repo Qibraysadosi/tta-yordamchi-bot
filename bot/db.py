@@ -108,6 +108,13 @@ CREATE TABLE IF NOT EXISTS rp_seen (
     message_id INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 ) WITHOUT ROWID;  -- lidlar guruhida bot ko'rgan, lekin lid ham, izoh ham bo'lmagan xabarlar (e'lon, savol)
+CREATE TABLE IF NOT EXISTS rp_album (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    group_id   TEXT    NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+) WITHOUT ROWID;  -- kanal albomi xabarlari (v1.10): izohsiz rasmga izoh/reaksiya albomdagi lidga tegishli
+CREATE INDEX IF NOT EXISTS idx_rp_album_group ON rp_album (chat_id, group_id);
 CREATE TABLE IF NOT EXISTS rp_people (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL,

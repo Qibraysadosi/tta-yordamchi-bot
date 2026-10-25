@@ -9,7 +9,7 @@ import fakes
 from bot.reports.assistant import ReportToolError, resolve_window
 from bot.reports.stats import Schedule
 from test_archive import MON, SAT, THU, queue_analysis, seed_week
-from test_flow import run
+from test_flow import OWNER, run
 from test_reports import LEADERS, MALIKA, TZ, WED, local, start
 
 LEADER = 801
@@ -254,6 +254,117 @@ def test_report_tools_without_groups(tmp_path):
             tasks = json.loads(await tools.run("task_status", {}))
             assert tasks["total"] == 0 and tasks["tasks"] == []
             assert TZ.key == "Asia/Tashkent" and LEADERS < 0 and MALIKA
+        finally:
+            await env.close()
+    run(go())
+
+
+# --------------------------------------------------------------------------- tekshiruvda topilganlar
+def test_leader_tools_hide_numbers_in_names_and_errors(tmp_path):
+    async def go():
+        from test_archive import MON
+        from test_reports import person, ts
+        env = await start(tmp_path)
+        try:
+            g, (a, b, c) = await seed_week(env)
+            await queue_analysis(env)
+            reports = env.ctx.reports
+            await reports.analyze_pending()
+            odd = person(611, "Jasur")
+            odd["last_name"] = "+998 93 111 22 44"  # operator Telegram ismiga raqamini yozgan
+            await g.react(b["message_id"], odd, "👍", ts(MON, "12:00"))
+            tasks = reports.tasks
+            await tasks.create(creator_id=OWNER, assignee=await tasks.resolve(612, None, "Olim +998 94 222 33 55"),
+                               text="Hisobot", due=local(date(2026, 10, 30), "18:00"), repeat=None, poll_chat=None)
+            await g.post("Ism: Zarina 97 555 44 33\nTelefon: 97 555 44 33\nKurs: Dizayn", ts(MON, "11:00"))
+            reports.now = lambda: local(SAT, "20:00")
+            hidden = reports.ai_tools(masked=True)
+            outputs = [
+                await hidden.run("report_stats", {"period": "this_week"}),
+                await hidden.run("report_stats", {"period": "this_week", "operator": "nobody"}),
+                await hidden.run("task_status", {}),
+                await hidden.run("task_status", {"assignee": "nobody"}),
+                await hidden.run("report_leads", {"period": "this_week", "operator": "nobody"}),
+            ]
+            for out in outputs:
+                for digits in ("111 22 44", "222 33 55", "555 44 33"):
+                    assert digits not in out, (digits, out)
+            # ism ichidagi raqam bo'laklari bilan ham taxmin qilib bo'lmaydi
+            hit = json.loads(await hidden.run("report_leads", {"period": "this_week", "search": "97 555 44"}))
+            assert hit["total"] == 0
+            full = reports.ai_tools(masked=False)
+            assert "111 22 44" in await full.run("report_stats", {"period": "this_week"})  # egasiga — to'liq
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_report_leads_operator_by_username(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            await seed_week(env)
+            await queue_analysis(env)
+            reports = env.ctx.reports
+            await reports.analyze_pending()
+            reports.now = lambda: local(SAT, "20:00")
+            tools = reports.ai_tools(masked=False)
+            by_name = json.loads(await tools.run("report_leads", {"period": "this_week", "operator": "Malika"}))
+            by_user = json.loads(await tools.run("report_leads", {"period": "this_week", "operator": "@malika_op"}))
+            assert by_name["total"] >= 1 and by_user["total"] == by_name["total"]
+            nobody = json.loads(await tools.run("report_leads", {"period": "this_week", "operator": "@yoq_odam"}))
+            assert "belgilamagan" in nobody["error"] and "Malika" in nobody["error"]
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_leader_daily_limit_holds_for_burst(tmp_path):
+    async def go():
+        import asyncio
+        env = await start(tmp_path, [fakes.simple_answer(f"Javob {i}") for i in range(5)], delay=0.2)
+        try:
+            await env.ctx.reports.store.add_person("leader", username=None, user_id=LEADER, name="Rahbar")
+            env.ctx.settings = dataclasses.replace(env.ctx.settings, leader_daily_limit=1)
+            await asyncio.gather(*(env.send_text(f"Savol raqami {i}", user_id=LEADER) for i in range(5)))
+            assert len(env.api.requests) == 1
+            replies = [m.text for m in env.session.of("SendMessage") if m.chat_id == LEADER]
+            assert sum("chegarasi" in r for r in replies) == 4
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_leader_questions_do_not_burn_password_attempts(tmp_path):
+    async def go():
+        from bot.access import hash_password
+        from bot.handlers import PASSWORD_KEY
+        password = "Maxfiy-parol-2026"
+        env = await start(tmp_path, [fakes.simple_answer(f"Javob {i}") for i in range(6)])
+        try:
+            await env.db.set_config(PASSWORD_KEY, hash_password(password))
+            await env.ctx.reports.store.add_person("leader", username=None, user_id=LEADER, name="Rahbar")
+            for i in range(6):
+                await env.send_text(f"Bugun nechta qo'ng'iroq bo'ldi? ({i})", user_id=LEADER)
+            assert not env.ctx.limiter.locked_for(LEADER)  # oddiy savollar parol urinishi emas
+            await env.send_text(password, user_id=LEADER)  # to'g'ri parol — a'zo bo'ladi, AI'ga ketmaydi
+            assert await env.db.member(LEADER) is not None
+            assert password not in json.dumps(env.api.requests, ensure_ascii=False)
+            assert password not in str(env.ctx.reports.leader_memory.history(LEADER))
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_leader_answer_masks_phone_numbers(tmp_path):
+    async def go():
+        env = await start(tmp_path, [fakes.simple_answer("Lid raqami +998 90 123 45 67, ertaga keladi.")])
+        try:
+            await env.ctx.reports.store.add_person("leader", username=None, user_id=LEADER, name="Rahbar")
+            await env.send_text("Aziza kim?", user_id=LEADER)
+            reply = [m.text for m in env.session.of("SendMessage") if m.chat_id == LEADER][-1]
+            assert "123 45 67" not in reply and "[raqam]" in reply
+            assert "123 45 67" not in str(env.ctx.reports.leader_memory.history(LEADER))
         finally:
             await env.close()
     run(go())

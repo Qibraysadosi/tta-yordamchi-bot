@@ -227,7 +227,7 @@ async def main() -> None:
         FAKE_TG=f"http://127.0.0.1:{port}", APP_DIR=str(app_dir), REQ_STAMP=str(stamp),
         BOT_COMMAND=f"{sys.executable} {HERE / 'wrapper.py'}", TELEGRAM_BOT_TOKEN=TOKEN,
         ANTHROPIC_API_KEY="sk-ant-api03-test", OWNER_IDS=str(OWNER), PYTHONUNBUFFERED="1", BACKUP_TIME="off",
-        PYTHONDONTWRITEBYTECODE="1", GITHUB_REPO="off", UPDATE_CHECK="off", BOT_UPDATE_PROBATION="1",
+        PYTHONDONTWRITEBYTECODE="1", GITHUB_REPO="off", UPDATE_CHECK="off", UPDATE_PROBATION="1",
     )
     log_file = open(work / "launcher.log", "w")
     proc = await asyncio.create_subprocess_exec(

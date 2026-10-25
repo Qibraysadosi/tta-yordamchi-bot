@@ -131,6 +131,7 @@ class ReportService:
     async def save_schedule(self, data: dict) -> Schedule:
         schedule = (await self.schedule()).updated(data)
         await self.ctx.db.set_config(SCHEDULE_KEY, schedule.to_json())
+        self.archive.forget_details()  # davr chegaralari (hisobot vaqti, kunlar) o'zgargan bo'lishi mumkin
         return schedule
 
     async def known_statuses(self) -> dict[str, str]:
@@ -140,6 +141,7 @@ class ReportService:
 
     def statuses_changed(self) -> None:
         self._known = None
+        self.archive.forget_details()
 
     def owners(self) -> list[int]:
         return sorted(self.ctx.settings.owner_ids)

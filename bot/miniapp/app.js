@@ -138,7 +138,7 @@
     if (reportModule === null) {
       reportModule = window.TTAReport ? window.TTAReport({
         api, esc, row, toggleRow, chev, emptyState, skeleton, openSheet, closeSheet, toast, notify, guard, state,
-        rerender: () => render(),
+        rerender: () => render(), seq: () => renderSeq,
       }) : false;
     }
     return reportModule || null;
@@ -188,8 +188,12 @@
       : visible(reportTabs()).some((t) => t.id === route) ? a.report : false;
     if (!ok) {
       [route, param] = defaultRoute(first);
-      // ochilishdagi tgWebApp... yoki noma'lum manzil o'rniga — tanlangan ekran (hashchange'siz)
-      try { history.replaceState(null, '', '#' + route + (param ? '/' + param : '')); } catch (e) { /* yo'q */ }
+      // ochilishdagi tgWebApp... yoki noma'lum manzil o'rniga — tanlangan ekran (hashchange'siz).
+      // Havola kunni ochsa (hisobot_YYYYMMDD), ostiga bo'limning asosiy ekrani qo'yiladi — «Orqaga» o'sha yerga qaytaradi
+      try {
+        history.replaceState(null, '', '#' + route);
+        if (param) history.pushState(null, '', '#' + route + '/' + param);
+      } catch (e) { /* yo'q */ }
     }
     state.route = route;
     state.param = param;

@@ -61,7 +61,7 @@ class Schedule:
     def updated(self, data: dict) -> "Schedule":
         days = self.days
         if "days" in data and isinstance(data["days"], (list, tuple)):
-            picked = sorted({int(d) for d in data["days"] if str(d).lstrip("-").isdigit() and 0 <= int(d) <= 6})
+            picked = sorted({int(d) for d in data["days"] if str(d).isdecimal() and 0 <= int(d) <= 6})
             days = tuple(picked) or self.days
         remind = self.remind_minutes
         if "remind_minutes" in data:

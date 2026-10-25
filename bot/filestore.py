@@ -58,10 +58,23 @@ class FileStore:
             await self.db.set_file_path(item.id, None)
             total -= item.size
 
-    def read(self, item: StoredFile) -> bytes | None:
+    def locate(self, item: StoredFile) -> Path | None:
+        """Nusxa yo'li — faqat data/files ichidagi mavjud fayl (bazadagi yo'l tashqariga chiqarmasin)."""
         if not item.path:
             return None
-        path = self.root / item.path
+        try:
+            root = self.root.resolve()
+            path = (root / item.path).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        return path
+
+    def read(self, item: StoredFile) -> bytes | None:
+        path = self.locate(item)
+        if path is None:
+            return None
         try:
             return path.read_bytes()
         except OSError:

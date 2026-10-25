@@ -353,7 +353,8 @@ class ReportTools:
         operator = str(args.get("operator") or "").strip()
         course = _norm(args.get("course"))
         search = _norm(args.get("search"))
-        digits = re.sub(r"\D", "", search)
+        # Raqam bo'yicha qidiruv — faqat egasiga: rahbar raqam bo'laklarini so'rab, yashirilgan raqamni tiklay olmasin
+        digits = "" if self.masked else re.sub(r"\D", "", search)
         new = await store.leads_between(iso(window.start), iso(min(window.end, now)))
         ids = set(ov.lead_status) | {lead.id for lead in new}
         leads = await store.leads_by_ids(ids)
@@ -394,6 +395,8 @@ class ReportTools:
                 "note": "status — lidning hozirgi (so'nggi) natijasi; marked_by — uni belgilagan operatorlar"}
         if self.masked:
             data["phones"] = "yashirilgan (rahbar uchun)"
+            if re.search(r"\d{3}", search):
+                data["search_note"] = "telefon raqami bo'yicha qidiruv rahbar uchun yopiq — ism bo'yicha qidiring"
         return data
 
     # -------------------------------------------------------------- task_status

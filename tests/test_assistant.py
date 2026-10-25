@@ -117,6 +117,11 @@ def test_report_tools(tmp_path):
             assert "888 77 66" not in json.dumps(masked, ensure_ascii=False)
             task = json.loads(await hidden.run("task_status", {"assignee": "sardor"}))
             assert task["tasks"][0]["text"] == "Shartnomani [raqam] bilan kelishish"
+            # raqam bo'laklari bilan qidirib yashirilgan raqamni tiklab bo'lmaydi
+            probe = json.loads(await hidden.run("report_leads", {"period": "this_week", "search": "123 45"}))
+            assert probe["total"] == 0 and "yopiq" in probe["search_note"]
+            by_name = json.loads(await hidden.run("report_leads", {"period": "this_week", "search": "aziza"}))
+            assert [x["name"] for x in by_name["leads"]] == ["Aziza Karimova"]
         finally:
             await env.close()
     run(go())

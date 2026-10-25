@@ -42,8 +42,13 @@ TOOLS_GUIDE = """Vositalar (fayl bilan ishlash):
 - Fayl nomini mazmunli qo'y (masalan «Hisobot_2026_sentabr»). Bir so'rovda kerakli fayllarni yaratib bo'lgach javobni yakunla; bir xil faylni qayta yaratma. Vosita xato qaytarsa, sababini foydalanuvchiga qisqa tushuntir."""
 
 
-def specs() -> list[dict]:
-    """Claude'ga yuboriladigan vositalar ro'yxati (JSON schema)."""
+def specs(tctx: "ToolContext | None" = None) -> list[dict]:
+    """Claude'ga yuboriladigan vositalar ro'yxati (JSON schema); hisobotga ruxsati borga report_* vositalari ham."""
+    extra = tctx.reports.specs() if tctx is not None and tctx.reports is not None else []
+    return _file_specs() + extra
+
+
+def _file_specs() -> list[dict]:
     return [
         {
             "name": "create_document",
@@ -263,6 +268,7 @@ class ToolContext:
     live: Any = None  # LiveMessage — holat qatori uchun
     log_usage: Any = None  # async (model, numbers, cost) — tarjima xarajatini yozish
     on_file: Any = None  # async (name, data, telegram_file_id) — yaratilgan faylni galereyaga yozish
+    reports: Any = None  # bot/reports/assistant.py: ReportTools — hisobot savollari (egasi, rahbar)
     sent: list[str] = field(default_factory=list)
     cost: float = 0.0
 
@@ -536,6 +542,9 @@ HANDLERS = {
 
 
 async def run(tctx: ToolContext, name: str, args: dict) -> str:
+    if tctx.reports is not None and name in tctx.reports.names:
+        await tctx.status("📊 Hisobot ma'lumoti olinmoqda…")
+        return await tctx.reports.run(name, args)
     handler = HANDLERS.get(name)
     if handler is None:
         raise ToolError(f"Noma'lum vosita: {name}")

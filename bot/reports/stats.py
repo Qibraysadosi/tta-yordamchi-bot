@@ -61,7 +61,7 @@ class Schedule:
     def updated(self, data: dict) -> "Schedule":
         days = self.days
         if "days" in data and isinstance(data["days"], (list, tuple)):
-            picked = sorted({int(d) for d in data["days"] if str(d).lstrip("-").isdigit() and 0 <= int(d) <= 6})
+            picked = sorted({int(d) for d in data["days"] if str(d).isdecimal() and 0 <= int(d) <= 6})
             days = tuple(picked) or self.days
         remind = self.remind_minutes
         if "remind_minutes" in data:
@@ -129,6 +129,15 @@ def current_day(now: datetime, s: Schedule) -> date:
         if candidate.weekday() in s.days and period_end(candidate, s, tz) > now:  # type: ignore[arg-type]
             return candidate
     return now.date()
+
+
+def display_day(now: datetime, s: Schedule) -> date:
+    """Ko'rsatish uchun davr (/hisobot, Mini App): hisobot vaqtidan yarim tungacha — hozirgina tugagan bugungi davr
+    (keyingisi hali bo'sh), qolgan paytda — joriy davr."""
+    today = now.date()
+    if today.weekday() in s.days and period_end(today, s, now.tzinfo) <= now:  # type: ignore[arg-type]
+        return today
+    return current_day(now, s)
 
 
 def latest_due_day(now: datetime, s: Schedule) -> date | None:

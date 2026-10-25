@@ -8,6 +8,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Call center hisobotlari (📊 /hisobot):** bot lidlar guruhida operatorlarning reaksiya va izohlarini o'qiydi (izohni AI tahlil qiladi) va har kuni 19:00 da rahbarlar guruhiga jadval yuboradi: kim nechta lidga qo'ng'iroq qildi, nechtasi keladi / ko'tarmadi / kelmaydi, kurslar va rad sabablari. Hech kim belgilamagan lid haqida operatorlarga eslatadi. Sozlash — Mini App → Hisobotlar (pastda «Call center hisobotlari»)
 - **Vazifalar (📋 /vazifa):** «#vazifa @username nima qilish kerak, qachongacha» — guruhda yoki botga lichkada. Bot ✍️ qo'yadi, muddatida «📋 Vazifalar» guruhida ijrochini belgilab «Bajardingizmi?» deb so'raydi (Ha / Yo'q), javob bo'lmasa qayta so'raydi va sizga xabar beradi. Takroriy vazifalar («har dushanba») ham bor; ro'yxat — /vazifalar va Mini App
 - **Kundalik va Excel (📓 /kundalik, 📊 /excel):** har ish kuni 20:00 da sizga lichkada kundalik (call center raqamlari va vazifalar); har dushanba va oyning 1-sanasi haftalik / oylik Excel hisobot — rahbarlar guruhiga telefon raqamlari yashirilgan nusxa, sizga to'liq nusxa. Hammasi Mini App → Hisobotlar → «Arxiv»da
+- **AI'dan hisobot so'rash (v1.10):** chatda oddiy yozing — «bugun nechta qo'ng'iroq bo'ldi?», «kecha kim «keladi» dedi?», «Malika vazifani bajardimi?» — bot hisobot ma'lumotini o'qib javob beradi (raqamlar va ro'yxatlar: ism, telefon, kim qo'ng'iroq qildi, izoh). Rahbarlar ham botga yozib so'raydi (telefon raqamlari yashirilgan). Batafsil — pastda «AI'dan hisobot so'rash»
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
 - **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
@@ -15,7 +16,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Javob ostidagi tugmalar:** 🔄 qayta, ✂️ qisqartirish, 🌐 tarjima (uz/ru/en), 📄 Word fayl, 🔡 kirill yozuvi
 - **Suhbatlar tarixi:** `/tarix` — eski suhbatlar ro'yxati va qidiruv, istalganiga qaytib davom ettirish
 - **Shablonlar:** `/shablon` — tez-tez yuboriladigan so'rovlar bir tugmada
-- **Havolalarni o'qish:** maqola yoki PDF havolasi yuborilsa, bot uni o'qib chiqadi
+- **Havolalarni o'qish:** maqola yoki PDF havolasi yuborilsa, bot uni o'qib chiqadi (ichki tarmoq manzillari — localhost, 10.x, 192.168.x — o'qilmaydi)
 - **Byudjet nazorati:** kredit 50/80/100% ga yetganda egasiga xabar; 90% dan keyin hamma tejamkor modelga o'tadi
 - **Kunlik zaxira:** `data/bot.db` nusxasi har kuni egasiga yuboriladi (`/zaxira` — hozir). Nusxaga suhbatlardagi PDF/rasm baytlari kirmaydi (Telegram 50 MB chegarasiga sig'sin); baribir katta bo'lsa `.zip` qilinadi yoki bot to'liq bazani serverdan olishni aytadi
 - **Lotin ↔ kirill:** `/kirill`, `/lotin`
@@ -126,17 +127,17 @@ Bot lidlar guruhidagi (kanalning izohlar guruhi) har bir lid postini, operatorla
 
 1. **Lidlar guruhi.** Botni kanalning izohlar guruhiga (masalan, «KOMMENTARIYA TA LIDLAR») qo'shing va **admin** qiling — huquq belgilash shart emas, lekin admin bo'lmasa bot reaksiyalarni ko'rmaydi. Bot sizga lichkada «Bu guruh nima uchun?» deb so'raydi → **📥 Lidlar** → **✅ Tayyor**.
 2. **Rahbarlar guruhi.** Botni rahbarlar guruhiga qo'shing (admin shart emas) → **👔 Rahbarlar** → **✅ Tayyor**. Kunlik hisobot shu guruhga keladi; bunday guruh bo'lmasa — sizga lichkada.
-3. **Operatorlar.** Mini App → Hisobotlar → Operatorlar → «+ Qo'shish»: Telegram username (yoki ID) va ism. Ro'yxatda yo'q odam qo'ng'iroq qilsa, hisobotda «➕ Ro'yxatda yo'q» qatorida ko'rinadi (bir bosishda operator yoki istisno qilinadi). Har operator botga bir marta `/start` bossin — belgilanmagan lidlar haqida eslatma oladi (AI bo'limi ochilmaydi).
+3. **Operatorlar.** Mini App → Hisobotlar → Operatorlar → «+ Qo'shish»: Telegram username (yoki ID) va ism. Ro'yxatda yo'q odam qo'ng'iroq qilsa, hisobotda «➕ Ro'yxatda yo'q» qatorida ko'rinadi (bir bosishda operator yoki istisno qilinadi). Har operator botga bir marta `/start` bossin — belgilanmagan lidlar haqida eslatma oladi (AI bo'limi ochilmaydi). Botni avval ochgan operator ro'yxatga qo'shilishi bilan salom xabarini oladi va darrov ulanadi.
 4. **Rahbarlar kirishi.** Mini App → Hisobotlar → Sozlamalar → «Kirish · rahbarlar»: qo'shilgan rahbar botni ochganda «📊 Hisobotlar» tugmasini oladi va faqat shu bo'limni ko'radi, sozlamalarni o'zgartira olmaydi. Parol kerak emas.
 5. **«📊 Batafsil» tugmasi (ixtiyoriy).** Kunlik hisobot ostida Mini App'ni o'sha kun bilan ochadigan tugma: @BotFather → botingiz → Bot Settings → Configure Mini App → Enable Mini App → `WEBAPP_URL` manzili. Bot buni o'zi aniqlaydi (10 daqiqagacha), qayta ishga tushirish shart emas.
 
-**Statuslar** (Mini App → Sozlamalar'da qo'shiladi va o'zgartiriladi): 👍 keladi · 👎 kelmaydi · 🆒 ko'tarmadi · 🤔 o'ylayapti · 🤝 Telegram'dan yozadi · 💔 umuman yo'q. Operator lid postiga shu emojini bosadi yoki izoh yozadi. Izohni AI (`REPORT_MODEL`, standart Haiku 5.5) o'qib, statusni, rad sababini va qayta qo'ng'iroq vaqtini ajratadi; telefon raqamlar AI'ga yuborilmaydi. Reaksiya va izoh mos kelmasa, eng so'nggisi olinadi (hisobotda «⚠️ Ziddiyat»). Bir odam bir lidni bir marta sanaydi.
+**Statuslar** (Mini App → Sozlamalar'da qo'shiladi va o'zgartiriladi): 👍 keladi · 👎 kelmaydi · 🆒 ko'tarmadi · 🤔 o'ylayapti · 🤝 Telegram'dan yozadi · 💔 umuman yo'q. Operator lid postiga shu emojini bosadi yoki izoh yozadi. Izohni AI (`REPORT_MODEL`, standart Haiku 5.5) o'qib, statusni, rad sababini va qayta qo'ng'iroq vaqtini ajratadi; izoh tahlilida telefon raqamlar AI'ga yuborilmaydi (siz AI'dan hisobot so'raganingizda esa — to'liq ma'lumot, rahbarlarga — raqamlarsiz, pastda «AI'dan hisobot so'rash»). Reaksiya va izoh mos kelmasa, eng so'nggisi olinadi (hisobotda «⚠️ Ziddiyat»). Bir odam bir lidni bir marta sanaydi.
 
-**Kunlik hisobot:** standart 19:00, dushanba–shanba. Davr — oldingi hisobot vaqtidan shu vaqtgacha (yakshanba dushanba hisobotiga qo'shiladi). Ichida: operatorlar jadvali (jami lid va har status soni), ro'yxatda yo'qlar, yangi va belgilanmagan lidlar, kurslar bo'yicha 👍, izohlardan rad sabablari va qayta qo'ng'iroq so'raganlar. Bot o'chiq paytda o'tib ketgan hisobot ishga tushgach «kechikib yuborildi» belgisi bilan keladi (36 soatgacha). Rahbarlar guruhiga yuborib bo'lmasa (bot chiqarilgan), hisobot sizga keladi; tarmoq xatosida 5 daqiqadan keyin qayta uriniladi. Bir kunga bitta kunlik hisobot: vaqtni o'zgartirsangiz, o'sha kun hisoboti qayta kelmaydi. Vaqt, kunlar, eslatma va ish vaqti — Mini App → Hisobotlar → Sozlamalar.
+**Kunlik hisobot:** standart 19:00, dushanba–shanba (2 daqiqa kutib yig'iladi — so'nggi daqiqadagi belgilar ham kirsin). Davr — oldingi hisobot vaqtidan shu vaqtgacha (yakshanba dushanba hisobotiga qo'shiladi). Ichida: operatorlar jadvali (jami lid va har status soni), ro'yxatda yo'qlar, yangi va belgilanmagan lidlar, kurslar bo'yicha 👍, izohlardan rad sabablari va qayta qo'ng'iroq so'raganlar. Bot o'chiq paytda o'tib ketgan hisobot ishga tushgach «kechikib yuborildi» belgisi bilan keladi (36 soatgacha). Rahbarlar guruhiga yuborib bo'lmasa (bot chiqarilgan), hisobot sizga keladi; tarmoq yoki Telegram'ning vaqtinchalik xatosida 5 daqiqadan keyin qayta uriniladi (6 martagacha, keyin — sizga), hisobot olgan guruhga ikkinchi marta bormaydi. Bir kunga bitta kunlik hisobot: vaqtni o'zgartirsangiz, o'sha kun hisoboti qayta kelmaydi. Vaqt, kunlar, eslatma va ish vaqti — Mini App → Hisobotlar → Sozlamalar.
 
-**Eslatma:** yangi lidni 30 daqiqa ichida hech kim belgilamasa (reaksiya yoki izoh), `/start` bosgan operatorlarga lichkada havolalar bilan eslatma boradi — faqat ish vaqtida (09:00–19:00) va hisobot kunlarida, kamida 15 daqiqa oralig'ida (yangi lidlar bitta xabarda). Lid postidan boshqa xabarlarga (e'lon, savol) qo'yilgan reaksiya qo'ng'iroq hisoblanmaydi.
+**Eslatma:** yangi lidni 30 daqiqa ichida hech kim belgilamasa (reaksiya yoki izoh), `/start` bosgan operatorlarga lichkada havolalar bilan eslatma boradi — faqat ish vaqtida (09:00–19:00) va hisobot kunlarida, kamida 15 daqiqa oralig'ida (yangi lidlar bitta xabarda). Kechqurun va dam kunlari tushgan lidlar keyingi ish kuni ertalab sanasi bilan eslatiladi. Lid postidan boshqa xabarlarga (e'lon, savol, raqamsiz rasm yoki hujjat, kanal e'loni, stiker) qo'yilgan reaksiya qo'ng'iroq hisoblanmaydi.
 
-**Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Arxiv» — yuborilgan kunlik hisobotlar, haftalik va oylik Excel, kundalik (faqat egasi); «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, kundalik va Excel, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish»; `/guruhlar` — guruhlar turini o'zgartirish.
+**Mini App → Hisobotlar:** «Bugun» — jonli holat va oldingi kunlar; «Operatorlar» — ro'yxat va natijalar; «Arxiv» — yuborilgan kunlik hisobotlar, haftalik va oylik Excel, kundalik (faqat egasi); «Sozlamalar» (faqat egasi) — guruhlar, statuslar, hisobot vaqti, kundalik va Excel, rahbarlar, istisnolar va holat. Chatda: `/hisobot` — hozirgi holat va «Rahbarlarga yuborish» (19:00 dan yarim tungacha — bugungi tugagan hisobot); `/guruhlar` — guruhlar turini o'zgartirish.
 
 **Xarajat:** izoh tahlili arzon modelda (100 ta izoh ≈ $0.01 dan kam), `/xarajat` da «📊 Guruh tahlili» qatorida ko'rinadi.
 
@@ -168,6 +169,18 @@ Vazifani faqat siz (egasi) berasiz — xabar **`#vazifa`** yoki **`Vazifa:`** bi
 **Excel hisobot** — har dushanba 09:00 da o'tgan hafta, oyning 1-sanasi 09:00 da o'tgan oy. Rahbarlar guruhiga — telefon raqamlari yashirilgan nusxa (`+998 90 ***-**-67`; izoh va vazifa matnidagi raqamlar ham), sizga lichkada — to'liq nusxa. Varaqlar: **Umumiy** (asosiy ko'rsatkichlar, operatorlar jadvali, kurslar, rad sabablari), **Kunlar** (har kungi hisobot davri), **Lidlar** (sana, ism, telefon, yosh, tuman, kurs, so'nggi natija, kim belgiladi, so'nggi izoh, havola), **Vazifalar**. Davr — kunlik hisobotlar davrlarining yig'indisi, shuning uchun raqamlar kunlik hisobotlar qoidasida (bir davrda bitta lid bir operatorga bir marta). Fayl kimgadir yetmasa (masalan, guruhga), faqat o'shanga qayta uriniladi — boshqalarga ikki marta bormaydi; sizga bir marta xabar keladi. Bot o'chiq bo'lsa — haftalik 2 kun, oylik 5 kun ichida yetkaziladi; v1.9 o'rnatilgunga qadar o'tgan davrlar avtomatik kelmaydi. Rahbarlar nusxasida ism, tuman, izoh kabi har qanday matndagi telefon raqamlari ham yashiriladi.
 
 **Qo'lda:** `/excel` → o'tgan / shu hafta, o'tgan / shu oy (sizga to'liq nusxa). **Mini App → Hisobotlar → Arxiv:** kunlik hisobotlar (bosilsa — o'sha kun), haftalar va oylar (natijalar + «📤 Excel'ni chatga yuborish»; rahbarga telefonlari yashirilgan nusxa keladi), kundaliklar (faqat siz). Vaqtlar va yoqish/o'chirish — Sozlamalar → «Kundalik va Excel».
+
+## AI'dan hisobot so'rash
+
+Hisobot ma'lumotini AI o'zi o'qiydi — savolni oddiy so'z bilan yozasiz:
+
+- «Bugun nechta qo'ng'iroq bo'ldi? Nechtasi keladi?» · «Kecha Malika nechta lidga qo'ng'iroq qildi?»
+- «Shu hafta kimlar «kelmaydi» dedi, sabablari?» · «Belgilanmagan lidlar ro'yxati» · «90 123 raqamli lid kim edi?»
+- «Sardor vazifani bajardimi?» · «Muddati o'tgan vazifalar» · «O'tgan oy natijalari»
+
+**Siz (egasi)** — botdagi oddiy suhbatda, `/model` da tanlangan model bilan (standart Opus 5.5); to'liq ma'lumot: ismlar, telefonlar, kim qo'ng'iroq qildi, izohlar, havolalar. Raqamlar kunlik hisobot qoidasida: «bugun» — joriy hisobot davri (masalan, kecha 19:00 → bugun 19:00), bir davrda bitta lid bir operatorga bir marta sanaladi. Javobni Word yoki Excel qilib berishni ham so'rash mumkin.
+
+**Rahbarlar** (Mini App → Hisobotlar → Sozlamalar → «Kirish · rahbarlar» ro'yxatidagilar) — botga lichkada savol yozadi, AI faqat hisobot va vazifalar bo'yicha javob beradi: telefon raqamlari yashirilgan (`+998 90 ***-**-67`; raqam bo'yicha qidiruv ham yopiq), sozlamalarni o'zgartira olmaydi, internet va fayl vositalari yo'q. Har rahbarga kuniga `LEADER_DAILY_LIMIT` ta savol (standart 30, `0` — cheklanmagan). Xarajat umumiy kreditdan, `/xarajat` da «👔 rahbar ismi» qatorida ko'rinadi.
 
 ## Ishlab chiquvchilar uchun
 
@@ -201,7 +214,7 @@ Yangilanishni avval sinov botida tekshirish uchun:
 1. Claude'dan yangi versiyani `.zip` qilib oling.
 2. Botga `/yangilash` yozing, keyin shu `.zip` faylni yuboring (yoki faylni `/yangilash` izohi bilan yuboring).
 3. Bot arxivni tekshiradi va nima o'zgarishini (versiya, o'zgargan fayllar, izohlar) ko'rsatadi → **✅ O'rnatish** ni bosing.
-4. Bot 10–30 soniyaga qayta ishga tushadi va «✅ Bot yangilandi: v… → v…» deb yozadi.
+4. Bot qayta ishga tushadi va yangi versiya 30 soniya (`UPDATE_PROBATION`) muammosiz ishlagach «✅ Bot yangilandi: v… → v…» deb yozadi (shu vaqt ichida yiqilsa — eski versiya avtomatik tiklanadi).
 
 Xavfsizlik:
 - Har yangilanishdan oldin joriy versiya zaxiraga olinadi (oxirgi 5 tasi saqlanadi).
@@ -276,6 +289,7 @@ Skript oxirida «✅ TAYYOR» chiqadi. Qo'shimcha sozlamalar (`DEFAULT_MODEL`, `
 | Yangilash | Telegram'da `/yangilash github` (GitHub'dan) yoki `/yangilash` + .zip (yuqoriga qarang). Faqat `Dockerfile`, `docker-compose.yml` yoki `launcher.py` o'zgarsa: fayllarni almashtirib → `docker compose up -d --build` |
 | To'xtatish | `docker compose down` |
 | Zaxira nusxa | `data/` papkasini saqlab qo'ying (baza va kod zaxiralari) |
+| Bazani zaxiradan tiklash | `docker compose stop` → `data/bot.db-wal` va `data/bot.db-shm` ni o'chiring → zaxira faylni (`.zip` bo'lsa — ichidagini) `data/bot.db` o'rniga qo'ying → `docker compose start`. WAL fayllari qolsa, eski yozuvlar yangi bazaga qo'shilib, uni buzadi |
 
 Botning xulq-atvori `prompts/system.md` faylida. Uni tahrirlasangiz, keyingi xabardan kuchga kiradi — qayta ishga tushirish shart emas. Konteyner loyiha papkasini to'liq ulaydi (`./:/app`), shuning uchun `/yangilash` yozgan kod konteyner qayta yig'ilganda ham saqlanadi.
 

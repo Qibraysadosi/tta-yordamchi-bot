@@ -20,6 +20,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Iterable
 
 from aiogram import Bot
@@ -60,6 +61,8 @@ MAX_RETRY = timedelta(hours=6)
 CATCH_UP = {"week": timedelta(days=2), "month": timedelta(days=5)}  # bot o'chiq bo'lsa — shu muddat ichida yuboriladi
 FLUSH_BATCHES = 5
 LIST_LIMIT = {WEEK: 26, MONTH: 12}
+# Arxiv davri ko'rsatkichlari xotirada saqlanadi (har bosishda butun oy qayta hisoblanmasin), soniya
+DETAIL_TTL = {True: 60.0, False: 600.0}  # joriy davr — 1 daqiqa, yopilgan — 10 daqiqa
 SHOWN = 5  # kundalikdagi ro'yxatlar
 TASK_TEXT = 70
 STATE_TEXT = {
@@ -246,6 +249,11 @@ class ArchiveService:
         self._journal_retry: datetime | None = None
         self._export_retry: dict[str, tuple[datetime, int]] = {}  # davr → (keyingi urinish, urinishlar soni)
         self._warned: set[str] = set()  # egasiga aytilgan muammolar (davr bo'yicha bir marta)
+        self._details: dict[str, tuple[float, bool, dict]] = {}  # davr → (vaqt, joriymi, ko'rsatkichlar)
+
+    def forget_details(self) -> None:
+        """Statuslar o'zgarganda — saqlangan ko'rsatkichlar eskirdi."""
+        self._details.clear()
 
     @property
     def tz(self):
@@ -715,9 +723,14 @@ class ArchiveService:
     async def detail(self, kind: str, first: date, last: date, now: datetime) -> dict:
         s = await self.reports.schedule()
         period = self.period(kind, first, last, s, now)
-        _, _, summary = await self.summarize(period, now, s)
-        if not period.live:
-            await self.store.save_export(period, summary, sent=False)
+        cached = self._details.get(period.key)
+        if cached is not None and cached[1] == period.live and monotonic() - cached[0] < DETAIL_TTL[period.live]:
+            summary = cached[2]
+        else:
+            _, _, summary = await self.summarize(period, now, s)
+            self._details[period.key] = (monotonic(), period.live, summary)
+            if not period.live:
+                await self.store.save_export(period, summary, sent=False)
         row = await self.store.export(period.key)
         sent = self.local(row["sent_at"]) if row and row["sent_at"] else None
         return {"key": period.key, "kind": kind, "label": period.label, "title": period.title, "live": period.live,

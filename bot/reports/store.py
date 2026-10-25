@@ -430,6 +430,20 @@ class ReportStore:
         row = await self._one("SELECT * FROM rp_leads WHERE chat_id = ? AND message_id = ?", (chat_id, message_id))
         return _lead(row) if row else None
 
+    async def remember_album(self, chat_id: int, message_id: int, group_id: str) -> None:
+        await self._run("INSERT OR IGNORE INTO rp_album (chat_id, message_id, group_id) VALUES (?, ?, ?)",
+                        (chat_id, message_id, group_id))
+
+    async def album_lead(self, chat_id: int, message_id: int) -> Lead | None:
+        """Kanal albomining izohsiz xabari → shu albomdagi lid (kartochka izohi albomning boshqa xabarida)."""
+        row = await self._one(
+            "SELECT l.* FROM rp_album a JOIN rp_album b ON b.chat_id = a.chat_id AND b.group_id = a.group_id"
+            " JOIN rp_leads l ON l.chat_id = b.chat_id AND l.message_id = b.message_id"
+            " WHERE a.chat_id = ? AND a.message_id = ? AND l.source != 'stub' ORDER BY l.message_id LIMIT 1",
+            (chat_id, message_id),
+        )
+        return _lead(row) if row else None
+
     async def lead(self, lead_id: int) -> Lead | None:
         row = await self._one("SELECT * FROM rp_leads WHERE id = ?", (lead_id,))
         return _lead(row) if row else None

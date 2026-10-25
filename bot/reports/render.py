@@ -64,7 +64,7 @@ def table(ov: Overview) -> str:
 
 
 def _breakdown(row: Row, cols: list[str]) -> str:
-    return ", ".join(f"{c} {row.counts[c]}" for c in cols if row.counts.get(c))
+    return ", ".join(f"{html.escape(c)} {row.counts[c]}" for c in cols if row.counts.get(c))
 
 
 def _period_line(ov: Overview, interim_at: datetime | None, late: bool) -> str:
@@ -97,7 +97,7 @@ def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
 
     positive = [s for s in ov.statuses if s.positive]
     if positive and any(p for _, _, p in ov.courses):
-        mark = positive[0].emoji
+        mark = html.escape(positive[0].emoji)
         shown = [(c, p) for c, _, p in ov.courses if p][:COURSES_SHOWN]
         rest = sum(p for _, _, p in ov.courses) - sum(p for _, p in shown)
         parts = [f"{html.escape(c)} {p}" for c, p in shown] + ([f"boshqa {rest}"] if rest else [])

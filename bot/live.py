@@ -9,7 +9,7 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.enums import ChatAction, ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import AiogramError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters
 
 from .tgformat import preview
@@ -98,17 +98,24 @@ class LiveMessage:
         return f"{self.status} {int(time.monotonic() - self.started)} s"
 
     async def _tick(self) -> None:
+        """Oraliq ko'rinish. Hech qachon yiqilmaydi: Telegram'ning har qanday xatosi (buzuq javob ham) faqat logga —
+        aks holda yakuniy javob ko'rsatilmay qolardi."""
         last_typing = 0.0
         while True:
             await asyncio.sleep(self.INTERVAL)
-            now = time.monotonic()
-            if now - last_typing >= self.TYPING_EVERY:
-                last_typing = now
-                with contextlib.suppress(TelegramAPIError):
-                    await self.bot.send_chat_action(chat_id=self.chat_id, action=ChatAction.TYPING)
-            rendered = self._render()
-            if rendered != self._shown:
-                await self._edit_preview(rendered)
+            try:
+                now = time.monotonic()
+                if now - last_typing >= self.TYPING_EVERY:
+                    last_typing = now
+                    with contextlib.suppress(AiogramError):
+                        await self.bot.send_chat_action(chat_id=self.chat_id, action=ChatAction.TYPING)
+                rendered = self._render()
+                if rendered != self._shown:
+                    await self._edit_preview(rendered)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Oraliq ko'rinish yangilanmadi: %s", exc)
 
     async def _edit_preview(self, text: str) -> None:
         try:
@@ -127,15 +134,21 @@ class LiveMessage:
                 self._shown = text
             else:
                 log.debug("Oraliq tahrir o'tmadi: %s", exc)
-        except TelegramAPIError as exc:
+        except AiogramError as exc:
             log.debug("Oraliq tahrir o'tmadi: %s", exc)
 
     async def stop_ticker(self) -> None:
-        if self._ticker is not None:
-            self._ticker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._ticker
-            self._ticker = None
+        ticker, self._ticker = self._ticker, None
+        if ticker is not None:
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():  # bizning vazifamiz bekor qilinmoqda — o'tkazamiz
+                    raise
+            except Exception as exc:  # noqa: BLE001 — oraliq ko'rinish xatosi yakuniy javobga to'sqinlik qilmasin
+                log.debug("Oraliq ko'rinish xato bilan tugagan: %s", exc)
 
     async def finish(self, chunks: list[tuple[str | None, str]], reply_markup: Any = None) -> None:
         """Yakuniy javob: birinchi bo'lak jonli xabar o'rniga, qolganlari yangi xabar bo'lib ketadi.
@@ -176,7 +189,7 @@ class LiveMessage:
                     html_text = None
                     continue
                 return False
-            except TelegramAPIError as exc:
+            except AiogramError as exc:  # Telegram xatosi yoki buzuq javob — yangi xabar bilan yuboriladi
                 log.warning("Yakuniy tahrir o'tmadi: %s", exc)
                 return False
         return False
@@ -201,6 +214,6 @@ class LiveMessage:
                     return
                 log.info("HTML rad etildi, oddiy matn yuboriladi: %s", exc)
                 html_text = None
-            except TelegramAPIError as exc:
+            except AiogramError as exc:
                 log.warning("Xabar yuborilmadi: %s", exc)
                 return

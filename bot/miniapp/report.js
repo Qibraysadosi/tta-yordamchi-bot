@@ -233,8 +233,12 @@
       }
       $screen.innerHTML = html + '<p class="note">' + esc(note) + '</p>';
     }
+    // Sekin javob kelguncha boshqa ekranga o'tilgan bo'lsa — panel o'sha ekran ustida ochilmaydi
+    const sameScreen = (mine) => !A.seq || mine === A.seq();
     async function periodSheet(key) {
+      const mine = A.seq && A.seq();
       const d = await api('api/report/archive/' + encodeURIComponent(key));
+      if (!sameScreen(mine)) return;
       const sm = d.summary;
       cache.period = d;
       const stat = (label, val) => '<div class="hist"><span>' + label + '</span><span>' + val + '</span></div>';
@@ -256,7 +260,9 @@
       openSheet(html);
     }
     async function journalSheet(key) {
+      const mine = A.seq && A.seq();
       const d = await api('api/report/archive/' + encodeURIComponent(key));
+      if (!sameScreen(mine)) return;
       openSheet('<h3 class="sheet-title">Kundalik</h3><p class="sheet-sub">' + esc(d.label) + '</p><div class="group"><div class="pre-text">' + esc(d.text) + '</div></div>');
     }
 
@@ -411,7 +417,9 @@
           '<p class="note">O\'chirilsa, shu emoji bo\'yicha eski natijalar «❔ aniqlanmagan» ustuniga o\'tadi.</p>' : ''));
     }
     async function taskSheet(id) {
+      const mine = A.seq && A.seq();
       const t = await api('api/report/tasks/' + id);
+      if (!sameScreen(mine)) return;
       const isOwner = owner();
       const open = t.status === 'open';
       const st = TSTATE[t.state] || TSTATE.waiting;

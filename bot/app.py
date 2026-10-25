@@ -9,7 +9,13 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
 from aiogram.types import BotCommandScopeChat, MenuButtonDefault, MenuButtonWebApp, User, WebAppInfo
 
 from . import branding, reports, scheduler, webapp
@@ -24,6 +30,7 @@ from .prompt import PromptLoader
 from .updater import UpdateManager
 
 UPDATE_CHECK_DEFAULT_TIME = "03:30"  # BACKUP_TIME o'chiq bo'lsa, GitHub tekshiruvi shu vaqtda
+CONNECT_ATTEMPTS = 10
 
 log = logging.getLogger("bot")
 
@@ -64,8 +71,9 @@ def build_claude(settings: Settings) -> ClaudeService:
     )
 
 
-async def connect(bot: Bot, owner_ids: frozenset[int] = frozenset(), attempts: int = 6) -> User:
-    """Telegram'ga ulanish: tarmoq vaqtincha uzilgan bo'lsa, bir necha marta qayta urinadi."""
+async def connect(bot: Bot, owner_ids: frozenset[int] = frozenset(), attempts: int = CONNECT_ATTEMPTS) -> User:
+    """Telegram'ga ulanish: tarmoq uzilsa, Telegram serveri vaqtincha xato bersa (5xx) yoki «kuting» desa (429) —
+    bir necha marta qayta urinadi (jami ~4 daqiqa): vaqtinchalik nosozlik tufayli yaxshi yangilanish qaytarilmasin."""
     me: User | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -74,7 +82,12 @@ async def connect(bot: Bot, owner_ids: frozenset[int] = frozenset(), attempts: i
             break
         except TelegramUnauthorizedError as exc:
             raise ConfigError("TELEGRAM_BOT_TOKEN noto'g'ri — @BotFather'dan olingan tokenni tekshiring") from exc
-        except TelegramNetworkError as exc:
+        except TelegramRetryAfter as exc:
+            if attempt == attempts:
+                raise
+            log.warning("Telegram kutishni so'radi (%s/%s): %s s", attempt, attempts, exc.retry_after)
+            await asyncio.sleep(min(exc.retry_after, 60) + 1)
+        except (TelegramNetworkError, TelegramServerError) as exc:
             if attempt == attempts:
                 raise
             log.warning("Telegram'ga ulanib bo'lmadi (%s/%s): %s", attempt, attempts, exc)
@@ -95,6 +108,18 @@ async def apply_menu_button(bot: Bot, webapp_url: str | None) -> None:
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Ilova", web_app=WebAppInfo(url=webapp_url)))
         else:
             await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+
+
+async def announce_after_probation(bot: Bot, ctx: AppContext, delay: float) -> None:
+    """Hammasi ishga tushib, bot `delay` soniya (UPDATE_PROBATION) ishlab turgach — yangilanish muvaffaqiyatli
+    (pending.json o'chadi). Undan oldin yiqilsa, launcher eski versiyani tiklaydi."""
+    updater = ctx.updater
+    if updater is not None and updater.pending_file.exists():
+        await asyncio.sleep(delay)
+    try:
+        await announce_update(bot, ctx)
+    except Exception:  # noqa: BLE001 — xabar yuborilmasa ham bot ishlayversin
+        log.exception("Yangilanish natijasini yakunlashda xato")
 
 
 async def announce_update(bot: Bot, ctx: AppContext) -> None:
@@ -159,7 +184,9 @@ def start_update_check_job(bot: Bot, ctx: AppContext) -> scheduler.DailyJob | No
 async def run() -> bool:
     """Botni ishlatadi. True — qayta ishga tushirish so'ralgan (yangilanish o'rnatildi)."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # HTTP so'rovlar logi to'liq URL'ni yozadi (havoladagi tokenlar, GitHub imzoli manzillari) — faqat ogohlantirishlar
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     settings = load_settings()
     db = await Database.open(settings.db_path)
@@ -195,7 +222,6 @@ async def run() -> bool:
                 "GitHub'dan yangilash: %s (token: %s, kunlik tekshiruv: %s)",
                 ctx.github.repo, "bor" if ctx.github.has_token else "yo'q", "on" if settings.update_check else "off",
             )
-        await announce_update(bot, ctx)
         if missing_libraries():
             log.warning("Kutubxonalar yo'q: %s (pip install -r requirements.txt)", ", ".join(missing_libraries()))
         try:
@@ -211,9 +237,14 @@ async def run() -> bool:
                 log.exception("Mini App serveri ishga tushmadi (port %s band?)", settings.webapp_port)
         jobs = [job for job in (start_backup_job(bot, ctx), start_update_check_job(bot, ctx)) if job is not None]
         ctx.reports.start(bot)  # izohlar tahlili, kunlik hisobot, belgilanmagan lid eslatmasi
+        # Yangilanish faqat hammasi ishga tushib, bot biroz ishlab turgach «muvaffaqiyatli» bo'ladi: undan oldingi har
+        # qanday yiqilishda pending.json qoladi va launcher eski versiyani tiklaydi
+        announcer = asyncio.create_task(announce_after_probation(bot, ctx, settings.update_probation),
+                                        name="update-probation")
         try:
             await dp.start_polling(bot)
         finally:
+            announcer.cancel()
             await ctx.reports.stop()
             for job in jobs:
                 await job.stop()

@@ -3,8 +3,9 @@
 Kartochkalar ikki xil ko'rinishda keladi (kalit: qiymat qatorlari):
   «Ism / Telefon raqami / Yoshi / Tumani / Kurs» va
   «YANGI ARIZA: Ismi / Yoshi / Raqami / Tuman / Tanlagan kursi + Qo'shimcha aloqa: ISM | p:+998…».
-Raqamlar 998 bilan yoki usiz, bo'shliq, tire, nuqta bilan yozilishi mumkin. AI ishlatilmaydi — raqamlar
-Claude'ga hech qachon yuborilmaydi."""
+Raqamlar 998 bilan yoki usiz, bo'shliq, tire, nuqta bilan yozilishi mumkin. Kartochka AI'siz o'qiladi; izoh tahlilida
+raqamlar Claude'ga yuborilmaydi (mask_phones). Egasining AI'ga hisobot savollarida esa to'liq ma'lumot ketadi,
+rahbarlarnikida — yashirilgan (bot/reports/assistant.py)."""
 from __future__ import annotations
 
 import re

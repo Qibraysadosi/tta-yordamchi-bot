@@ -253,6 +253,7 @@ class ClaudeService:
         final = None
         tool_calls = 0
         tool_rounds = 0
+        continuations = 0
 
         for _ in range(MAX_CONTINUATIONS + MAX_TOOL_ROUNDS + 1):
             convo = list(messages) + extra
@@ -306,6 +307,9 @@ class ClaudeService:
             collect_sources(final.content, sources)
             assistant_blocks.extend(final.content)
             if final.stop_reason == "pause_turn":
+                if continuations >= MAX_CONTINUATIONS:
+                    break  # uzoq qidiruv: shu yerda to'xtaymiz (javob ostida izoh chiqadi)
+                continuations += 1
                 pending_blocks.extend(final.content)
                 continue
             if final.stop_reason == "tool_use" and tool_runner is not None and tool_rounds < MAX_TOOL_ROUNDS:

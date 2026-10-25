@@ -22,7 +22,14 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import (
+    AiogramError,
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ReactionTypeEmoji, User
 
 from ..claude import ClaudeError
@@ -47,7 +54,15 @@ NO_AGAIN_AFTER = timedelta(hours=3)  # «Yo'q» dan keyin — qayta so'rash
 MAX_SILENT = 3  # shuncha so'rov javobsiz qolsa — egasiga xabar, so'rash to'xtaydi
 NO_ALERT_EVERY = 3  # har shuncha «Yo'q» da egasiga xabar
 RETRY_AFTER = timedelta(hours=1)  # guruh yo'q yoki yozib bo'lmadi — keyinroq qayta urinish
+TRANSIENT_RETRY = timedelta(minutes=5)  # tarmoq yoki Telegram serveri vaqtincha xato — tez orada qayta
+POLLS_PER_TICK = 5  # bir siklda (30 s) ko'pi bilan shuncha so'rov: guruhga daqiqasiga ~20 xabar chegarasi
 TEXT_LIMIT = 500
+EVENT_LABELS = {  # rp_task_events.kind → tarix qatori (Mini App va AI uchun)
+    "created": "qayd etildi", "asked": "«Bajardingizmi?» so'raldi", "yes": "✅ bajarildi", "no": "❌ «Yo'q» dedi",
+    "escalated": "⚠️ javob bermadi — egasiga xabar", "due": "⏰ muddat o'zgardi", "cancelled": "🗑 bekor qilindi",
+    "reopened": "↩️ qayta ochildi", "nogroup": "⚠️ guruh yo'q edi", "sendfail": "⚠️ guruhga yozib bo'lmadi",
+    "norepeat": "🔁 takror to'xtatildi",
+}
 WEEKDAY_NAMES = ("dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba")
 LIVE_MEMBER = ("member", "administrator", "creator", "restricted")
 
@@ -417,6 +432,7 @@ class TaskService:
         self.store = TaskStore(reports.ctx.db)
         self._hinted: dict[int, datetime] = {}  # «bu guruh Vazifalar emas» maslahati (guruh → vaqt)
         self._locks: dict[int, asyncio.Lock] = {}  # vazifa → qulf: fon sikli, tugmalar va egasi amallari navbat bilan
+        self.flood_until: datetime | None = None  # Telegram «kuting» degan — shu vaqtgacha so'rov yuborilmaydi
 
     def lock(self, task_id: int) -> asyncio.Lock:
         return self._locks.setdefault(task_id, asyncio.Lock())
@@ -649,6 +665,8 @@ class TaskService:
             return 0
         done = 0
         for snapshot in await self.store.due(iso(now)):
+            if done >= POLLS_PER_TICK or (self.flood_until is not None and now < self.flood_until):
+                break  # qolganlari keyingi siklda (30 s) — guruhga birdan ko'p xabar yuborilmaydi
             async with self.lock(snapshot.id):  # egasi amali yoki javob bilan bir vaqtda bo'lmasin
                 task = await self.store.get(snapshot.id)
                 if (task is None or task.status != OPEN or task.escalated or not task.next_ask_at
@@ -688,12 +706,24 @@ class TaskService:
                                 "/guruhlar → guruhni tanlang → 📋 Vazifalar")
             return False
         if task.ask_msg and task.ask_chat:  # oldingi so'rov javobsiz qoldi — tugmalari olinadi
-            with contextlib.suppress(TelegramAPIError):
+            with contextlib.suppress(AiogramError):
                 await bot.edit_message_text(self.poll_text(task, "⏳ <i>Javob bo'lmadi</i>"), chat_id=task.ask_chat,
                                             message_id=task.ask_msg, parse_mode=ParseMode.HTML)
         try:
             sent = await self._send_poll(bot, chat, task)
-        except TelegramAPIError as exc:
+        except TelegramRetryAfter as exc:  # guruhga ko'p xabar ketdi — jim kechiktiriladi (egasiga xabar shart emas)
+            self.flood_until = now + timedelta(seconds=exc.retry_after + 1)
+            await self.store.update(task.id, next_ask_at=iso(self.flood_until))
+            return False
+        except (TelegramNetworkError, TelegramServerError) as exc:
+            log.warning("Vazifa so'rovi yuborilmadi, qayta uriniladi (chat %s): %s", chat, exc)
+            await self.store.update(task.id, next_ask_at=iso(now + TRANSIENT_RETRY))
+            return False
+        except AiogramError as exc:
+            if not isinstance(exc, TelegramAPIError):  # buzuq javob (ClientDecodeError) — vaqtinchalik
+                log.warning("Vazifa so'rovi yuborilmadi, qayta uriniladi (chat %s): %s", chat, exc)
+                await self.store.update(task.id, next_ask_at=iso(now + TRANSIENT_RETRY))
+                return False
             log.warning("Vazifa so'rovi yuborilmadi (chat %s): %s", chat, exc)
             await self.store.update(task.id, next_ask_at=iso(now + RETRY_AFTER))
             if not await self.store.has_event(task.id, "sendfail"):

@@ -54,7 +54,7 @@ def test_changing_report_time_does_not_resend(tmp_path):
         try:
             await setup_groups(env)
             service = env.ctx.reports
-            assert await service.check_daily(env.bot, local(WED, "19:00"))
+            assert await service.check_daily(env.bot, local(WED, "19:02"))
             assert len(texts(env, LEADERS)) == 1
             # o'sha kuni 19:30 da vaqt 19:15 ga — chorshanba hisoboti qayta yuborilmaydi
             await service.save_schedule({"time": "19:15"})
@@ -63,7 +63,7 @@ def test_changing_report_time_does_not_resend(tmp_path):
             await service.save_schedule({"time": "18:00"})
             assert not await service.check_daily(env.bot, local(THU, "12:00"))
             assert len(texts(env, LEADERS)) == 1
-            assert await service.check_daily(env.bot, local(THU, "18:00"))  # payshanba — yangi vaqtda
+            assert await service.check_daily(env.bot, local(THU, "18:02"))  # payshanba — yangi vaqtda
             assert "22.10.2026" in texts(env, LEADERS)[-1]
         finally:
             await env.close()
@@ -77,7 +77,7 @@ def test_report_falls_back_to_owner_when_group_is_closed(tmp_path):
         try:
             await setup_groups(env)
             env.session.fail[LEADERS] = "forbidden"  # botni rahbarlar guruhidan chiqarishgan
-            assert await env.ctx.reports.check_daily(env.bot, local(WED, "19:00"))
+            assert await env.ctx.reports.check_daily(env.bot, local(WED, "19:02"))
             owner = texts(env, OWNER)[-1]
             assert "rahbarlar guruhiga yuborilmadi — sizga yuborildi" in owner and "KUNLIK HISOBOT" in owner
             assert "bot was kicked" in owner
@@ -118,14 +118,17 @@ def test_report_retried_after_network_failure(tmp_path):
             await setup_groups(env)
             service = env.ctx.reports
             env.session.fail.update({LEADERS: "network", OWNER: "network"})
-            assert await service.check_daily(env.bot, local(WED, "19:00"))
+            owner_before = len(env.session.calls)
+            assert await service.check_daily(env.bot, local(WED, "19:02"))
             assert not await service.store.report_for_day("2026-10-21")  # hech qayerga yetmadi — belgilanmaydi
-            assert not await service.check_daily(env.bot, local(WED, "19:02"))  # 5 daqiqa kutiladi
+            tried = [m.chat_id for m in env.session.calls[owner_before:] if type(m).__name__ == "SendMessage"]
+            assert tried == [LEADERS]  # vaqtinchalik xato — darrov egasiga o'tkazilmaydi, keyinroq qayta uriniladi
+            assert not await service.check_daily(env.bot, local(WED, "19:04"))  # 5 daqiqa kutiladi
             env.session.fail.clear()
-            assert await service.check_daily(env.bot, local(WED, "19:05"))
+            assert await service.check_daily(env.bot, local(WED, "19:07"))
             assert "KUNLIK HISOBOT" in texts(env, LEADERS)[-1]
             assert await service.store.report_for_day("2026-10-21")
-            assert not await service.check_daily(env.bot, local(WED, "19:10"))
+            assert not await service.check_daily(env.bot, local(WED, "19:12"))
         finally:
             await env.close()
     run(go())
@@ -268,7 +271,7 @@ def test_long_report_is_sent_in_parts(tmp_path):
             for i in range(140):
                 await store.add_person("operator", username=None, user_id=10_000 + i, name=f"Operator {i}")
             await g.post(CARD_1, ts(WED, "09:00"))
-            assert await env.ctx.reports.check_daily(env.bot, local(WED, "19:00"))
+            assert await env.ctx.reports.check_daily(env.bot, local(WED, "19:02"))
             parts = texts(env, LEADERS)
             assert len(parts) >= 2 and all(len(t) < 4096 for t in parts)
             assert parts[0].startswith("📊") and "JAMI" in parts[-1]
@@ -376,7 +379,7 @@ def test_one_failing_step_does_not_block_daily_report(tmp_path):
                 raise RuntimeError("eslatma buzildi")
 
             service.check_reminders = broken
-            await service.tick(env.bot, local(WED, "19:00"))
+            await service.tick(env.bot, local(WED, "19:02"))
             assert "KUNLIK HISOBOT" in texts(env, LEADERS)[-1]
         finally:
             await env.close()
@@ -407,10 +410,10 @@ def test_report_time_change_period_gap_is_one_off(tmp_path):
         try:
             await setup_groups(env)
             service = env.ctx.reports
-            assert await service.check_daily(env.bot, local(WED, "19:00"))
+            assert await service.check_daily(env.bot, local(WED, "19:02"))
             await service.save_schedule({"time": "20:00"})
-            assert not await service.check_daily(env.bot, local(WED, "20:00"))
-            assert await service.check_daily(env.bot, local(THU, "20:00"))
+            assert not await service.check_daily(env.bot, local(WED, "20:05"))
+            assert await service.check_daily(env.bot, local(THU, "20:02"))
             assert len(texts(env, LEADERS)) == 2
             start_, end = (local(WED, "20:00"), local(THU, "20:00"))
             assert f"{start_:%d.%m %H:%M} → {end:%d.%m %H:%M}" in texts(env, LEADERS)[-1]

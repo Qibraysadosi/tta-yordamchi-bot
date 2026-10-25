@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+from urllib.parse import urljoin
 
+import httpcore2
 import httpx2
 
 from . import media
@@ -27,6 +31,9 @@ BLOCK_TAGS = {
 }
 HEADING_TAGS = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### "}
 SKIP_HOSTS = ("t.me", "telegram.me")
+MAX_REDIRECTS = 5
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+URL_SHOWN = 80  # xato xabaridagi havola uzunligi (uzun havolalar xabarni Telegram chegarasidan oshirmasin)
 
 
 class LinkError(Exception):
@@ -154,29 +161,114 @@ def html_to_text(html: str) -> tuple[str, str]:
     return unescape(" ".join(parser.title.split())), parser.text()
 
 
-async def fetch(url: str, max_bytes: int, client: httpx2.AsyncClient | None = None) -> Fetched:
+def shown_url(url: str) -> str:
+    return url if len(url) <= URL_SHOWN else url[: URL_SHOWN - 1] + "…"
+
+
+def is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Ochiq internet manzili; IPv6 ichiga «o'ralgan» IPv4 (::ffff:, 64:ff9b::, 6to4, Teredo) ham tekshiriladi."""
+    if isinstance(address, ipaddress.IPv6Address):
+        inner = address.ipv4_mapped or address.sixtofour or (address.teredo[1] if address.teredo else None)
+        if inner is None and address in NAT64:
+            inner = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        if inner is not None and not inner.is_global:
+            return False
+    return address.is_global
+
+
+async def public_address(host: str, port: int) -> str:
+    """Nomni bir marta aniqlaydi va tekshiradi: barcha manzillari ochiq internetda bo'lsa — ulanish uchun IP.
+    localhost, ichki tarmoq (10.x, 192.168.x, 172.16–31.x), server o'zi va maxsus manzillar — LinkError."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError) as exc:
+        raise LinkError("sayt topilmadi (manzil noto'g'ri yoki internet yo'q)") from exc
+    addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses or not all(is_public(a) for a in addresses):
+        raise LinkError("ichki tarmoq manzili — bunday havola o'qilmaydi")
+    return str(addresses[0])
+
+
+async def check_public(url: str) -> None:
+    """Havoladagi manzil oldindan tekshiriladi (aniq xato matni uchun). Nom httpx2 ulanadigan ko'rinishda
+    (IDNA 2008) olinadi; asosiy himoya — ulanish paytida (_PublicOnly)."""
+    try:
+        parsed = httpx2.URL(url)
+        host = parsed.raw_host.decode("ascii")
+    except (httpx2.InvalidURL, UnicodeError, ValueError) as exc:
+        raise LinkError("havola noto'g'ri") from exc
+    if parsed.scheme not in ("http", "https") or not host:
+        raise LinkError("havola noto'g'ri")
+    await public_address(host.strip("[]"), parsed.port or (443 if parsed.scheme == "https" else 80))
+
+
+class _PublicOnly(httpcore2.AsyncNetworkBackend):
+    """Har ulanishda nom bir marta aniqlanadi, tekshiriladi va aynan shu IP'ga ulaniladi: DNS «rebinding» yoki
+    nomni ikki xil o'qish (IDNA) orqali ichki tarmoqqa o'tib bo'lmaydi. TLS va Host sarlavhasi asl nom bilan."""
+
+    def __init__(self) -> None:
+        self._inner = httpcore2.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        address = await public_address(host.strip("[]"), port)
+        return await self._inner.connect_tcp(address, port, timeout=timeout, local_address=local_address,
+                                             socket_options=socket_options)
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise LinkError("ichki manzil — bunday havola o'qilmaydi")
+
+    async def sleep(self, seconds):
+        await self._inner.sleep(seconds)
+
+
+def public_transport() -> httpx2.AsyncHTTPTransport:
+    """Faqat ochiq internetga ulanadigan transport (proksi muhit o'zgaruvchilari e'tiborsiz — to'g'ridan-to'g'ri)."""
+    transport = httpx2.AsyncHTTPTransport(trust_env=False)
+    transport._pool = httpcore2.AsyncConnectionPool(  # noqa: SLF001 — httpx2 tarmoq qatlamini tashqariga bermaydi
+        ssl_context=httpx2.create_ssl_context(), network_backend=_PublicOnly(), max_connections=10,
+    )
+    return transport
+
+
+async def _download(client: httpx2.AsyncClient, url: str, max_bytes: int, *, guard: bool) -> tuple[bytes, str, str | None]:
+    """(baytlar, content-type, charset). guard — har qadamda (yo'naltirishlar ham) manzil tekshiriladi."""
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        if guard:
+            await check_public(current)
+        async with client.stream("GET", current) as response:
+            if guard and response.is_redirect:
+                current = urljoin(current, response.headers.get("location", ""))
+                continue
+            if response.status_code >= 400:
+                raise LinkError(f"sahifa {response.status_code} xato qaytardi")
+            content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes:
+                    raise LinkError(f"fayl {max(1, max_bytes // (1024 * 1024))} MB dan katta")
+                chunks.append(chunk)
+            return b"".join(chunks), content_type, response.charset_encoding
+    raise LinkError("sahifa juda ko'p marta boshqa manzilga yo'naltirdi")
+
+
+async def fetch(url: str, max_bytes: int, client: httpx2.AsyncClient | None = None, *,
+                transport: httpx2.AsyncBaseTransport | None = None) -> Fetched:
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; TTAYordamchiBot/1.0; +https://t.me/TTA_yordamchi_bot)",
         "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5",
         "Accept-Language": "uz,ru;q=0.8,en;q=0.6",
     }
     own = client is None
-    client = client or httpx2.AsyncClient(follow_redirects=True, timeout=TIMEOUT, headers=headers)
+    # O'z mijozimiz: yo'naltirishlarni o'zimiz kuzatamiz — har bir manzil ichki tarmoqqa olib bormasligi tekshiriladi;
+    # haqiqiy ulanish faqat tekshirilgan IP'ga (public_transport)
+    client = client or httpx2.AsyncClient(follow_redirects=False, timeout=TIMEOUT, headers=headers,
+                                          transport=transport or public_transport(), trust_env=False)
     try:
         try:
-            async with client.stream("GET", url) as response:
-                if response.status_code >= 400:
-                    raise LinkError(f"sahifa {response.status_code} xato qaytardi")
-                content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size > max_bytes:
-                        raise LinkError(f"fayl {max(1, max_bytes // (1024 * 1024))} MB dan katta")
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-                header_charset = response.charset_encoding
+            data, content_type, header_charset = await _download(client, url, max_bytes, guard=own)
         except httpx2.TimeoutException as exc:
             raise LinkError("sahifa juda sekin ochildi (vaqt tugadi)") from exc
         except httpx2.HTTPError as exc:
@@ -214,7 +306,7 @@ async def read_links(text: str, max_bytes: int) -> tuple[list[dict], list[str]]:
         if isinstance(result, Fetched):
             blocks.append(result.block)
         elif isinstance(result, LinkError):
-            errors.append(f"⚠️ {url} — {result}")
+            errors.append(f"⚠️ {shown_url(url)} — {result}")
         else:
-            errors.append(f"⚠️ {url} — o'qib bo'lmadi")
+            errors.append(f"⚠️ {shown_url(url)} — o'qib bo'lmadi")
     return blocks, errors

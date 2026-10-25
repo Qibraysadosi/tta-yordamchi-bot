@@ -1,7 +1,9 @@
 """SQLite: foydalanuvchi sozlamalari, suhbat tarixi va xarajatlar jurnali."""
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +108,13 @@ CREATE TABLE IF NOT EXISTS rp_seen (
     message_id INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
 ) WITHOUT ROWID;  -- lidlar guruhida bot ko'rgan, lekin lid ham, izoh ham bo'lmagan xabarlar (e'lon, savol)
+CREATE TABLE IF NOT EXISTS rp_album (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    group_id   TEXT    NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+) WITHOUT ROWID;  -- kanal albomi xabarlari (v1.10): izohsiz rasmga izoh/reaksiya albomdagi lidga tegishli
+CREATE INDEX IF NOT EXISTS idx_rp_album_group ON rp_album (chat_id, group_id);
 CREATE TABLE IF NOT EXISTS rp_people (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL,
@@ -361,13 +370,22 @@ def _search_text(content: Any) -> str:
     return "\n".join(p for p in parts if isinstance(p, str)).casefold()
 
 
+def _vacuum_copy(source: Path, target: Path) -> None:
+    conn = sqlite3.connect(source, timeout=60)
+    try:
+        conn.execute("VACUUM INTO ?", (str(target),))
+    finally:
+        conn.close()
+
+
 class Database:
     _SETTINGS_FIELDS = frozenset(
         {"model", "effort", "web_search", "show_cost", "conv_id", "history_start_id", "model_override", "mode"}
     )
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(self, conn: aiosqlite.Connection, path: Path | None = None) -> None:
         self._conn = conn
+        self.path = path  # zaxira nusxa alohida ulanishda olinadi
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -385,7 +403,7 @@ class Database:
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.executescript(SCHEMA)
             await conn.commit()
-            db = cls(conn)
+            db = cls(conn, path)
             await db._migrate()
         except BaseException:
             # yopilmagan ulanish oqimi jarayonni to'xtatmay qo'yadi (launcher orqaga qaytara olmaydi)
@@ -426,8 +444,12 @@ class Database:
         await self._conn.close()
 
     async def vacuum_into(self, target: Path) -> None:
-        """Bazaning izchil nusxasini alohida faylga yozadi (zaxira uchun)."""
-        await self._conn.execute("VACUUM INTO ?", (str(target),))
+        """Bazaning izchil nusxasini alohida faylga yozadi (zaxira uchun). Alohida ulanishda: asosiy ulanishdagi ochiq
+        tranzaksiya (masalan, izohlar tahlili yozayotgan payt) «cannot VACUUM from within a transaction» bermasin."""
+        if self.path is None:
+            await self._conn.execute("VACUUM INTO ?", (str(target),))
+            return
+        await asyncio.to_thread(_vacuum_copy, self.path, target)
 
     # --- sozlamalar ---
     async def get_settings(self, user_id: int, default_model: str, default_web_search: bool) -> UserSettings:
@@ -464,10 +486,12 @@ class Database:
         await self._conn.commit()
 
     async def new_conversation(self, user_id: int) -> None:
-        # Yangi raqam — shu foydalanuvchining eng katta suhbat raqamidan keyingisi (tarixdan qaytilgan bo'lsa ham)
+        # Yangi raqam — shu foydalanuvchining eng katta suhbat raqamidan keyingisi (tarixdan qaytilgan bo'lsa ham).
+        # Joriy raqam ham hisobga olinadi: birinchi javob hali yozilayotganda /new bosilsa, o'sha suhbat hali bazada
+        # yo'q — yangi suhbat baribir yangi raqam olsin (eski savol-javob kontekstga kirmasin)
         await self._conn.execute(
-            "UPDATE settings SET conv_id = (SELECT COALESCE(MAX(conv_id), 0) FROM messages WHERE user_id = ?) + 1,"
-            " history_start_id = 0, model_override = NULL WHERE user_id = ?",
+            "UPDATE settings SET conv_id = MAX((SELECT COALESCE(MAX(conv_id), 0) FROM messages WHERE user_id = ?),"
+            " conv_id) + 1, history_start_id = 0, model_override = NULL WHERE user_id = ?",
             (user_id, user_id),
         )
         await self._conn.commit()

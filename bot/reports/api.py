@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from aiohttp import web
@@ -17,10 +17,11 @@ from aiohttp import web
 from ..models import label
 from ..prompt import MONTHS, WEEKDAYS
 from .archive import MONTH, WEEK, parse_key
+from .excel import hide_numbers
 from .service import ROLE_LABELS, ReportService
-from .stats import OTHER, Overview, Row, current_day, neighbour_day
+from .stats import OTHER, Overview, Row, current_day, display_day, neighbour_day, period_bounds
 from .store import PEOPLE_KINDS, ROLES, clean_username, iso
-from .tasks import CANCELLED, DONE, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
+from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -37,6 +38,11 @@ SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi
 STATUS_EMOJI_LIMIT = 8
 STATUS_LABEL_LIMIT = 30
 NAME_LIMIT = 40
+MIN_DAY = date(2000, 1, 1)  # undan oldingi sana — xato (yil 1 kabi qiymatlar hisobni buzmasin)
+
+
+def _same(text: str) -> str:
+    return text
 
 
 def _json(data: Any, status: int = 200) -> web.Response:
@@ -63,9 +69,19 @@ def _schedule(schedule) -> dict:
     return data
 
 
-def _row(ov: Overview, row: Row) -> dict:
+def _masked_summary(summary: dict | None) -> dict | None:
+    """Arxiv ko'rsatkichlaridagi operator ismlari — rahbar uchun raqamlarsiz (asl lug'at o'zgarmaydi)."""
+    if not summary or not summary.get("top"):
+        return summary
+    return dict(summary, top=[[hide_numbers(str(item[0])), *item[1:]] for item in summary["top"]])
+
+
+def _row(ov: Overview, row: Row, show: Callable[[str], str] = _same) -> dict:
     data = row.as_dict()
     data["positive"] = ov.positive(row)
+    for key in ("name", "username"):
+        if data.get(key):
+            data[key] = show(data[key])
     return data
 
 
@@ -110,6 +126,10 @@ class ReportAPI:
             raise web.HTTPBadRequest(text="JSON kutilgan edi")
         return data if isinstance(data, dict) else {}
 
+    def _show(self, request: web.Request) -> Callable[[str], str]:
+        """Rahbarga odamlar yozgan matnlardagi telefon raqamlari yashiriladi (Excel nusxasi bilan bir xil)."""
+        return _same if request[self.access_key].get("owner") else hide_numbers
+
     # ------------------------------------------------------------------ ko'rish (egasi va rahbarlar)
     async def glance(self) -> dict | None:
         """Tanlov ekrani uchun qisqa ko'rsatkichlar (joriy davr)."""
@@ -129,13 +149,15 @@ class ReportAPI:
         await service.ensure()
         now = service.now()
         schedule = await service.schedule()
-        today = current_day(now, schedule)
-        day = today
+        today = current_day(now, schedule)  # joriy (davom etayotgan) davr — eng keyingi ko'rsatiladigan kun
+        day = display_day(now, schedule)  # 19:00 dan keyin — hozirgina tugagan bugungi davr
         raw = (request.query.get("day") or "").strip()
         if raw:
             try:
                 day = datetime.strptime(raw, "%Y-%m-%d").date()
             except ValueError:
+                return _error("Sana noto'g'ri (YYYY-MM-DD)")
+            if day < MIN_DAY:
                 return _error("Sana noto'g'ri (YYYY-MM-DD)")
             if day > today:
                 day = today
@@ -152,6 +174,7 @@ class ReportAPI:
             except (ValueError, TypeError, IndexError):
                 pass
         access = request[self.access_key]
+        show = self._show(request)
         return _json({
             "day": day.isoformat(), "label": _day_label(day),
             "start": ov.start.strftime("%Y-%m-%dT%H:%M"), "end": ov.end.strftime("%Y-%m-%dT%H:%M"),
@@ -159,12 +182,12 @@ class ReportAPI:
             "next": neighbour_day(day, schedule, 1).isoformat() if day < today else None,
             "statuses": [{"id": s.id, "emoji": s.emoji, "label": s.label, "positive": s.positive} for s in ov.statuses],
             "columns": ov.columns(), "other": OTHER,
-            "rows": [_row(ov, r) for r in ov.rows], "extras": [_row(ov, r) for r in ov.extras],
+            "rows": [_row(ov, r, show) for r in ov.rows], "extras": [_row(ov, r, show) for r in ov.extras],
             "totals": _row(ov, ov.totals), "has_operator_list": ov.has_operator_list,
             "leads": {"new": ov.new_leads, "unmarked": ov.unmarked},
-            "courses": [{"course": c, "total": t, "positive": p} for c, t, p in ov.courses[:8]],
+            "courses": [{"course": show(c), "total": t, "positive": p} for c, t, p in ov.courses[:8]],
             "conflicts": ov.conflicts, "comments": ov.comments, "pending": ov.pending, "callbacks": ov.callbacks,
-            "reasons": [{"label": r, "count": n} for r, n in reasons], "reasons_grouped": clustered,
+            "reasons": [{"label": show(r), "count": n} for r, n in reasons], "reasons_grouped": clustered,
             "sent": report is not None, "sent_at": report.get("sent_at") if report else None,
             "has_groups": bool(await service.store.groups_with("leads")),
             "tasks": await service.tasks.store.task_counts(iso(now)),
@@ -174,13 +197,15 @@ class ReportAPI:
 
     async def people(self, request: web.Request) -> web.Response:
         owner = bool(request[self.access_key].get("owner"))
+        show = self._show(request)
         result: dict[str, list] = {"operator": [], "excluded": [], "leader": []}
         for person in await self.service.store.people():
             if not owner and person.kind != "operator":
                 continue  # rahbar faqat operatorlarni ko'radi (istisnolar va rahbarlar ro'yxati — egasiga)
             result.setdefault(person.kind, []).append({
-                "id": person.id, "username": person.username, "user_id": person.user_id, "name": person.name,
-                "label": person.label, "seen": person.user_id is not None, "dm_ok": person.dm_ok,
+                "id": person.id, "username": person.username, "user_id": person.user_id,
+                "name": show(person.name) if person.name else person.name,
+                "label": show(person.label), "seen": person.user_id is not None, "dm_ok": person.dm_ok,
             })
         return _json({"operators": result["operator"], "excluded": result["excluded"], "leaders": result["leader"]})
 
@@ -201,7 +226,10 @@ class ReportAPI:
             if username is None:
                 return _error("Username noto'g'ri: @ bilan yoki usiz, 4–32 ta lotin harfi, raqam yoki _ (yoki Telegram ID)")
         store = self.service.store
+        before = {p.id for p in await store.people(kind)}
         person = await store.add_person(kind, username=username, user_id=user_id, name=name)
+        if kind in ("operator", "leader") and person.id not in before and person.user_id is not None:
+            await self.service.welcome(self.bot, person)  # botni avval ochgan bo'lsa — darrov ulanadi (eslatmalar)
         # operator va istisno bir-biriga zid: biriga qo'shilsa, ikkinchisidan olinadi
         opposite = {"operator": "excluded", "excluded": "operator"}.get(kind)
         if opposite:
@@ -347,8 +375,12 @@ class ReportAPI:
         if not await service.store.groups_with("leads"):
             return _error("Hali lidlar guruhi yo'q — botni guruhga qo'shing", 409, "no_groups")
         now = service.now()
-        day = current_day(now, await service.schedule())
-        sent = await service.send_report(self.bot, day, now, interim=True)
+        schedule = await service.schedule()
+        day = display_day(now, schedule)  # 19:00 dan keyin — bugungi (tugagan) hisobot, keyingi bo'sh davr emas
+        live = now < period_bounds(day, schedule, service.tz)[1]
+        # tugagan, lekin hali yuborilmagan kun (19:00–19:02) — shu yuborish kunlik hisobot bo'ladi (takror kelmaydi)
+        record = not live and not await service.store.report_for_day(day.isoformat())
+        sent = await service.send_report(self.bot, day, now, interim=live, record=record)
         fallback = service.last_fallback  # keyingi await'dan oldin: parallel kunlik yuborish o'zgartirmasin
         if not sent:
             return _error("Hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502, "send_failed")
@@ -357,17 +389,18 @@ class ReportAPI:
         return _json({"ok": True, "sent": sent, "target": target})
 
     # ------------------------------------------------------------------ vazifalar
-    def _task(self, task: Task, now: datetime, groups: dict[int, str]) -> dict:
+    def _task(self, task: Task, now: datetime, groups: dict[int, str], show: Callable[[str], str] = _same) -> dict:
         tasks = self.service.tasks
         due = tasks.local(task.due_at)
         closed = tasks.local(task.done_at)
         created = tasks.local(task.created_at)
+        group = groups.get(task.poll_chat) if task.poll_chat else None
         return {
-            "id": task.id, "text": task.text, "who": task.who, "username": task.assignee_username,
+            "id": task.id, "text": show(task.text), "who": show(task.who), "username": task.assignee_username,
             "user_id": task.assignee_id, "due": due.strftime("%Y-%m-%dT%H:%M") if due else None,
             "due_label": due_label(due) if due else None, "due_set": task.due_set, "repeat": task.repeat or "",
             "repeat_label": repeat_label(task.repeat), "status": task.status, "state": tasks.state_of(task, now),
-            "asks": task.asks, "no_count": task.no_count, "group": groups.get(task.poll_chat) if task.poll_chat else None,
+            "asks": task.asks, "no_count": task.no_count, "group": show(group) if group else None,
             "created_label": due_label(created) if created else None, "closed_label": due_label(closed) if closed else None,
         }
 
@@ -390,7 +423,7 @@ class ReportAPI:
         groups = await self._groups()
         items = await service.tasks.store.tasks(None if status == "all" else status, 200)
         payload: dict[str, Any] = {
-            "status": status, "items": [self._task(t, now, groups) for t in items],
+            "status": status, "items": [self._task(t, now, groups, self._show(request)) for t in items],
             "counts": await service.tasks.store.task_counts(iso(now)),
             "has_group": bool(await service.store.groups_with("tasks")),
         }
@@ -405,11 +438,8 @@ class ReportAPI:
         if task is None:
             return _error("Vazifa topilmadi", 404, "not_found")
         tasks = self.service.tasks
-        data = self._task(task, self.service.now(), await self._groups())
-        labels = {"created": "qayd etildi", "asked": "«Bajardingizmi?» so'raldi", "yes": "✅ bajarildi",
-                  "no": "❌ «Yo'q» dedi", "escalated": "⚠️ javob bermadi — sizga xabar", "due": "⏰ muddat o'zgardi",
-                  "cancelled": "🗑 bekor qilindi", "reopened": "↩️ qayta ochildi", "nogroup": "⚠️ guruh yo'q edi",
-                  "sendfail": "⚠️ guruhga yozib bo'lmadi", "norepeat": "🔁 takror to'xtatildi"}
+        data = self._task(task, self.service.now(), await self._groups(), self._show(request))
+        labels = dict(EVENT_LABELS, escalated="⚠️ javob bermadi — sizga xabar")
         data["history"] = [
             {"label": labels.get(h["kind"], h["kind"]), "at": due_label(moment) if (moment := tasks.local(h["created_at"])) else ""}
             for h in await tasks.store.history(task.id)
@@ -534,6 +564,8 @@ class ReportAPI:
                               "sent_label": f"{sent:%d.%m %H:%M}" if sent else None})
         else:
             items = await archive.periods(WEEK if kind == "weekly" else MONTH, now)
+            if not owner:
+                items = [dict(item, summary=_masked_summary(item.get("summary"))) for item in items]
         schedule = await service.schedule()
         return _json({"kind": kind, "items": items, "schedule": _schedule(schedule), "owner": owner,
                       "has_groups": bool(await service.store.groups_with("leads")),
@@ -555,7 +587,10 @@ class ReportAPI:
         if period is None:
             return _error("Davr topilmadi", 404, "not_found")
         data = await service.archive.detail(*period, service.now())
-        data["masked"] = not request[self.access_key].get("owner")
+        owner = bool(request[self.access_key].get("owner"))
+        if not owner:
+            data["summary"] = _masked_summary(data["summary"])
+        data["masked"] = not owner
         return _json(data)
 
     async def archive_send(self, request: web.Request) -> web.Response:

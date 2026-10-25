@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
@@ -51,7 +51,7 @@ from .updater import UpdateError
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "miniapp"
-INIT_DATA_MAX_AGE = 24 * 3600
+INIT_DATA_MAX_AGE = 4 * 3600  # ochilgan ilova shuncha vaqt ishlaydi, keyin qayta ochiladi
 LINK_TTL = 15 * 60
 STATS_DAYS = 30
 ASK_LIMIT = 8000
@@ -84,7 +84,7 @@ def validate_init_data(init_data: str, bot_token: str, max_age: int = INIT_DATA_
     check_string = "\n".join(f"{key}={value}" for key, value in sorted(fields.items()))
     signing_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     expected = hmac.new(signing_key, check_string.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, received):
+    if not hmac.compare_digest(expected.encode(), received.encode()):  # bayt: ASCII bo'lmagan belgida ham xato emas
         raise AuthError("imzo noto'g'ri")
     try:
         auth_date = int(fields.get("auth_date", "0"))
@@ -110,6 +110,26 @@ def _json(data: Any, status: int = 200) -> web.Response:
 
 def _error(message: str, status: int = 400, code: str = "error") -> web.Response:
     return _json({"error": code, "message": message}, status)
+
+
+def query_int(request: web.Request, name: str, default: int, low: int, high: int) -> int:
+    """So'rov parametridagi butun son [low, high] oralig'ida; noto'g'ri qiymat — 400 (500 emas)."""
+    raw = (request.query.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise web.HTTPBadRequest(
+            text=json.dumps({"error": "error", "message": f"{name} — son bo'lsin"}), content_type="application/json"
+        ) from None
+    return min(max(value, low), high)
+
+
+def attachment(name: str) -> str:
+    """Content-Disposition: ASCII nom (eski mijozlar) + UTF-8 nom (RFC 5987)."""
+    fallback = re.sub(r'[^A-Za-z0-9._ -]+', "_", name).strip() or "fayl"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 def _when(stamp: str, tz: ZoneInfo) -> str:
@@ -251,8 +271,10 @@ class WebApp:
                 "Cache-Control": "no-cache",
                 "Content-Security-Policy": (
                     "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline';"
-                    " img-src 'self' data:; connect-src 'self'; font-src 'self'"
+                    " img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; object-src 'none';"
+                    " form-action 'self'"
                 ),
+                "X-Content-Type-Options": "nosniff",
             },
         )
 
@@ -381,8 +403,8 @@ class WebApp:
     async def conversations(self, request: web.Request) -> web.Response:
         uid: int = request[UID]
         query = (request.query.get("q") or "").strip()
-        offset = max(int(request.query.get("offset") or 0), 0)
-        limit = min(max(int(request.query.get("limit") or 30), 1), 100)
+        offset = query_int(request, "offset", 0, 0, 1_000_000)
+        limit = query_int(request, "limit", 30, 1, 100)
         if query:
             items = await self.ctx.db.search_conversations(uid, query, limit=limit)
             total = len(items)
@@ -467,8 +489,8 @@ class WebApp:
     # ------------------------------------------------------------------ fayllar
     async def files(self, request: web.Request) -> web.Response:
         uid: int = request[UID]
-        offset = max(int(request.query.get("offset") or 0), 0)
-        limit = min(max(int(request.query.get("limit") or 50), 1), 200)
+        offset = query_int(request, "offset", 0, 0, 1_000_000)
+        limit = query_int(request, "limit", 50, 1, 200)
         items, total = await self.ctx.db.files(uid, limit=limit, offset=offset)
         titles: dict[int, str] = {}
         result = []
@@ -541,19 +563,20 @@ class WebApp:
         except ValueError:
             raise web.HTTPNotFound()
         signature = request.query.get("s", "")
-        if expires < time.time() or not hmac.compare_digest(signature, self._sign(file_pk, uid, expires)):
+        expected = self._sign(file_pk, uid, expires)
+        if expires < time.time() or not hmac.compare_digest(signature.encode(), expected.encode()):
             raise web.HTTPForbidden(text="Havola eskirgan — ilovadan qayta oching")
         item = await self.ctx.db.file(file_pk)
         if item is None or item.user_id != uid:
             raise web.HTTPNotFound()
-        data = self.ctx.files.read(item) if self.ctx.files else None
-        if data is None:
+        path = self.ctx.files.locate(item) if self.ctx.files else None
+        if path is None:
             raise web.HTTPGone(text="Fayl nusxasi saqlanmagan")
-        safe = item.name.replace('"', "")
-        return web.Response(
-            body=data, content_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{safe}"', "Cache-Control": "private, no-store"},
-        )
+        # diskdan bo'laklab uzatiladi (butun fayl xotiraga o'qilmaydi)
+        return web.FileResponse(path, headers={
+            "Content-Type": "application/octet-stream", "Content-Disposition": attachment(item.name),
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        })
 
     async def delete_file(self, request: web.Request) -> web.Response:
         item = await self._own_file(request)
@@ -605,6 +628,8 @@ class WebApp:
             all_cycle, _ = await ctx.db.spend_all(cycle_start)
             names = {m.user_id: m.display for m in await ctx.db.members()}
             names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
+            if ctx.reports is not None:
+                names.update(await ctx.reports.usage_names())  # AI'ga savol bergan rahbarlar
             by_user = [
                 {"user_id": user_id, "name": "Siz" if user_id == uid else names.get(user_id, f"ID {user_id}"),
                  "cost": round(cost, 4), "count": count}

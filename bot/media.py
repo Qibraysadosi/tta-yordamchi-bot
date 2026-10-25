@@ -43,30 +43,49 @@ def classify(filename: str, mime: str) -> str | None:
     return None
 
 
+MAX_PIXELS = 60_000_000  # JPEG bo'lmagan rasm uchun (60 MP): kattasi xotirani to'ldirib yubormasin
+PNG_LIMIT = 3_500_000  # shaffof rasm PNG'da bundan katta bo'lsa — oq fonda JPEG (API'ga va tarixga og'ir)
+
+
 def image_block(data: bytes, max_edge: int) -> dict:
     try:
         img = Image.open(io.BytesIO(data))
         img.seek(0)  # GIF bo'lsa — birinchi kadr
+        if img.format == "JPEG":
+            img.draft("RGB", (max_edge, max_edge))  # katta foto kichraytirib o'qiladi (xotira va vaqt tejaladi)
+        elif img.width * img.height > MAX_PIXELS:
+            raise MediaError(f"Rasm juda katta ({img.width}×{img.height}) — kichikroq qilib yuboring.")
         img.load()
+        img = ImageOps.exif_transpose(img) or img
+    except MediaError:
+        raise
     except Exception as exc:
         raise MediaError("Rasmni o'qib bo'lmadi — fayl buzilgan yoki formati noma'lum.") from exc
-    img = ImageOps.exif_transpose(img) or img
     if img.mode in ("I", "I;16", "I;16B", "I;16L"):  # 16 bitli kulrang — 8 bitga (aks holda oppoq bo'ladi)
         img = img.convert("I").point(lambda v: v * (1 / 256)).convert("L")
     has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
     img = img.convert("RGBA" if has_alpha else "RGB")
+    if has_alpha and img.getchannel("A").getextrema()[0] == 255:  # alfa kanal bor, lekin hammasi shaffofsiz
+        img, has_alpha = img.convert("RGB"), False
     if max(img.size) > max_edge:
         img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
+    data_out, media_type = b"", "image/jpeg"
     if has_alpha:
+        buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
-        media_type = "image/png"
-    else:
+        if buf.tell() <= PNG_LIMIT:
+            data_out, media_type = buf.getvalue(), "image/png"
+        else:  # foto kabi shaffof rasm — PNG juda og'ir: oq fon ustida JPEG
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.getchannel("A"))
+            img = background
+    if not data_out:
+        buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85, optimize=True)
-        media_type = "image/jpeg"
+        data_out = buf.getvalue()
     return {
         "type": "image",
-        "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(buf.getvalue()).decode("ascii")},
+        "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data_out).decode("ascii")},
     }
 
 

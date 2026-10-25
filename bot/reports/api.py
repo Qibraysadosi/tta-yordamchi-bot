@@ -20,7 +20,7 @@ from .archive import MONTH, WEEK, parse_key
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, neighbour_day
 from .store import PEOPLE_KINDS, ROLES, clean_username, iso
-from .tasks import CANCELLED, DONE, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
+from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -406,10 +406,7 @@ class ReportAPI:
             return _error("Vazifa topilmadi", 404, "not_found")
         tasks = self.service.tasks
         data = self._task(task, self.service.now(), await self._groups())
-        labels = {"created": "qayd etildi", "asked": "«Bajardingizmi?» so'raldi", "yes": "✅ bajarildi",
-                  "no": "❌ «Yo'q» dedi", "escalated": "⚠️ javob bermadi — sizga xabar", "due": "⏰ muddat o'zgardi",
-                  "cancelled": "🗑 bekor qilindi", "reopened": "↩️ qayta ochildi", "nogroup": "⚠️ guruh yo'q edi",
-                  "sendfail": "⚠️ guruhga yozib bo'lmadi", "norepeat": "🔁 takror to'xtatildi"}
+        labels = dict(EVENT_LABELS, escalated="⚠️ javob bermadi — sizga xabar")
         data["history"] = [
             {"label": labels.get(h["kind"], h["kind"]), "at": due_label(moment) if (moment := tasks.local(h["created_at"])) else ""}
             for h in await tasks.store.history(task.id)

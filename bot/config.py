@@ -94,6 +94,7 @@ class Settings:
     github_branch: str = "main"  # release bo'lmasa shu tarmoqning arxivi olinadi
     update_check: bool = True  # har kuni (zaxira vaqtida) GitHub'da yangi versiya bormi tekshirish
     report_model: str = "claude-haiku-5-5"  # hisobot: lid izohlarini tahlil qiluvchi arzon model
+    leader_daily_limit: int = 30  # rahbarning AI'ga kunlik savollari (0 — cheklanmagan)
 
 
 OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
@@ -235,4 +236,5 @@ def load_settings() -> Settings:
         github_branch=github_branch,
         update_check=_bool("UPDATE_CHECK", True),
         report_model=report_model,
+        leader_daily_limit=_int("LEADER_DAILY_LIMIT", 30, 0, 10_000),
     )

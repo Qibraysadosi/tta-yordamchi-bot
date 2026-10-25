@@ -41,6 +41,7 @@ from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
 from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
 from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
+from .reports.assistant import REPORT_GUIDE, leader_system
 from .tgformat import format_answer
 from .github import GitHubClient, GitHubError, is_newer
 from .tools import RawFile, RawStore, ToolContext
@@ -164,7 +165,10 @@ ADMIN_HELP = (
     "📋 /vazifa — vazifa berish: «#vazifa @username nima, qachongacha» (guruhda yoki shu yerda)\n"
     "🗂 /vazifalar — ochiq vazifalar va ularning holati\n"
     "📓 /kundalik — bugungi kundalik: call center raqamlari va vazifalar (ish kunlari 20:00 da o'zi keladi)\n"
-    "📊 /excel — haftalik yoki oylik Excel hisobot (dushanba va oyning 1-sanasi o'zi keladi)"
+    "📊 /excel — haftalik yoki oylik Excel hisobot (dushanba va oyning 1-sanasi o'zi keladi)\n"
+    "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «kecha kimlar keladi dedi?», "
+    "«Malika vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi. Rahbarlar ham botga yozib so'raydi "
+    "(telefonlar yashirilgan, kuniga LEADER_DAILY_LIMIT ta savol)"
 )
 
 MODE_TEXT = (
@@ -336,6 +340,10 @@ class AccessMiddleware(BaseMiddleware):
         if member is not None and member.active:
             return await handler(event, data)
         if role is not None and not await is_password(event, ctx, user):  # parol yozsa — odatdagidek kiradi
+            text = (event.text or "").strip() if isinstance(event, Message) else ""
+            if role == "leader" and text and not text.startswith("/"):
+                await leader_answer(event, data["bot"], ctx)  # rahbar savoli — AI hisobotdan javob beradi
+                return None
             with contextlib.suppress(TelegramAPIError):
                 await ctx.reports.staff_message(event, role)
             return None
@@ -701,6 +709,8 @@ async def cost_report(ctx: AppContext, user_id: int) -> tuple[str, InlineKeyboar
         if any(uid != user_id for uid, _, _ in by_user):
             names = {m.user_id: m.display for m in await ctx.db.members()}
             names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
+            if ctx.reports is not None:
+                names.update(await ctx.reports.usage_names())
             lines.append("<b>Joriy davr, foydalanuvchilar bo'yicha:</b>")
             for uid, cost, count in by_user[:10]:
                 who = "Siz" if uid == user_id else html.escape(names.get(uid, f"ID {uid}"))
@@ -1768,7 +1778,7 @@ async def _generate(
         task = asyncio.create_task(
             ctx.claude.run_turn(
                 model=model, system=system, messages=messages, effort=effort, web_search=search, listener=live,
-                tools=tools.specs() if tool_ctx is not None else None,
+                tools=tools.specs(tool_ctx) if tool_ctx is not None else None,
                 tool_runner=runner if tool_ctx is not None else None,
             )
         )
@@ -1885,6 +1895,111 @@ async def check_budget(ctx: AppContext, bot: Bot) -> None:
                 await bot.send_message(owner_id, text, parse_mode=ParseMode.HTML)
 
 
+async def _report_tools(ctx: AppContext, uid: int):
+    """Hisobot vositalari: egasiga to'liq, rahbarga (parol bilan kirgan bo'lsa ham) telefonlarsiz; boshqalarga — yo'q.
+    Hisobot hali ishlatilmayotgan bo'lsa (lidlar guruhi ham, vazifa ham yo'q) — vositalar qo'shilmaydi."""
+    reports = ctx.reports
+    if reports is None:
+        return None
+    try:
+        owner = ctx.is_owner(uid)
+        if not owner and "leader" not in await reports.store.roles_of(uid, None):
+            return None
+        if not await reports.store.groups_with("leads") and not await reports.tasks.store.has_any():
+            return None
+    except Exception:  # noqa: BLE001 — hisobot xatosi oddiy suhbatni to'xtatmasin
+        log.exception("Hisobot vositalarini tayyorlashda xato")
+        return None
+    return reports.ai_tools(masked=not owner)
+
+
+class _Silent:
+    """Oqimsiz javob (rahbar savoli): oraliq matn ko'rsatilmaydi — faqat «yozmoqda…» va yakuniy javob."""
+
+    async def on_message_start(self, model: str, usage: Any) -> None: ...
+    async def on_thinking(self) -> None: ...
+    async def on_search(self, query: str | None) -> None: ...
+    async def on_text(self, text: str) -> None: ...
+    async def on_tool(self, status: str) -> None: ...
+    async def on_iteration_done(self, cost: float) -> None: ...
+
+
+async def _keep_typing(bot: Bot, chat_id: int) -> None:
+    while True:
+        with contextlib.suppress(TelegramAPIError):
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        await asyncio.sleep(4.5)
+
+
+async def _send_chunks(bot: Bot, chat_id: int, chunks: list[tuple[str | None, str]]) -> None:
+    for html_text, plain in chunks:
+        try:
+            try:
+                await bot.send_message(chat_id, html_text or plain, parse_mode=ParseMode.HTML if html_text else None)
+            except TelegramBadRequest:
+                if html_text is None:
+                    raise
+                await bot.send_message(chat_id, plain, parse_mode=None)  # HTML rad etilsa — oddiy matn
+        except TelegramAPIError as exc:
+            log.warning("Javob yuborilmadi (%s): %s", chat_id, exc)
+            return
+
+
+async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
+    """Rahbar botga savol yozdi: AI faqat hisobot va vazifalar bo'yicha javob beradi (telefonlar yashirilgan).
+
+    Model — bot standarti (DEFAULT_MODEL; ✨ Avto bo'lsa savolga qarab, tejamkor rejimda — tejamkor model);
+    xarajat rahbarning ID'si bilan yoziladi; kuniga LEADER_DAILY_LIMIT ta savol."""
+    reports = ctx.reports
+    uid, chat_id = message.from_user.id, message.chat.id
+    question = (message.text or "").strip()[:4000]
+    limit = ctx.settings.leader_daily_limit
+    memory = reports.leader_memory
+    if not memory.allowed(uid, ctx.now().date(), limit):
+        with contextlib.suppress(TelegramAPIError):
+            await message.answer(f"⏳ Bugungi savollar chegarasi ({limit} ta) tugadi — ertaga yana so'rang.")
+        return
+    async with await _user_lock(ctx, bot, uid, chat_id):
+        model = ctx.settings.default_model
+        if await economy_mode(ctx) is not None:
+            model = ctx.settings.economy_model
+        elif model == AUTO_MODEL:
+            model = await pick_model(ctx, uid, [{"type": "text", "text": question}])
+        if model == AUTO_MODEL:
+            model = ctx.settings.economy_model
+        report_tools = reports.ai_tools(masked=True)
+        messages = memory.history(uid) + [{"role": "user", "content": question}]
+        typing = asyncio.create_task(_keep_typing(bot, chat_id))
+        try:
+            result = await ctx.claude.run_turn(
+                model=model, system=leader_system(ctx.now()), messages=messages, effort=None, web_search=False,
+                listener=_Silent(), tools=report_tools.specs(), tool_runner=report_tools.run,
+            )
+        except ClaudeError as exc:
+            if exc.cost:
+                await ctx.db.log_usage(uid, model, exc.numbers, exc.cost)
+            with contextlib.suppress(TelegramAPIError):
+                await message.answer(exc.user_message)
+            return
+        except Exception:
+            log.exception("Rahbar savoliga javobda xato")
+            with contextlib.suppress(TelegramAPIError):
+                await message.answer("⚠️ Javob tayyorlab bo'lmadi. Birozdan keyin qayta urinib ko'ring.")
+            return
+        finally:
+            typing.cancel()
+        await ctx.db.log_usage(uid, model, result.numbers, result.cost)
+        memory.count(uid, ctx.now().date())
+        if result.refused:
+            with contextlib.suppress(TelegramAPIError):
+                await message.answer("🚫 Bu savolga javob berilmadi. Hisobot yoki vazifalar haqida boshqacha so'rab ko'ring.")
+            return
+        answer = result.text.strip() or "Javob bo'sh qaytdi — savolni boshqacha yozib ko'ring."
+        memory.add(uid, question, answer)
+        await _send_chunks(bot, chat_id, format_answer(answer, [], [], None))
+    await check_budget(ctx, bot)
+
+
 async def _chat(
     uid: int, chat_id: int, reply_to: int, bot: Bot, ctx: AppContext, user_blocks: list[dict],
     *, restore: list[dict] | None = None, replace: int | None = None,
@@ -1930,7 +2045,11 @@ async def _chat(
 
     messages = [{"role": m.role, "content": m.content} for m in history]
     messages.append({"role": "user", "content": user_blocks})
-    system = ctx.prompt.build(extra=load_mode_prompt(ctx.settings.modes_dir, s.mode) + "\n\n" + tools.TOOLS_GUIDE)
+    report_tools = await _report_tools(ctx, uid)
+    extra = load_mode_prompt(ctx.settings.modes_dir, s.mode) + "\n\n" + tools.TOOLS_GUIDE
+    if report_tools is not None:
+        extra += "\n\n" + REPORT_GUIDE
+    system = ctx.prompt.build(extra=extra)
 
     live = await LiveMessage.start(bot, chat_id, reply_to, label(model))
 
@@ -1943,7 +2062,7 @@ async def _chat(
 
     tool_ctx = ToolContext(
         bot=bot, chat_id=chat_id, reply_to=reply_to, uid=uid, files=ctx.raw.recent(uid), model=model,
-        claude=ctx.claude, live=live, log_usage=log_tool_usage, on_file=remember_file,
+        claude=ctx.claude, live=live, log_usage=log_tool_usage, on_file=remember_file, reports=report_tools,
     )
 
     async def save_turn(answer: str) -> int:

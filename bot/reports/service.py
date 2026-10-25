@@ -30,7 +30,9 @@ from aiogram.types import (
 
 from ..claude import ClaudeError
 from . import analysis
+from .analysis import USAGE_NAME, USAGE_UID
 from .archive import ARCHIVE_SINCE_KEY, ArchiveService
+from .assistant import LeaderMemory, ReportTools
 from .leads import extract_phones, message_link, parse_lead
 from .render import render_report, split_message
 from .stats import (
@@ -97,6 +99,7 @@ class ReportService:
         self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
         self.tasks = TaskService(self)
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
+        self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -399,6 +402,18 @@ class ReportService:
             return "operator"
         return None
 
+    def ai_tools(self, *, masked: bool) -> ReportTools:
+        """AI suhbati uchun hisobot vositalari (v1.10); masked=True — rahbar: telefon raqamlari yashiriladi."""
+        return ReportTools(self, masked=masked)
+
+    async def usage_names(self) -> dict[int, str]:
+        """Xarajat hisobotidagi nomlar: guruh tahlili va AI'ga savol bergan rahbarlar."""
+        names = {USAGE_UID: USAGE_NAME}
+        for person in await self.store.people("leader"):
+            if person.user_id is not None:
+                names[person.user_id] = f"👔 {person.label}"
+        return names
+
     async def is_leader(self, user_id: int, username: str | None) -> bool:
         if "leader" not in await self.store.roles_of(user_id, username):
             return False
@@ -412,7 +427,10 @@ class ReportService:
         if role == "leader":
             text = (
                 f"👋 Salom, {name}!\nSiz rahbar sifatida <b>Hisobotlar</b> bo'limiga kira olasiz: "
-                "call center natijalari, operatorlar va kunlik hisobotlar."
+                "call center natijalari, operatorlar va kunlik hisobotlar.\n\n"
+                "💬 Savolingizni shu yerga yozing — AI hisobot ma'lumotidan javob beradi, masalan:\n"
+                "• <i>Bugun nechta qo'ng'iroq bo'ldi?</i>\n• <i>Kecha kimlar «keladi» dedi?</i>\n"
+                "• <i>Malika vazifani bajardimi?</i>"
             )
             if self.ctx.settings.webapp_url:
                 markup = InlineKeyboardMarkup(inline_keyboard=[[

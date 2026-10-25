@@ -605,6 +605,8 @@ class WebApp:
             all_cycle, _ = await ctx.db.spend_all(cycle_start)
             names = {m.user_id: m.display for m in await ctx.db.members()}
             names[REPORT_USAGE_UID] = REPORT_USAGE_NAME
+            if ctx.reports is not None:
+                names.update(await ctx.reports.usage_names())  # AI'ga savol bergan rahbarlar
             by_user = [
                 {"user_id": user_id, "name": "Siz" if user_id == uid else names.get(user_id, f"ID {user_id}"),
                  "cost": round(cost, 4), "count": count}

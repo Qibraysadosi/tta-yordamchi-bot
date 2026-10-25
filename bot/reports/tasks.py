@@ -48,6 +48,12 @@ MAX_SILENT = 3  # shuncha so'rov javobsiz qolsa — egasiga xabar, so'rash to'xt
 NO_ALERT_EVERY = 3  # har shuncha «Yo'q» da egasiga xabar
 RETRY_AFTER = timedelta(hours=1)  # guruh yo'q yoki yozib bo'lmadi — keyinroq qayta urinish
 TEXT_LIMIT = 500
+EVENT_LABELS = {  # rp_task_events.kind → tarix qatori (Mini App va AI uchun)
+    "created": "qayd etildi", "asked": "«Bajardingizmi?» so'raldi", "yes": "✅ bajarildi", "no": "❌ «Yo'q» dedi",
+    "escalated": "⚠️ javob bermadi — egasiga xabar", "due": "⏰ muddat o'zgardi", "cancelled": "🗑 bekor qilindi",
+    "reopened": "↩️ qayta ochildi", "nogroup": "⚠️ guruh yo'q edi", "sendfail": "⚠️ guruhga yozib bo'lmadi",
+    "norepeat": "🔁 takror to'xtatildi",
+}
 WEEKDAY_NAMES = ("dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba")
 LIVE_MEMBER = ("member", "administrator", "creator", "restricted")
 

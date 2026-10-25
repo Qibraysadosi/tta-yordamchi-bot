@@ -5,6 +5,7 @@ import hmac
 import json
 import sqlite3
 import time
+from datetime import date, timedelta
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -15,12 +16,17 @@ from aiogram.exceptions import TelegramRetryAfter, TelegramServerError
 import fakes
 from bot import app as bot_app
 from bot import scheduler
+from bot.claude import ClaudeError
 from bot.db import Database
 from bot.reports.archive import WEEK, period_key
 from test_build_release import load_module, run_main
 from test_flow import OWNER, PROJECT, run
-from test_reports import CARD_1, MALIKA, WED, person, setup_groups, ts
+from test_reports import (
+    BOSS, CARD_1, CARD_2, LEADERS, LEADS, MALIKA, SARDOR, WED, local, person, setup_groups, start, ts,
+)
 from test_reports_api import LEADER, Api
+from test_reports_review import FailingSession, failing_env, texts
+from test_tasks import TASKS, Office
 from test_webapp import TOKEN, App
 
 
@@ -316,3 +322,305 @@ def test_release_notes_are_scanned_for_secrets(tmp_path, monkeypatch):
     assert not list((tmp_path / "dist").glob("*.zip"))
     notes.write_text("Yangilanish\n- oddiy izoh\n", encoding="utf-8")
     assert run_main(mod, monkeypatch, tmp_path, notes) == 0
+
+
+# ----------------------------------------------------------------------------- hisobotlar: nima lid, nima qo'ng'iroq
+
+SAT, SUN, MON = date(2026, 10, 24), date(2026, 10, 25), date(2026, 10, 26)
+PHOTO = [{"file_id": "p1", "file_unique_id": "up1", "width": 90, "height": 90}]
+
+
+async def feed(env, g, **fields):
+    g.mid += 1
+    message = {"message_id": g.mid, "chat": g.chat(LEADS, "KOMMENTARIYA TA LIDLAR"), **fields}
+    await env._feed({"message": message})
+    return message
+
+
+def channel_post(when, **fields):
+    return dict(date=when, is_automatic_forward=True, sender_chat={"id": -1003333333333, "type": "channel", "title": "K"},
+                **{"from": {"id": 777000, "is_bot": False, "first_name": "Telegram"}}, **fields)
+
+
+def test_staff_media_and_channel_notices_are_not_leads(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            boss = person(BOSS, "Rahbar", "boss")
+            # rahbar: reja (hujjat) va «Yangi narxlar» rasmi — raqamsiz
+            plan = await feed(env, g, date=ts(WED, "09:00"), **{"from": boss},
+                              document={"file_id": "d1", "file_unique_id": "ud1", "file_name": "reja.pdf"})
+            prices = await feed(env, g, date=ts(WED, "09:01"), **{"from": boss}, photo=PHOTO, caption="Yangi narxlar")
+            # kanal: e'lon, albomning izohsiz rasmi
+            notice = await feed(env, g, **channel_post(ts(WED, "09:02"), text="📢 Diqqat! Ertaga markaz dam oladi."))
+            sibling = await feed(env, g, **channel_post(ts(WED, "09:03"), media_group_id="77", photo=PHOTO))
+            # haqiqiy kartochkalar: raqamli va raqamsiz (kamida 2 kalit), rasm + raqamli izoh
+            card = await feed(env, g, **channel_post(ts(WED, "09:04"), text=CARD_2))
+            plain = await feed(env, g, **channel_post(ts(WED, "09:05"), text="Ism: Dilnoza\nKurs: Ingliz tili\nYoshi: 20"))
+            scan = await feed(env, g, date=ts(WED, "09:06"), **{"from": boss}, photo=PHOTO, caption="Yangi lid 90 123 45 67")
+            malika, sardor = person(MALIKA, "Malika", "malika_op"), person(SARDOR, "Sardor", "sardor")
+            for msg in (plan, prices, notice, sibling, card, plain, scan):
+                await g.react(msg["message_id"], malika, "👍", ts(WED, "10:00"))
+            await g.comment(notice, sardor, "tushunarli", ts(WED, "10:05"))  # e'lon ostidagi izoh — qo'ng'iroq emas
+
+            for msg in (plan, prices, notice, sibling):
+                assert await store.lead_by_message(LEADS, msg["message_id"]) is None
+            assert (await store.lead_by_message(LEADS, card["message_id"])).name == "Bobur"
+            assert (await store.lead_by_message(LEADS, plain["message_id"])).course == "Ingliz tili"
+            assert (await store.lead_by_message(LEADS, scan["message_id"])).source == "stub"  # raqamli rasm — sanaladi
+            ov = await env.ctx.reports.overview(WED, local(WED, "15:00"))
+            assert [(r.name, r.total) for r in ov.rows + ov.extras] == [("Malika", 3)]
+            assert ov.new_leads == 2  # kanal kartochkalari; e'lon va albom rasmi lid emas
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_weekend_leads_are_reminded_on_monday(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            await store.add_person("operator", username="malika_op", user_id=MALIKA, name="Malika")
+            await store.set_dm_ok(MALIKA)
+            await g.post(CARD_1, ts(SAT, "18:40"))  # shanba ish vaqti tugashiga oz qolganda
+            await g.post(CARD_2, ts(SAT, "21:00"))
+            await g.post("Ism: Kamola\nTelefon: 90 555 44 33\nKurs: Massaj", ts(SUN, "08:00"))  # dam kuni
+            env.session.clear()
+            assert await env.ctx.reports.check_reminders(env.bot, local(SAT, "19:10")) == 0  # ish vaqtidan keyin
+            assert await env.ctx.reports.check_reminders(env.bot, local(MON, "09:00")) == 1
+            text = env.session.of("SendMessage")[-1].text
+            assert "3 ta lid hali belgilanmagan" in text
+            assert "24.10 18:40" in text and "24.10 21:00" in text and "25.10 08:00" in text  # eski lidlarda sana
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_reminder_not_marked_when_nobody_got_it(tmp_path):
+    async def go():
+        env = await failing_env(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            await store.add_person("operator", username="malika_op", user_id=MALIKA, name="Malika")
+            await store.set_dm_ok(MALIKA)
+            await g.post(CARD_1, ts(WED, "09:00"))
+            env.session.fail[MALIKA] = "network"
+            assert await env.ctx.reports.check_reminders(env.bot, local(WED, "09:40")) == 0
+            assert not await env.ctx.reports.check_reminders(env.bot, local(WED, "09:42"))  # 5 daqiqa kutiladi
+            env.session.fail.clear()
+            assert await env.ctx.reports.check_reminders(env.bot, local(WED, "09:46")) == 1  # lid hali eslatilmagan
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_leaders_report_retried_on_transient_error_then_owner(tmp_path):
+    async def go():
+        env = await failing_env(tmp_path)
+        try:
+            await setup_groups(env)
+            service = env.ctx.reports
+            env.session.fail[LEADERS] = "network"
+            moments = [local(WED, "19:02") + timedelta(minutes=5 * i) for i in range(6)]
+            for moment in moments[:5]:
+                assert await service.check_daily(env.bot, moment)
+                assert not await service.store.report_for_day("2026-10-21")
+                assert not [t for t in texts(env, OWNER) if "KUNLIK HISOBOT" in t]  # hali egasiga o'tkazilmagan
+            assert await service.check_daily(env.bot, moments[5])  # 6-urinish — egasiga
+            owner = [t for t in texts(env, OWNER) if "KUNLIK HISOBOT" in t]
+            assert len(owner) == 1 and "rahbarlar guruhiga yuborilmadi" in owner[0]
+            assert await service.store.report_for_day("2026-10-21")
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_report_retry_skips_chats_that_already_got_it(tmp_path):
+    async def go():
+        env = await failing_env(tmp_path)
+        try:
+            await setup_groups(env)
+            store = env.ctx.reports.store
+            second = -1005555555555
+            await store.upsert_group(second, "Rahbarlar 2")
+            await store.set_group_roles(second, ["leaders"])
+            env.session.fail[second] = "network"
+            service = env.ctx.reports
+            assert await service.check_daily(env.bot, local(WED, "19:02"))
+            assert len(texts(env, LEADERS)) == 1 and not await store.report_for_day("2026-10-21")
+            env.session.fail.clear()
+            assert await service.check_daily(env.bot, local(WED, "19:07"))
+            # birinchi guruhga qayta yuborilmadi; ikkinchisiga — xato urinish + yetkazilgan nusxa
+            assert len(texts(env, LEADERS)) == 1 and len(texts(env, second)) == 2
+            assert await store.report_for_day("2026-10-21")
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_report_after_closing_time_shows_finished_day(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            lead = await g.post(CARD_1, ts(WED, "09:00"))
+            await g.react(lead["message_id"], person(MALIKA, "Malika", "malika_op"), "👍", ts(WED, "10:00"))
+            env.ctx.reports.now = lambda: local(WED, "19:30")
+            env.session.clear()
+            await env.send_text("/hisobot")
+            text = env.session.of("SendMessage")[-1].text
+            assert "KUNLIK HISOBOT · 21.10.2026" in text and "oraliq" not in text and "Malika" in text
+            await env.press("rp:send")
+            sent = texts(env, LEADERS)[-1]
+            assert "KUNLIK HISOBOT · 21.10.2026" in sent  # bo'sh keyingi davr emas
+            assert not await env.ctx.reports.store.report_for_day("2026-10-21")  # qo'lda yuborish kunni yopmaydi
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_status_emoji_is_escaped_in_report(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            store = env.ctx.reports.store
+            await store.add_status("<3", "yoqdi", True)
+            env.ctx.reports.statuses_changed()
+            lead = await g.post(CARD_1, ts(WED, "09:00"))
+            await g.react(lead["message_id"], person(JASUR_ID, "Jasur", "jasur"), "<3", ts(WED, "10:00"))
+            _, text, _ = await env.ctx.reports.compose(WED, local(WED, "15:00"), interim=True)
+            assert "&lt;3" in text and "<3" not in text.replace("<pre>", "").replace("</pre>", "")
+        finally:
+            await env.close()
+    run(go())
+
+
+JASUR_ID = 503
+
+
+def test_analysis_waits_for_batch_and_warns_owner_once(tmp_path, monkeypatch):
+    async def go():
+        env = await start(tmp_path)
+        try:
+            g = await setup_groups(env)
+            service = env.ctx.reports
+            lead = await g.post(CARD_1, ts(WED, "09:00"))
+            await g.comment(lead, person(MALIKA, "Malika", "malika_op"), "ertaga keladi", ts(WED, "10:00"))
+            requests = len(env.api.requests)
+            # fon sikli: bitta yangi izoh — to'plam yig'ilishi kutiladi
+            assert await service.analyze_pending(2, now=local(WED, "10:01")) == 0
+            assert len(env.api.requests) == requests
+
+            calls = []
+
+            async def broken(*args, **kwargs):
+                calls.append(1)
+                raise ClaudeError("Model topilmadi (404)")
+            monkeypatch.setattr("bot.reports.analysis.classify_comments", broken)
+            env.session.clear()
+            await service.analyze_pending(2, bot=env.bot, now=local(WED, "10:05"))  # 2 daqiqadan eski — so'raladi
+            warn = [m for m in env.session.of("SendMessage") if m.chat_id == OWNER]
+            assert calls and len(warn) == 1 and "REPORT_MODEL" in warn[0].text and "404" in warn[0].text
+            service._backoff_until = 0
+            await service.analyze_pending(2, bot=env.bot, now=local(WED, "10:10"))
+            assert len([m for m in env.session.of("SendMessage") if m.chat_id == OWNER]) == 1  # bir marta
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_new_operator_gets_welcome_when_reachable(tmp_path):
+    async def go():
+        api = await Api().start(tmp_path)
+        env = api.env
+        try:
+            await env.ctx.reports.store.remember_user(MALIKA, "malika_op", "Malika")  # guruhda ko'ringan
+            env.session.clear()
+            await api.call("POST", "/api/report/people", {"kind": "operator", "who": "@malika_op", "name": "Malika"})
+            hello = env.session.of("SendMessage")[-1]
+            assert hello.chat_id == MALIKA and "operatori sifatida" in hello.text
+            assert (await env.ctx.reports.store.people("operator"))[0].dm_ok
+            env.session.clear()
+            await api.call("POST", "/api/report/people", {"kind": "operator", "who": "@malika_op", "name": "Malika"})
+            assert not env.session.of("SendMessage")  # takror qo'shilsa — qayta yozilmaydi
+        finally:
+            await api.close()
+    run(go())
+
+
+# ----------------------------------------------------------------------------- vazifalar: so'rovlar navbati
+class FloodSession(FailingSession):
+    flood = False
+
+    async def make_request(self, bot, method, timeout=None):
+        if self.flood and type(method).__name__ == "SendMessage" and method.chat_id == TASKS:
+            from aiogram.exceptions import TelegramRetryAfter
+            raise TelegramRetryAfter(method=method, message="Too Many Requests: retry after 40", retry_after=40)
+        return await super().make_request(bot, method, timeout)
+
+
+def test_task_polls_are_paced_and_flood_is_silent(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        env.session = FloodSession()
+        env.bot.session = env.session
+        try:
+            await Office(env).setup()
+            tasks = env.ctx.reports.tasks
+            now = local(date(2026, 10, 22), "10:00")
+            env.ctx.reports.now = lambda: now
+            who = await tasks.resolve(MALIKA, "malika_op", "Malika")
+            for i in range(8):
+                await tasks.create(creator_id=OWNER, assignee=who, text=f"vazifa {i}", due=now, repeat=None,
+                                   poll_chat=TASKS, now=now)
+
+            def polls():
+                return [m for m in env.session.of("SendMessage") if m.chat_id == TASKS]
+            assert await tasks.tick(env.bot, now) == 5 and len(polls()) == 5  # bir siklda ko'pi bilan 5 ta
+            assert await tasks.tick(env.bot, now + timedelta(seconds=30)) == 3
+            # yangi so'rovlar: Telegram «40 s kuting» desa — egasiga xabar yo'q, keyinroq yuboriladi
+            for i in range(2):
+                await tasks.create(creator_id=OWNER, assignee=who, text=f"yana {i}", due=now, repeat=None,
+                                   poll_chat=TASKS, now=now)
+            env.session.flood = True
+            env.session.clear()
+            later = now + timedelta(minutes=1)
+            assert await tasks.tick(env.bot, later) == 0
+            assert not [m for m in env.session.of("SendMessage") if m.chat_id == OWNER]
+            assert tasks.flood_until == later + timedelta(seconds=41)
+            env.session.flood = False
+            assert await tasks.tick(env.bot, later + timedelta(seconds=30)) == 0  # hali kutish vaqti
+            assert await tasks.tick(env.bot, later + timedelta(seconds=45)) == 2
+        finally:
+            await env.close()
+    run(go())
+
+
+def test_transient_poll_error_is_retried_without_alert(tmp_path):
+    async def go():
+        env = await start(tmp_path)
+        env.session = FailingSession()
+        env.bot.session = env.session
+        try:
+            await Office(env).setup()
+            tasks = env.ctx.reports.tasks
+            now = local(date(2026, 10, 22), "10:00")
+            who = await tasks.resolve(MALIKA, "malika_op", "Malika")
+            task = await tasks.create(creator_id=OWNER, assignee=who, text="hisobot", due=now, repeat=None,
+                                      poll_chat=TASKS, now=now)
+            env.session.fail[TASKS] = "network"
+            env.session.clear()
+            assert await tasks.tick(env.bot, now) == 0
+            assert not [m for m in env.session.calls if type(m).__name__ == "SendMessage" and m.chat_id == OWNER]
+            assert (await tasks.store.get(task.id)).next_ask_at == "2026-10-22T05:05:00"  # 5 daqiqadan keyin
+            env.session.fail.clear()
+            assert await tasks.tick(env.bot, now + timedelta(minutes=5)) == 1
+        finally:
+            await env.close()
+    run(go())

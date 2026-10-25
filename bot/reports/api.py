@@ -19,7 +19,7 @@ from ..prompt import MONTHS, WEEKDAYS
 from .archive import MONTH, WEEK, parse_key
 from .excel import hide_numbers
 from .service import ROLE_LABELS, ReportService
-from .stats import OTHER, Overview, Row, current_day, neighbour_day
+from .stats import OTHER, Overview, Row, current_day, display_day, neighbour_day, period_bounds
 from .store import PEOPLE_KINDS, ROLES, clean_username, iso
 from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
@@ -149,8 +149,8 @@ class ReportAPI:
         await service.ensure()
         now = service.now()
         schedule = await service.schedule()
-        today = current_day(now, schedule)
-        day = today
+        today = current_day(now, schedule)  # joriy (davom etayotgan) davr — eng keyingi ko'rsatiladigan kun
+        day = display_day(now, schedule)  # 19:00 dan keyin — hozirgina tugagan bugungi davr
         raw = (request.query.get("day") or "").strip()
         if raw:
             try:
@@ -226,7 +226,10 @@ class ReportAPI:
             if username is None:
                 return _error("Username noto'g'ri: @ bilan yoki usiz, 4–32 ta lotin harfi, raqam yoki _ (yoki Telegram ID)")
         store = self.service.store
+        before = {p.id for p in await store.people(kind)}
         person = await store.add_person(kind, username=username, user_id=user_id, name=name)
+        if kind in ("operator", "leader") and person.id not in before and person.user_id is not None:
+            await self.service.welcome(self.bot, person)  # botni avval ochgan bo'lsa — darrov ulanadi (eslatmalar)
         # operator va istisno bir-biriga zid: biriga qo'shilsa, ikkinchisidan olinadi
         opposite = {"operator": "excluded", "excluded": "operator"}.get(kind)
         if opposite:
@@ -372,8 +375,10 @@ class ReportAPI:
         if not await service.store.groups_with("leads"):
             return _error("Hali lidlar guruhi yo'q — botni guruhga qo'shing", 409, "no_groups")
         now = service.now()
-        day = current_day(now, await service.schedule())
-        sent = await service.send_report(self.bot, day, now, interim=True)
+        schedule = await service.schedule()
+        day = display_day(now, schedule)  # 19:00 dan keyin — bugungi (tugagan) hisobot, keyingi bo'sh davr emas
+        live = now < period_bounds(day, schedule, service.tz)[1]
+        sent = await service.send_report(self.bot, day, now, interim=live, record=False)
         fallback = service.last_fallback  # keyingi await'dan oldin: parallel kunlik yuborish o'zgartirmasin
         if not sent:
             return _error("Hisobot yuborilmadi: Telegram bilan aloqa yo'q. Birozdan keyin qayta urinib ko'ring.", 502, "send_failed")

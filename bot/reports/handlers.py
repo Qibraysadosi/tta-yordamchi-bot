@@ -22,7 +22,7 @@ from aiogram.types import (
 from .archive import parse_key
 from .render import split_message
 from .service import ROLE_LABELS, ReportService
-from .stats import current_day
+from .stats import display_day, period_bounds
 from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
 
 log = logging.getLogger(__name__)
@@ -126,6 +126,12 @@ async def cb_group_role(callback: CallbackQuery, bot: Bot, ctx) -> None:
             await message.edit_text(text, parse_mode=ParseMode.HTML)
 
 
+def _shown_day(now, schedule, tz) -> tuple:
+    """/hisobot uchun kun: hisobot vaqtidan yarim tungacha — bugungi (tugagan) davr; (kun, davr hali davom etyaptimi)."""
+    day = display_day(now, schedule)
+    return day, now < period_bounds(day, schedule, tz)[1]
+
+
 def _report_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📤 Rahbarlarga yuborish", callback_data="rp:send"),
@@ -145,7 +151,8 @@ async def cmd_report(message: Message, ctx) -> None:
         return
     wait = await message.answer("📊 Hisobot tayyorlanmoqda…")
     now = service.now()
-    _, text, _ = await service.compose(current_day(now, await service.schedule()), now, interim=True)
+    day, live = _shown_day(now, await service.schedule(), service.tz)
+    _, text, _ = await service.compose(day, now, interim=live)
     with contextlib.suppress(TelegramAPIError):
         await wait.delete()
     parts = split_message(text)
@@ -161,10 +168,10 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
         return
     action = (callback.data or "").partition(":")[2]
     now = service.now()
-    day = current_day(now, await service.schedule())
+    day, live = _shown_day(now, await service.schedule(), service.tz)
     if action == "send":
         await callback.answer("Yuborilmoqda…")
-        sent = await service.send_report(bot, day, now, interim=True)
+        sent = await service.send_report(bot, day, now, interim=live, record=False)
         fallback = service.last_fallback
         targets = await service.store.groups_with("leaders")
         if not sent:
@@ -173,13 +180,13 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
             note = "⚠️ Rahbarlar guruhiga yuborib bo'lmadi — hisobot sizga yuborildi (yuqorida)."
         else:
             where = "rahbarlar guruhiga" if targets else "sizga (rahbarlar guruhi belgilanmagan)"
-            note = f"📤 Oraliq hisobot {where} yuborildi ({sent} ta chat)."
+            note = f"📤 {'Oraliq hisobot' if live else 'Hisobot'} {where} yuborildi ({sent} ta chat)."
         if isinstance(callback.message, Message):
             with contextlib.suppress(TelegramAPIError):
                 await callback.message.answer(note)
         return
     await callback.answer("Yangilanmoqda…")
-    _, text, _ = await service.compose(day, now, interim=True)
+    _, text, _ = await service.compose(day, now, interim=live)
     if isinstance(callback.message, Message):
         parts = split_message(text)
         with contextlib.suppress(TelegramBadRequest):

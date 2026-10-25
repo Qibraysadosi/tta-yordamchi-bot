@@ -195,12 +195,15 @@ def test_overview_payload_and_send_now(tmp_path):
             assert not await env.ctx.reports.store.report_for_day("2026-10-21")  # oraliq hisobot davrni yopmaydi
 
             # kunlik hisobot yuborilgach — sabablar guruhlangan holda ko'rinadi
-            await env.ctx.reports.tick(env.bot, local(WED, "19:00"))
+            await env.ctx.reports.tick(env.bot, local(WED, "19:02"))
             env.ctx.reports.now = lambda: local(WED, "19:05")
             data = await api.call("GET", "/api/report/overview?day=2026-10-21")
             assert data["sent"] is True and data["live"] is False and data["next"] == "2026-10-22"
+            # 19:00 dan yarim tungacha standart ko'rinish — hozirgina tugagan bugungi davr (keyingisi hali bo'sh)
             current = await api.call("GET", "/api/report/overview")
-            assert current["day"] == "2026-10-22" and current["live"] is True and current["rows"][0]["total"] == 0
+            assert current["day"] == "2026-10-21" and current["live"] is False and current["next"] == "2026-10-22"
+            upcoming = await api.call("GET", "/api/report/overview?day=2026-10-22")
+            assert upcoming["live"] is True and upcoming["rows"][0]["total"] == 0 and upcoming["next"] is None
         finally:
             await api.close()
     run(go())

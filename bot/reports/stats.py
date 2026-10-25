@@ -131,6 +131,15 @@ def current_day(now: datetime, s: Schedule) -> date:
     return now.date()
 
 
+def display_day(now: datetime, s: Schedule) -> date:
+    """Ko'rsatish uchun davr (/hisobot, Mini App): hisobot vaqtidan yarim tungacha — hozirgina tugagan bugungi davr
+    (keyingisi hali bo'sh), qolgan paytda — joriy davr."""
+    today = now.date()
+    if today.weekday() in s.days and period_end(today, s, now.tzinfo) <= now:  # type: ignore[arg-type]
+        return today
+    return current_day(now, s)
+
+
 def latest_due_day(now: datetime, s: Schedule) -> date | None:
     """Vaqti o'tgan eng so'nggi hisobot kuni (bugun yoki oldingi kunlar)."""
     tz = now.tzinfo

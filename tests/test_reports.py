@@ -292,6 +292,8 @@ def test_group_flow_and_daily_report(tmp_path):
             await env.ctx.reports.tick(env.bot, local(WED, "18:59"))
             assert not env.session.of("SendMessage")
             await env.ctx.reports.tick(env.bot, local(WED, "19:00"))
+            assert not env.session.of("SendMessage")  # 2 daqiqa kutiladi: so'nggi daqiqadagi belgilar ham yozilsin
+            await env.ctx.reports.tick(env.bot, local(WED, "19:02"))
             report = env.session.of("SendMessage")[-1]
             assert report.chat_id == LEADERS and "KUNLIK HISOBOT · 21.10.2026 (chorshanba)" in report.text
             assert "20.10 19:00 → 21.10 19:00" in report.text and "kechikib" not in report.text
@@ -486,7 +488,8 @@ def test_reminders_for_unmarked_leads(tmp_path):
             await env.ctx.reports.check_reminders(env.bot, local(WED, "09:35"))
             remind = env.session.of("SendMessage")
             assert len(remind) == 1 and remind[0].chat_id == MALIKA
-            assert "1 ta lid 30 daqiqadan beri belgilanmagan" in remind[0].text and "Aziza Karimova" in remind[0].text
+            assert "1 ta lid hali belgilanmagan</b> (30 daqiqadan ko'proq)" in remind[0].text
+            assert "Aziza Karimova" in remind[0].text and "· 09:00 ·" in remind[0].text  # bugungi — faqat soat
             assert "https://t.me/c/1111111111/" in remind[0].text
             env.session.clear()
             await env.ctx.reports.check_reminders(env.bot, local(WED, "09:50"))  # birinchisi qayta eslatilmaydi

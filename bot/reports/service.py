@@ -17,7 +17,13 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import (
+    AiogramError,
+    TelegramAPIError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+    TelegramServerError,
+)
 from aiogram.types import (
     ChatMemberUpdated,
     InlineKeyboardButton,
@@ -33,16 +39,17 @@ from . import analysis
 from .analysis import USAGE_NAME, USAGE_UID
 from .archive import ARCHIVE_SINCE_KEY, ArchiveService
 from .assistant import LeaderMemory, ReportTools
-from .leads import extract_phones, message_link, parse_lead
+from .leads import message_link, parse_lead
 from .render import render_report, split_message
 from .stats import (
     SCHEDULE_KEY,
     Overview,
     Schedule,
     build_overview,
-    current_day,
+    display_day,
     in_work_hours,
     latest_due_day,
+    neighbour_day,
     period_bounds,
 )
 from .store import Group, Lead, ReportStore, iso
@@ -56,11 +63,17 @@ log = logging.getLogger(__name__)
 SINCE_KEY = "report:since"  # kuzatish boshlangan vaqt: undan oldingi davrlar uchun hisobot yuborilmaydi
 TELEGRAM_SERVICE_ID = 777000  # kanal postlarini muhokama guruhiga avtomatik ko'chiruvchi «Telegram»
 TICK_SECONDS = 30
+FIRST_TICK_DELAY = 30  # qayta ishga tushgach: avval to'planib qolgan yangilanishlar (reaksiyalar) o'qib olinsin
 API_BACKOFF = 300  # Claude xatosidan keyin tahlil shuncha soniya kutadi
+API_BACKOFF_PERMANENT = 1800  # doimiy xato (model yo'q, so'rov noto'g'ri) — kamroq urinish, egasiga bir marta xabar
+ANALYZE_WAIT = timedelta(minutes=2)  # fon tahlili: to'plam to'lmasa, eng eski izoh shuncha kutadi (kamroq so'rov)
+REPORT_GRACE = timedelta(minutes=2)  # kunlik hisobot davr tugagach shuncha kutib yig'iladi (18:59 dagi belgilar ham kirsin)
 LATE_AFTER = timedelta(minutes=15)
 MAX_LATE = timedelta(hours=36)
 REPORT_RETRY = timedelta(minutes=5)  # kunlik hisobot hech qayerga bormasa — shuncha vaqtdan keyin qayta urinish
+REPORT_ATTEMPTS = 6  # vaqtinchalik xatoda (tarmoq, 5xx, 429) rahbarlar guruhiga shuncha urinish, keyin — egasiga
 REMIND_GAP = timedelta(minutes=15)  # operatorlarga eslatmalar orasidagi eng kam vaqt (yangi lidlar yig'ilib boradi)
+REMIND_FAIL_GAP = timedelta(minutes=5)  # eslatma hech kimga yetmasa — qayta urinish
 FLUSH_BATCHES = 5
 REMIND_SHOWN = 10
 ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar", "tasks": "📋 Vazifalar"}
@@ -73,6 +86,19 @@ ROLE_HELP = (
 
 def _norm(emoji: str | None) -> str:
     return (emoji or "").replace("️", "")
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Vaqtinchalik Telegram xatosi (tarmoq, server, «kuting», buzuq javob) — keyinroq qayta urinsa bo'ladi."""
+    return isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter)) or (
+        isinstance(exc, AiogramError) and not isinstance(exc, TelegramAPIError)
+    )
+
+
+def card_like(info) -> bool:
+    """Kanaldan kelgan post lid kartochkasimi: telefon raqami yoki kamida ikkita tanish kalit (Ism, Kurs …).
+    Kanal e'loni, stiker, albomning izohsiz rasmi — lid emas (ularga «👍» qo'ng'iroq sanalmaydi)."""
+    return bool(info.phones) or info.keys >= 2
 
 
 def details_param(day: date | None = None) -> str:
@@ -94,6 +120,8 @@ class ReportService:
         self._known: dict[str, str] | None = None  # normallashgan emoji → status emoji (kesh)
         self._analysis_lock = asyncio.Lock()  # fon sikli va /hisobot bir to'plamni ikki marta yubormasin
         self._retry_after: datetime | None = None  # kunlik hisobot yuborilmay qolsa — qayta urinish vaqti
+        self._delivery: dict[str, tuple[set[int], int]] = {}  # kun → (hisobot yetgan chatlar, urinishlar)
+        self._analysis_warned = False  # tahlilning doimiy xatosi egasiga aytildi
         self._remind_after: datetime | None = None
         self._reasons_cache: tuple[str, tuple, list] | None = None  # (davr, xom sabablar, guruhlangan)
         self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
@@ -312,6 +340,8 @@ class ReportService:
             if reply.is_automatic_forward:  # bot qo'shilishidan oldingi post — izoh orqali tanib olinadi
                 text = reply.text or reply.caption or ""
                 info = parse_lead(text)
+                if not card_like(info):
+                    return None  # kanal e'loni ostidagi izoh — lid emas
                 return await self.store.save_lead(
                     chat_id, reply.message_id, source="reply", created_at=iso(reply.date), name=info.name,
                     phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
@@ -324,6 +354,8 @@ class ReportService:
         chat_id = message.chat.id
         if message.is_automatic_forward:
             info = parse_lead(text)
+            if not card_like(info):
+                return False  # kanal e'loni, stiker, albomning izohsiz rasmi — ko'rilgan deb belgilanadi
             await self.store.save_lead(
                 chat_id, message.message_id, source="post", created_at=iso(message.date), name=info.name,
                 phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
@@ -339,8 +371,9 @@ class ReportService:
                         phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
                     )
                     return True
-                if extract_phones(text) or message.photo or message.document:
-                    return True  # o'qib bo'lmagan kartochka bo'lishi mumkin: operator status bossa — lid sanaladi
+                if info.phones:
+                    return True  # raqamli, lekin o'qib bo'lmagan kartochka: operator status bossa — lid sanaladi
+                # raqamsiz rasm, hujjat, GIF (rahbar e'loni, reja) — ko'rilgan: ularga «👍» qo'ng'iroq emas
             return False
         user = message.from_user
         if user is None or user.is_bot or user.id == TELEGRAM_SERVICE_ID or message.sender_chat is not None:
@@ -356,8 +389,9 @@ class ReportService:
         if group is None or not group.has("leads"):
             return
         text = message.text or message.caption or ""
-        if message.is_automatic_forward or await self.store.lead_by_message(message.chat.id, message.message_id):
-            info = parse_lead(text)
+        info = parse_lead(text)
+        known = await self.store.lead_by_message(message.chat.id, message.message_id)
+        if known is not None or (message.is_automatic_forward and card_like(info)):
             await self.store.save_lead(
                 message.chat.id, message.message_id, source="post", created_at=iso(message.date), name=info.name,
                 phones=info.phones, age=info.age, district=info.district, course=info.course, text=text,
@@ -424,7 +458,26 @@ class ReportService:
 
     async def staff_message(self, message: Message, role: str) -> None:
         user = message.from_user
-        name = html.escape(user.first_name or user.full_name or "do'stim")
+        text, markup = self.staff_text(role, user.first_name or user.full_name or "do'stim")
+        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+    async def welcome(self, bot: Bot, person) -> bool:
+        """Ro'yxatga qo'shilgan xodimga salom (bot unga yoza olsa — botni avval ochgan bo'lsa): operator shundan
+        keyin eslatmalarni oladi. Yozib bo'lmasa — xodim botga yozganda o'zi ulanadi."""
+        if person.user_id is None:
+            return False
+        text, markup = self.staff_text(person.kind, person.name or "do'stim")
+        try:
+            await bot.send_message(person.user_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except AiogramError as exc:
+            log.info("Xodimga salom yuborilmadi (%s): %s", person.user_id, exc)
+            return False
+        if person.kind == "operator":
+            await self.store.set_dm_ok(person.user_id)
+        return True
+
+    def staff_text(self, role: str, first_name: str) -> tuple[str, InlineKeyboardMarkup | None]:
+        name = html.escape(first_name)
         markup = None
         if role == "leader":
             text = (
@@ -445,14 +498,14 @@ class ReportService:
                 f"👋 Salom, {name}! Siz call center operatori sifatida ro'yxatdasiz.\n"
                 "Hech kim belgilamagan lidlar haqida eslatmalar shu yerga keladi."
             )
-        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        return text, markup
 
     # ------------------------------------------------------------------ hisobot
     async def overview(self, day: date | None = None, now: datetime | None = None) -> Overview:
         await self.ensure()
         now = now or self.now()
         schedule = await self.schedule()
-        return await build_overview(self.store, schedule, day or current_day(now, schedule), now)
+        return await build_overview(self.store, schedule, day or display_day(now, schedule), now)
 
     def set_bot_info(self, me: User) -> None:
         """getMe: username, Main Mini App («📊 Batafsil» tugmasi uchun), guruh xabarlarini o'qish huquqi."""
@@ -488,24 +541,39 @@ class ReportService:
         url = f"https://t.me/{username}?startapp={details_param(day)}"
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📊 Batafsil", url=url)]])
 
-    async def analyze_pending(self, max_batches: int = 1) -> int:
+    async def analyze_pending(self, max_batches: int = 1, *, bot: Bot | None = None,
+                              now: datetime | None = None) -> int:
+        """Izohlarni tahlil qiladi. now berilsa (fon sikli): to'plam to'lmagan va eng eski izoh ANALYZE_WAIT dan
+        yangi bo'lsa kutiladi — har izoh uchun alohida so'rov bo'lmasin. Hisobot va AI chaqirsa — darhol."""
         async with self._analysis_lock:
             if time.monotonic() < self._backoff_until:
                 return 0
             done = 0
             statuses = await self.store.statuses()
-            for _ in range(max_batches):
+            for index in range(max_batches):
                 batch = await self.store.pending_comments(analysis.BATCH)
                 if not batch:
+                    break
+                if (now is not None and index == 0 and len(batch) < analysis.BATCH
+                        and batch[0].created_at > iso(now - ANALYZE_WAIT)):
                     break
                 try:
                     done += await analysis.classify_comments(
                         self.ctx.claude, self.store, self.ctx.db, self.ctx.settings.report_model, statuses, batch
                     )
                 except ClaudeError as exc:
-                    log.warning("Izohlar tahlili to'xtatildi (%s soniyadan keyin qayta): %s", API_BACKOFF, exc.user_message)
-                    self._backoff_until = time.monotonic() + API_BACKOFF
+                    wait = API_BACKOFF if exc.retryable else API_BACKOFF_PERMANENT
+                    log.warning("Izohlar tahlili to'xtatildi (%s soniyadan keyin qayta): %s", wait, exc.user_message)
+                    self._backoff_until = time.monotonic() + wait
+                    if not exc.retryable and bot is not None and not self._analysis_warned:
+                        self._analysis_warned = True
+                        await self._tell_owners(bot, (
+                            "⚠️ Guruh izohlari tahlil qilinmayapti: "
+                            f"{html.escape(exc.user_message)}\nREPORT_MODEL sozlamasini tekshiring (.env). "
+                            "Raqamlar (reaksiyalar) hisoblanaveradi, rad sabablari va «qayta qo'ng'iroq» kechikadi."
+                        ))
                     break
+                self._analysis_warned = False
             return done
 
     async def _grouped_reasons(self, overview: Overview) -> list:
@@ -529,10 +597,11 @@ class ReportService:
         return [g.chat_id for g in await self.store.groups_with("leaders")] or self.owners()
 
     async def _deliver(self, bot: Bot, chat_ids: list[int], text: str,
-                       markup: InlineKeyboardMarkup | None) -> tuple[int, list[str]]:
+                       markup: InlineKeyboardMarkup | None) -> tuple[list[int], list[tuple[int, Exception]]]:
         """Hisobotni chatlarga yuboradi (uzun bo'lsa bo'laklab, tugma oxirgisida): (yetkazilgan chatlar, xatolar)."""
         parts = split_message(text)
-        sent, failed = 0, []
+        sent: list[int] = []
+        failed: list[tuple[int, Exception]] = []
         for chat_id in chat_ids:
             try:
                 for index, part in enumerate(parts):
@@ -543,35 +612,52 @@ class ReportService:
                             await self.store.mark_seen(chat_id, msg.message_id)
                         except Exception:  # noqa: BLE001
                             log.exception("Hisobot xabarini belgilab bo'lmadi")
-                sent += 1
-            except TelegramAPIError as exc:
+                sent.append(chat_id)
+            except AiogramError as exc:  # Telegram xatosi yoki buzuq javob (ClientDecodeError)
                 log.warning("Hisobot yuborilmadi (%s): %s", chat_id, exc)
-                failed.append(f"{chat_id}: {exc}")
+                failed.append((chat_id, exc))
         return sent, failed
 
     async def send_report(self, bot: Bot, day: date, now: datetime, *, interim: bool = False, late: bool = False,
-                          chat_ids: list[int] | None = None) -> int:
+                          chat_ids: list[int] | None = None, record: bool | None = None) -> int:
+        """Hisobotni yuboradi. record (standart: interim emas bo'lsa) — kunlik hisobot: yetgach kun yopiladi;
+        vaqtinchalik xatoda (tarmoq, 5xx, 429) o'sha chatga keyinroq qayta urinadi, darhol egasiga o'tkazmaydi."""
+        record = (not interim) if record is None else record
         overview, text, reasons = await self.compose(day, now, interim=interim, late=late)
         await self.refresh_bot_info(bot)
         markup = self.details_markup(None if overview.live else day)
         targets = chat_ids or await self.report_targets()
-        sent, failed = await self._deliver(bot, targets, text, markup)
+        key = day.isoformat()
+        got, attempts = self._delivery.get(key, (set(), 0)) if record else (set(), 0)
+        delivered, failed = await self._deliver(bot, [c for c in targets if c not in got], text, markup)
+        got = got | set(delivered)
         self.last_fallback = False
+        if record and attempts + 1 < REPORT_ATTEMPTS and any(is_transient(exc) for _, exc in failed):
+            wait = max([REPORT_RETRY] + [timedelta(seconds=exc.retry_after + 1) for _, exc in failed
+                                         if isinstance(exc, TelegramRetryAfter)])
+            self._delivery[key] = (got, attempts + 1)
+            self._retry_after = now + wait
+            log.warning("Kunlik hisobot %s ta chatga yetmadi (vaqtinchalik xato) — %s da qayta uriniladi",
+                        len(failed), f"{self._retry_after:%H:%M}")
+            return len(got)
+        sent = len(got)
         owners = [o for o in self.owners() if o not in targets]
         if failed and owners:
-            problem = html.escape("\n".join(failed))
+            problem = html.escape("\n".join(f"{chat_id}: {exc}" for chat_id, exc in failed))
             if sent:
                 await self._tell_owners(bot, "⚠️ Hisobot ba'zi chatlarga yuborilmadi:\n" + problem)
             else:  # rahbarlar guruhiga umuman bormadi — hisobot yo'qolmasin, egasiga keladi
                 head = f"⚠️ Hisobot rahbarlar guruhiga yuborilmadi — sizga yuborildi.\n<i>{problem}</i>\n\n"
-                sent, _ = await self._deliver(bot, owners, head + text, markup)
+                fallback, _ = await self._deliver(bot, owners, head + text, markup)
+                sent = len(fallback)
                 self.last_fallback = bool(sent)
-        if not interim:
+        if record:
             if sent:  # hech qayerga bormagan hisobot «yuborilgan» deb belgilanmaydi — keyinroq qayta uriniladi
                 await self.store.save_report(
                     overview.end.strftime("%Y-%m-%d %H:%M"), overview.start.strftime("%Y-%m-%d %H:%M"), text,
                     json.dumps(reasons, ensure_ascii=False),
                 )
+                self._delivery.pop(key, None)
                 self._retry_after = None
             else:
                 self._retry_after = now + REPORT_RETRY
@@ -586,6 +672,8 @@ class ReportService:
         if day is None:
             return False
         start, end = period_bounds(day, schedule, self.tz)
+        if now < end + REPORT_GRACE:
+            return False  # 19:02 gacha kutiladi: so'nggi daqiqadagi reaksiyalar ham yozilib bo'lsin
         if await self.store.report_for_day(day.isoformat()):  # vaqt o'zgartirilsa ham bir kunga bitta hisobot
             return False
         if end <= await self.since() or now - end > MAX_LATE:
@@ -607,15 +695,16 @@ class ReportService:
         if not recipients or not await self.store.groups_with("leads"):
             return 0
         cutoff = now - timedelta(minutes=schedule.remind_minutes)
-        leads = await self.store.unmarked_leads(iso(now - timedelta(hours=24)), iso(cutoff))
+        leads = await self.store.unmarked_leads(iso(self.remind_window(now, schedule)), iso(cutoff))
         if not leads:
             return 0
-        lines = [f"⏳ <b>{len(leads)} ta lid {schedule.remind_minutes} daqiqadan beri belgilanmagan</b>", ""]
+        lines = [f"⏳ <b>{len(leads)} ta lid hali belgilanmagan</b> ({schedule.remind_minutes} daqiqadan ko'proq)", ""]
         for lead in leads[:REMIND_SHOWN]:
             moment = datetime.strptime(lead.created_at, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone(self.tz)
             what = html.escape(" — ".join(x for x in (lead.name or "Ism ko'rsatilmagan", lead.course) if x))
             link = message_link(lead.chat_id, lead.message_id)
-            lines.append(f"• {what} · {moment:%H:%M}" + (f' · <a href="{link}">ochish</a>' if link else ""))
+            stamp = f"{moment:%H:%M}" if moment.date() == now.date() else f"{moment:%d.%m %H:%M}"
+            lines.append(f"• {what} · {stamp}" + (f' · <a href="{link}">ochish</a>' if link else ""))
         if len(leads) > REMIND_SHOWN:
             lines.append(f"… va yana {len(leads) - REMIND_SHOWN} ta")
         text = "\n".join(lines)
@@ -624,17 +713,28 @@ class ReportService:
             try:
                 await bot.send_message(person.user_id, text, parse_mode=ParseMode.HTML)
                 sent += 1
-            except TelegramAPIError as exc:
+            except AiogramError as exc:
                 log.info("Operatorga eslatma yuborilmadi (%s): %s", person.user_id, exc)
+        if not sent:  # hech kimga yetmadi — lidlar «eslatilgan» deb belgilanmaydi, birozdan keyin qayta
+            self._remind_after = now + REMIND_FAIL_GAP
+            return 0
         await self.store.mark_reminded(lead.id for lead in leads)
         self._remind_after = now + REMIND_GAP
         return sent
+
+    @staticmethod
+    def remind_window(now: datetime, s: Schedule) -> datetime:
+        """Eslatiladigan lidlar oynasi boshi: oldingi ish kunining ish boshlanishi — kechqurun va dam kunlari tushgan
+        lidlar keyingi ish kuni ertalab eslatiladi (kamida oxirgi 24 soat)."""
+        previous = neighbour_day(now.date(), s, -1)
+        start = datetime.combine(previous, datetime.strptime(s.work_start, "%H:%M").time(), tzinfo=now.tzinfo)
+        return min(start, now - timedelta(hours=24))
 
     async def tick(self, bot: Bot, now: datetime | None = None) -> None:
         await self.ensure()
         now = now or self.now()
         steps = (
-            ("izohlar tahlili", lambda: self.analyze_pending(max_batches=2)),
+            ("izohlar tahlili", lambda: self.analyze_pending(max_batches=2, bot=bot, now=now)),
             ("eslatmalar", lambda: self.check_reminders(bot, now)),
             ("kunlik hisobot", lambda: self.check_daily(bot, now)),
             ("vazifalar", lambda: self.tasks.tick(bot, now)),
@@ -660,7 +760,7 @@ class ReportService:
                 await self._task
 
     async def _loop(self, bot: Bot) -> None:
-        await asyncio.sleep(3)
+        await asyncio.sleep(FIRST_TICK_DELAY)
         while True:
             try:
                 await self.tick(bot)

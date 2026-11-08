@@ -24,10 +24,11 @@
     tasks: ['task', 'listCheck', '«#vazifa» va «Bajardingizmi?»'],
   };
   const KIND = {
-    operator: { title: 'Operator qo\'shish', hint: 'Lidlarga qo\'ng\'iroq qiladigan xodim. Hisobotda alohida qatorda ko\'rinadi.' },
-    excluded: { title: 'Istisno qo\'shish', hint: 'Bu odamning reaksiya va izohlari hisobotda umuman sanalmaydi (masalan, rahbarlar).' },
-    leader: { title: 'Rahbar qo\'shish', hint: 'Rahbar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi, sozlamalarni o\'zgartira olmaydi.' },
+    operator: { title: 'Operator qo\'shish', hint: 'Lidlarga qo\'ng\'iroq qiladigan xodim (administrator ham). Hisobotda alohida qatorda ko\'rinadi.' },
+    excluded: { title: 'Istisno qo\'shish', hint: 'Bu odamning reaksiya va izohlari hisobotda umuman sanalmaydi (masalan, sinov akkaunti).' },
+    leader: { title: 'Rahbar qo\'shish', hint: 'Rahbar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi, sozlamalarni o\'zgartira olmaydi. Lidni o\'zi belgilasa — hisobotda alohida qatorda ismi bilan.' },
   };
+  const BULK_NOTE = 'Bir nechta xodimni birdan: botga <b>/xodimlar</b> va keyingi qatorlarda «@username — Ism — rol» (operator, admin, rahbar). Username\'i yo\'q xodim — kontaktini botga ulashing.';
 
   window.TTAReport = function (A) {
     const { api, esc, row, chev, emptyState, skeleton, openSheet, closeSheet, toast, notify, guard, state, rerender } = A;
@@ -62,11 +63,14 @@
       const parts = d.columns.filter((c) => r.counts[c]).map((c) => '<span>' + esc(c) + ' ' + r.counts[c] + '</span>');
       return '<div class="status-line">' + (parts.length ? parts.join('') : '<span>natija yo\'q</span>') + '</div>';
     }
+    function roleBadge(role) {
+      return role === 'admin' ? '<span class="badge">admin</span>' : role === 'leader' ? '<span class="badge lead">rahbar</span>' : '';
+    }
     function opRow(d, r, action) {
       const share = r.total ? Math.round(r.positive / r.total * 100) : 0;
       const handle = r.username && r.name !== '@' + r.username ? ' <span class="handle">@' + esc(r.username) + '</span>' : '';
       return '<button class="row op" data-action="' + (action || 'none') + '" data-key="' + esc(r.key) + '">' + avatar(r.name) +
-        '<span class="body"><div class="label">' + esc(r.name) + handle + '</div>' + statusLine(d, r) +
+        '<span class="body"><div class="label">' + esc(r.name) + roleBadge(r.role) + handle + '</div>' + statusLine(d, r) +
         (r.total ? '<div class="mini-bar"><i style="width:' + share + '%"></i></div>' : '') + '</span>' +
         '<span class="total">' + r.total + '<small>lid</small></span></button>';
     }
@@ -119,9 +123,15 @@
         : '<div class="group">' + emptyState('phone', 'Hali qo\'ng\'iroq yo\'q', 'Operatorlar lidlarga reaksiya yoki izoh qoldirgach, shu yerda ko\'rinadi.') + '</div>';
       if (!d.has_operator_list && d.role === 'owner') html += '<p class="note">Operatorlar ro\'yxati bo\'sh — reaksiya yoki izoh qoldirgan hamma sanalmoqda. Ro\'yxat: Operatorlar → Qo\'shish.</p>';
       html += '</div>';
-      if (d.extras.length) {
+      const leaders = d.extras.filter((r) => r.role === 'leader');
+      const unlisted = d.extras.filter((r) => r.role !== 'leader');
+      if (leaders.length) {
+        html += '<div class="section"><div class="section-h">Rahbarlar</div><div class="group">' +
+          leaders.map((r) => opRow(d, r, 'none')).join('') + '</div><p class="note">Rahbar lidni o\'zi belgilagan — sanaladi, operatorlar jadvalidan alohida.</p></div>';
+      }
+      if (unlisted.length) {
         html += '<div class="section"><div class="section-h">Ro\'yxatda yo\'q</div><div class="group">' +
-          d.extras.map((r) => opRow(d, r, d.role === 'owner' ? 'r-extra' : 'none')).join('') + '</div>' +
+          unlisted.map((r) => opRow(d, r, d.role === 'owner' ? 'r-extra' : 'none')).join('') + '</div>' +
           (d.role === 'owner' ? '<p class="note">Bosing — operator qilish yoki hisobotdan chiqarish (istisno).</p>' : '') + '</div>';
       }
       const courses = d.courses.filter((c) => c.total);
@@ -286,7 +296,7 @@
           const who = p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id);
           const status = !p.seen ? 'guruhda hali ko\'rinmagan' : p.dm_ok ? 'eslatma oladi' : 'botga /start bosmagan';
           return '<button class="row op" data-action="' + (isOwner ? 'r-edit' : 'none') + '" data-id="' + p.id + '">' + avatar(p.label) +
-            '<span class="body"><div class="label">' + esc(p.label) + (p.name ? ' <span class="handle">' + who + '</span>' : '') + '</div>' +
+            '<span class="body"><div class="label">' + esc(p.label) + roleBadge(p.title) + (p.name ? ' <span class="handle">' + who + '</span>' : '') + '</div>' +
             '<div class="sub">' + status + '</div>' + (r && r.total ? statusLine(d, r) : '') + '</span>' +
             '<span class="total">' + (r ? r.total : 0) + '<small>lid</small></span></button>';
         }).join('') + '</div>';
@@ -294,11 +304,18 @@
         html += '<div class="group">' + emptyState('users', 'Ro\'yxat bo\'sh', 'Ro\'yxat bo\'sh bo\'lsa, lidga reaksiya yoki izoh qoldirgan hamma sanaladi. Operatorlarning Telegram username\'ini qo\'shing.') + '</div>';
       }
       html += '</div>';
-      if (d.extras.length) {
-        html += '<div class="section"><div class="section-h">Ro\'yxatda yo\'q, lekin qo\'ng\'iroq qilgan</div><div class="group">' +
-          d.extras.map((r) => opRow(d, r, isOwner ? 'r-extra' : 'none')).join('') + '</div></div>';
+      const leaders = d.extras.filter((r) => r.role === 'leader');
+      const unlisted = d.extras.filter((r) => r.role !== 'leader');
+      if (leaders.length) {
+        html += '<div class="section"><div class="section-h">Rahbarlar · lidni o\'zi belgilagan</div><div class="group">' +
+          leaders.map((r) => opRow(d, r, 'none')).join('') + '</div></div>';
       }
-      html += '<p class="note">Operator botga bir marta /start bossa, hech kim belgilamagan lidlar haqida eslatma oladi.</p>';
+      if (unlisted.length) {
+        html += '<div class="section"><div class="section-h">Ro\'yxatda yo\'q, lekin qo\'ng\'iroq qilgan</div><div class="group">' +
+          unlisted.map((r) => opRow(d, r, isOwner ? 'r-extra' : 'none')).join('') + '</div></div>';
+      }
+      html += '<p class="note">Operator botga bir marta /start bossa, hech kim belgilamagan lidlar haqida eslatma oladi.' +
+        (isOwner ? ' ' + BULK_NOTE : '') + '</p>';
       $screen.innerHTML = html;
     }
 
@@ -347,9 +364,12 @@
         '</div><p class="note">Excel ' + (leadersGroup ? 'rahbarlar guruhiga telefon raqamlari yashirilgan holda, sizga — to\'liq' : 'sizga (rahbarlar guruhi belgilanmagan)') +
         ' yuboriladi. Istalgan davr — Arxiv yoki botda /excel.</p></div>';
 
-      const personRows = (list, kind, tile, ic) => list.map((p) => row(tile, ic, esc(p.label), (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) + (kind === 'leader' ? (p.seen ? ' · kirgan' : ' · hali kirmagan') : ''), chev(), 'r-edit', 'data-id="' + p.id + '"')).join('');
+      const excludedToo = (p) => people.excluded.some((x) => (p.user_id && x.user_id === p.user_id) || (p.username && x.username === p.username));
+      const personRows = (list, kind, tile, ic) => list.map((p) => row(tile, ic, esc(p.label), (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) +
+        (kind === 'leader' ? (p.seen ? ' · kirgan' : ' · hali kirmagan') + (excludedToo(p) ? ' · istisnoda — sanalmaydi' : '') : ''), chev(), 'r-edit', 'data-id="' + p.id + '"')).join('');
       html += '<div class="section"><div class="section-h">Kirish · rahbarlar<button data-action="r-add" data-kind="leader">+ Qo\'shish</button></div><div class="group">' +
-        (people.leaders.length ? personRows(people.leaders, 'leader', 'leader', 'eye') : emptyState('eye', 'Rahbar qo\'shilmagan', 'Rahbarlar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi.')) + '</div></div>';
+        (people.leaders.length ? personRows(people.leaders, 'leader', 'leader', 'eye') : emptyState('eye', 'Rahbar qo\'shilmagan', 'Rahbarlar Mini App\'ning faqat Hisobotlar bo\'limini ko\'radi.')) + '</div>' +
+        '<p class="note">Rahbar lidni o\'zi belgilasa — hisobotda alohida qatorda shu ismi bilan sanaladi (istisnoda bo\'lsa — sanalmaydi).</p></div>';
       html += '<div class="section"><div class="section-h">Istisnolar<button data-action="r-add" data-kind="excluded">+ Qo\'shish</button></div><div class="group">' +
         (people.excluded.length ? personRows(people.excluded, 'excluded', 'ban', 'ban') : emptyState('ban', 'Istisno yo\'q', 'Bu ro\'yxatdagilarning izoh va reaksiyalari hisobotda sanalmaydi.')) + '</div></div>';
 
@@ -366,19 +386,26 @@
     }
 
     // ---------------------------------------------------------- panellar (sheet)
+    function adminSwitch(on) {
+      return '<label class="row" style="padding-left:4px"><span class="body"><div class="label">Administrator</div><div class="sub">jadvalda operatorlar bilan, ismi yonida «admin»</div></span>' +
+        '<span class="switch"><input type="checkbox" name="admin"' + (on ? ' checked' : '') + '><span></span></span></label>';
+    }
     function personSheet(kind, preset) {
       const k = KIND[kind];
       openSheet('<h3 class="sheet-title">' + k.title + '</h3><p class="sheet-sub">' + k.hint + '</p>' +
         '<form data-form="r-person"><input type="hidden" name="kind" value="' + kind + '">' +
         '<div class="field"><label>Telegram username yoki ID</label><input name="who" required maxlength="64" placeholder="@username" autocomplete="off" autocapitalize="off" value="' + esc(preset && preset.who || '') + '"></div>' +
         '<div class="field"><label>Ism (hisobotda shunday ko\'rinadi)</label><input name="name" maxlength="40" placeholder="Masalan: Malika" value="' + esc(preset && preset.name || '') + '"></div>' +
-        '<button class="btn" type="submit">Saqlash</button></form>', (el) => { const i = el.querySelector(preset ? 'input[name=name]' : 'input[name=who]'); if (i) i.focus(); });
+        (kind === 'operator' ? adminSwitch(false) : '') +
+        '<button class="btn" type="submit">Saqlash</button></form>' +
+        (kind === 'operator' || kind === 'leader' ? '<p class="note">' + BULK_NOTE + '</p>' : ''), (el) => { const i = el.querySelector(preset ? 'input[name=name]' : 'input[name=who]'); if (i) i.focus(); });
     }
     function editSheet(p) {
-      const kindLabel = { operator: 'Operator', excluded: 'Istisno', leader: 'Rahbar' }[p.kind] || '';
+      const kindLabel = { operator: p.title === 'admin' ? 'Administrator' : 'Operator', excluded: 'Istisno', leader: 'Rahbar' }[p.kind] || '';
       openSheet('<h3 class="sheet-title">' + esc(p.label) + '</h3><p class="sheet-sub">' + kindLabel + ' · ' + (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) +
         (p.seen ? ' · ID: ' + esc(p.user_id) : ' · guruhda hali ko\'rinmagan') + '</p>' +
         '<form data-form="r-rename"><input type="hidden" name="id" value="' + p.id + '"><div class="field"><label>Ism</label><input name="name" maxlength="40" value="' + esc(p.name) + '" placeholder="Ism"></div>' +
+        (p.kind === 'operator' ? adminSwitch(p.title === 'admin') : '') +
         '<button class="btn" type="submit">Saqlash</button></form>' +
         '<div class="btn-row"><button class="btn danger" data-action="r-delete" data-id="' + p.id + '">' + icon('trash') + 'Ro\'yxatdan o\'chirish</button></div>');
     }
@@ -607,13 +634,20 @@
       'r-task-due': (fd) => guard(() => taskPatch({ due: fd.get('due') }, 'Muddat saqlandi')),
       'r-person': (fd) => guard(async () => {
         const kind = fd.get('kind');
-        await api('api/report/people', { method: 'POST', body: { kind, who: fd.get('who'), name: fd.get('name') } });
+        const body = { kind, who: fd.get('who'), name: fd.get('name') };
+        if (kind === 'operator') body.title = fd.get('admin') === 'on' ? 'admin' : '';
+        await api('api/report/people', { method: 'POST', body });
         closeSheet();
         notify('success');
-        toast({ operator: 'Operator qo\'shildi', excluded: 'Istisno qo\'shildi', leader: 'Rahbar qo\'shildi' }[kind] || 'Saqlandi');
+        toast(body.title === 'admin' ? 'Administrator qo\'shildi' : { operator: 'Operator qo\'shildi', excluded: 'Istisno qo\'shildi', leader: 'Rahbar qo\'shildi' }[kind] || 'Saqlandi');
         rerender();
       }),
-      'r-rename': (fd) => guard(async () => { await api('api/report/people/' + fd.get('id'), { method: 'PATCH', body: { name: fd.get('name') } }); closeSheet(); toast('Saqlandi'); rerender(); }),
+      'r-rename': (fd) => guard(async () => {
+        const body = { name: fd.get('name') };
+        if (document.querySelector('.sheet input[name=admin]')) body.title = fd.get('admin') === 'on' ? 'admin' : '';
+        await api('api/report/people/' + fd.get('id'), { method: 'PATCH', body });
+        closeSheet(); toast('Saqlandi'); rerender();
+      }),
       'r-status-add': (fd) => guard(async () => {
         await api('api/report/statuses', { method: 'POST', body: { emoji: fd.get('emoji'), label: fd.get('label'), positive: fd.get('positive') === 'on' } });
         closeSheet(); notify('success'); toast('Status qo\'shildi'); rerender();

@@ -45,7 +45,16 @@ class OpLine:
     total: int
     counts: dict[str, int]
     positive: int
-    listed: bool = True  # False — ro'yxatda yo'q, lekin qo'ng'iroq qilgan
+    listed: bool = True  # False — operatorlar ro'yxatida yo'q (rahbar yoki ro'yxatda yo'q), lekin qo'ng'iroq qilgan
+    role: str = ""  # «admin» — administrator, «leader» — rahbar (stats.Row.role)
+
+    @property
+    def label(self) -> str:
+        if self.role == "leader":
+            return f"👔 {self.name}"
+        if not self.listed:
+            return f"➕ {self.name}"
+        return f"{self.name} (admin)" if self.role == "admin" else self.name
 
 
 @dataclass
@@ -287,8 +296,7 @@ def _summary_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
         row += 1
     total = {"total": 0, "positive": 0, "counts": {}}
     for line in report.operators:
-        name = line.name if line.listed else f"➕ {line.name}"
-        values = [name, f"@{line.username}" if line.username else "", line.total]
+        values = [line.label, f"@{line.username}" if line.username else "", line.total]
         values += [line.counts.get(emoji, 0) for emoji, _ in report.columns]
         values.append(_share(line.positive, line.total))
         book.values(ws, row, values, font=None if line.listed else book.italic, fmts={len(values): "0%"})
@@ -302,7 +310,10 @@ def _summary_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
         values.append(_share(total["positive"], total["total"]))
         book.values(ws, row, values, font=book.bold, fill=book.total_fill, fmts={len(values): "0%"})
         row += 1
-        if any(not line.listed for line in report.operators):
+        if any(line.role == "leader" for line in report.operators):
+            book.put(ws, row, 1, "👔 — rahbar (lidni o'zi belgilagan)", font=book.muted)
+            row += 1
+        if any(not line.listed and line.role != "leader" for line in report.operators):
             book.put(ws, row, 1, "➕ — ro'yxatda yo'q, lekin qo'ng'iroq qilgan", font=book.muted)
             row += 1
         book.put(ws, row, 1, "Bir davrda bitta lid bir operator uchun bir marta sanaladi (so'nggi natija).", font=book.muted)

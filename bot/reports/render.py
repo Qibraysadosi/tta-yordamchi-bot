@@ -10,6 +10,8 @@ from .stats import Overview, Row
 NAME_WIDTH = 9
 EXTRAS_SHOWN = 5
 COURSES_SHOWN = 4
+ADMIN_MARK = "*"  # jadvalda administrator ismi yonida (tor <pre> ustunga sig'adi)
+ADMIN_LEGEND = "<i>* — administrator</i>"
 MESSAGE_LIMIT = 3800  # Telegram xabari 4096 belgi (UTF-16; emoji — 2) — zaxira bilan
 
 
@@ -46,9 +48,13 @@ def split_message(text: str, limit: int = MESSAGE_LIMIT) -> list[str]:
 
 
 def _name(row: Row) -> str:
-    """Ism ustuni: kamida bitta bo'sh joy qoladi (uzun ism «…» bilan qisqartiriladi)."""
+    """Ism ustuni: kamida bitta bo'sh joy qoladi (uzun ism «…» bilan qisqartiriladi); administrator — «*» bilan."""
     name = " ".join(row.name.split()) or "?"
-    return (name if len(name) < NAME_WIDTH else name[: NAME_WIDTH - 2] + "…").ljust(NAME_WIDTH)
+    mark = ADMIN_MARK if row.admin else ""
+    room = NAME_WIDTH - 1 - len(mark)
+    if len(name) > room:
+        name = name[: room - 1] + "…"
+    return (name + mark).ljust(NAME_WIDTH)
 
 
 def table(ov: Overview) -> str:
@@ -84,15 +90,23 @@ def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
     lines = [f"📊 <b>{title} · {day:%d.%m.%Y} ({WEEKDAYS[day.weekday()]})</b>", _period_line(ov, interim_at, late), ""]
     if ov.rows and (ov.totals.total or ov.has_operator_list):
         lines.append(table(ov))
-    else:
+        if any(row.admin for row in ov.rows):
+            lines.append(ADMIN_LEGEND)
+    elif not ov.extras:
         lines.append("Bu davrda qo'ng'iroq qayd etilmadi.")
     cols = ov.columns()
-    for row in ov.extras[:EXTRAS_SHOWN]:
+    leaders, unlisted = ov.leaders, ov.unlisted
+    for row in leaders[:EXTRAS_SHOWN]:  # rahbarlar — ro'yxatdagi ismi bilan, jadvaldan tashqarida
+        detail = _breakdown(row, cols)
+        lines.append(f"👔 Rahbar: {html.escape(row.name)} — {row.total} ta lid" + (f" ({detail})" if detail else ""))
+    if len(leaders) > EXTRAS_SHOWN:
+        lines.append(f"👔 … va yana {len(leaders) - EXTRAS_SHOWN} rahbar")
+    for row in unlisted[:EXTRAS_SHOWN]:
         who = html.escape(row.name) + (f" (@{html.escape(row.username)})" if row.username and row.name != f"@{row.username}" else "")
         detail = _breakdown(row, cols)
         lines.append(f"➕ Ro'yxatda yo'q: {who} — {row.total} ta lid" + (f" ({detail})" if detail else ""))
-    if len(ov.extras) > EXTRAS_SHOWN:
-        lines.append(f"➕ … va yana {len(ov.extras) - EXTRAS_SHOWN} kishi")
+    if len(unlisted) > EXTRAS_SHOWN:
+        lines.append(f"➕ … va yana {len(unlisted) - EXTRAS_SHOWN} kishi")
     lines.append(f"📥 Yangi lidlar: {ov.new_leads} · belgilanmagan: {ov.unmarked}")
 
     positive = [s for s in ov.statuses if s.positive]

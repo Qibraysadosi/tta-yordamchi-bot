@@ -20,7 +20,7 @@ from .archive import MONTH, WEEK, parse_key
 from .excel import hide_numbers
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, display_day, neighbour_day, period_bounds
-from .store import PEOPLE_KINDS, ROLES, clean_username, iso
+from .store import PEOPLE_KINDS, ROLES, TITLES, clean_username, iso
 from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
 if TYPE_CHECKING:
@@ -74,6 +74,14 @@ def _masked_summary(summary: dict | None) -> dict | None:
     if not summary or not summary.get("top"):
         return summary
     return dict(summary, top=[[hide_numbers(str(item[0])), *item[1:]] for item in summary["top"]])
+
+
+def _title(body: dict) -> str | None | bool:
+    """Operator lavozimi: «admin» yoki "" (oddiy operator); berilmagan — None, noto'g'ri qiymat — False."""
+    if "title" not in body:
+        return None
+    value = str(body.get("title") or "").strip().lower()
+    return value if value in TITLES else False
 
 
 def _row(ov: Overview, row: Row, show: Callable[[str], str] = _same) -> dict:
@@ -206,6 +214,7 @@ class ReportAPI:
                 "id": person.id, "username": person.username, "user_id": person.user_id,
                 "name": show(person.name) if person.name else person.name,
                 "label": show(person.label), "seen": person.user_id is not None, "dm_ok": person.dm_ok,
+                "title": person.title,
             })
         return _json({"operators": result["operator"], "excluded": result["excluded"], "leaders": result["leader"]})
 
@@ -225,17 +234,18 @@ class ReportAPI:
             username = clean_username(who)
             if username is None:
                 return _error("Username noto'g'ri: @ bilan yoki usiz, 4–32 ta lotin harfi, raqam yoki _ (yoki Telegram ID)")
+        title = _title(body)
+        if title is False:
+            return _error("Lavozim noto'g'ri")
         store = self.service.store
         before = {p.id for p in await store.people(kind)}
-        person = await store.add_person(kind, username=username, user_id=user_id, name=name)
+        person = await store.add_person(kind, username=username, user_id=user_id, name=name, title=title)
         if kind in ("operator", "leader") and person.id not in before and person.user_id is not None:
             await self.service.welcome(self.bot, person)  # botni avval ochgan bo'lsa — darrov ulanadi (eslatmalar)
         # operator va istisno bir-biriga zid: biriga qo'shilsa, ikkinchisidan olinadi
         opposite = {"operator": "excluded", "excluded": "operator"}.get(kind)
         if opposite:
-            for other in await store.people(opposite):
-                if (username and other.username == username) or (other.user_id and other.user_id == person.user_id):
-                    await store.delete_person(other.id)
+            await store.drop_from(opposite, username=person.username or username, user_id=person.user_id)
         return _json({"ok": True, "person": {"id": person.id, "label": person.label}})
 
     async def update_person(self, request: web.Request) -> web.Response:
@@ -244,7 +254,10 @@ class ReportAPI:
             return _error("Topilmadi", 404, "not_found")
         body = await self._body(request)
         name = " ".join(str(body["name"]).split())[:NAME_LIMIT] if "name" in body else None
-        await self.service.store.update_person(person.id, name=name)
+        title = _title(body)
+        if title is False:
+            return _error("Lavozim noto'g'ri")
+        await self.service.store.update_person(person.id, name=name, title=title)
         return _json({"ok": True})
 
     async def delete_person(self, request: web.Request) -> web.Response:

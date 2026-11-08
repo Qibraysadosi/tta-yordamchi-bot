@@ -93,6 +93,7 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="vazifalar", description="🗂 Ochiq vazifalar"),
     BotCommand(command="kundalik", description="📓 Kundalik: bugungi raqamlar va vazifalar"),
     BotCommand(command="excel", description="📊 Haftalik / oylik Excel hisobot"),
+    BotCommand(command="xodimlar", description="🧑‍💼 Xodimlar: operator, admin, rahbar (ismlari)"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -170,6 +171,9 @@ ADMIN_HELP = (
     "🗂 /vazifalar — ochiq vazifalar va ularning holati\n"
     "📓 /kundalik — bugungi kundalik: call center raqamlari va vazifalar (ish kunlari 20:00 da o'zi keladi)\n"
     "📊 /excel — haftalik yoki oylik Excel hisobot (dushanba va oyning 1-sanasi o'zi keladi)\n"
+    "🧑‍💼 /xodimlar — xodimlar ro'yxati; bitta xabarda «@username — Ism — rol» (operator, admin, rahbar) — "
+    "hisobotlarda ismi bilan chiqadi: admin jadvalda operatorlar bilan, rahbar alohida qatorda. Username'i yo'q "
+    "xodim — kontaktini shu botga ulashing (profil → «Поделиться контактом»), bot rolini so'raydi\n"
     "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «kecha kimlar keladi dedi?», "
     "«Malika vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi. Rahbarlar ham botga yozib so'raydi "
     "(telefonlar yashirilgan, kuniga LEADER_DAILY_LIMIT ta savol)"

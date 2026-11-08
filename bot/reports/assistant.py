@@ -55,6 +55,7 @@ REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar
 - Qo'ng'iroqlar, operatorlar, lidlar natijasi yoki vazifalar haqida so'ralsa — javobdan oldin report_stats, report_leads yoki task_status vositasi bilan aniq ma'lumot ol. Taxmin qilma, suhbatdagi eski raqamni qayta ishlatma (ma'lumot doim yangilanib turadi).
 - Davr aytilmasa — bugun (joriy hisobot davri). «Kecha», «shu hafta», «o'tgan oy», aniq sana yoki oraliq bo'lsa — mos period bilan. Hisobot davri kalendar kun emas (masalan, kecha 19:00 → bugun 19:00) — kerak bo'lsa javobda ayt.
 - «Qo'ng'iroq» — operator status (reaksiya) qo'ygan yoki natija haqida izoh yozgan lid; bir davrda bitta lid bir operatorga bir marta sanaladi. «Asosiy natija» — 👍 keladi kabi asosiy status.
+- Odamlar: operators — jadvaldagi operatorlar (position=administrator — administrator, operatorlar bilan birga sanaladi); leaders — lidni o'zi belgilagan rahbarlar (sanaladi, alohida qatorda); not_in_operator_list — ro'yxatda yo'qlar. Umumiy son — hammasining yig'indisi.
 - Javob qisqa bo'lsin: avval asosiy raqam, keyin kerak bo'lsa ro'yxat. Ro'yxat uzun bo'lsa — eng muhimlari va «yana N ta». Statusni ma'nosi bilan yoz (👍 keladi).
 - Vazifa holati: ✅ bajarildi (kim yopgani bilan), ❌ «Yo'q» dedi, 🔔 so'raldi — javob kutilmoqda, ⚠️ javob bermadi, 🔴 muddati o'tdi, ⏳ muddati kelmagan.
 - Vosita «error» qaytarsa, sababini qisqa ayt; odam topilmasa, ro'yxatdagi ismlardan mosini taklif qil."""
@@ -267,6 +268,8 @@ class ReportTools:
                 "main_result": ov.positive(row)}
         if row.username:
             data["username"] = "@" + self._hide(row.username)
+        if row.admin or row.leader:
+            data["position"] = "administrator" if row.admin else "rahbar"
         return data
 
     # -------------------------------------------------------------- report_stats
@@ -289,7 +292,8 @@ class ReportTools:
             "totals": {"calls": calls, "by_status": counts, "main_result": main,
                        "main_share": f"{round(main * 100 / calls)}%" if calls else None},
             "operators": [self._row(ov, r, labels) for r in ov.rows],
-            "not_in_operator_list": [self._row(ov, r, labels) for r in ov.extras],
+            "leaders": [self._row(ov, r, labels) for r in ov.leaders],
+            "not_in_operator_list": [self._row(ov, r, labels) for r in ov.unlisted],
             "operator_list_set": ov.has_operator_list,
             "leads": {"new": ov.new_leads, "unmarked": ov.unmarked},
             "courses": [{"course": self._hide(c), "marked_leads": t, "main_result": p} for c, t, p in ov.courses[:10]],

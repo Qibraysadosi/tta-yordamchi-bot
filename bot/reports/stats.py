@@ -7,7 +7,9 @@ Qoidalar (kelishilgan):
 - Natija — eng so'nggi harakat: reaksiya yoki izoh (AI tahlili). Reaksiya va izoh mos kelmasa — «ziddiyat».
 - Izohda natija aniqlanmasa, o'sha odamning shu lidga oldingi reaksiyasi olinadi.
 - Operatorlar ro'yxati bo'sh bo'lsa, hamma sanaladi; bo'lmasa ro'yxatdagilar jadvalda, qolganlar —
-  «ro'yxatda yo'q» qatorida; istisnolar hech qayerda sanalmaydi."""
+  «ro'yxatda yo'q» qatorida; istisnolar hech qayerda sanalmaydi.
+- v1.11: administrator — operatorlar ro'yxatida («admin» lavozimi), jadvalda ismi yonida belgi bilan;
+  rahbar (Kirish · rahbarlar ro'yxati) lidga belgi qo'ysa — sanaladi, alohida qatorda ro'yxatdagi ismi bilan."""
 from __future__ import annotations
 
 import json
@@ -20,6 +22,7 @@ from .store import Event, Lead, Person, ReportStore, Status, iso
 
 SCHEDULE_KEY = "report:schedule"
 OTHER = "❔"  # natijasi aniqlanmagan qo'ng'iroqlar ustuni
+ADMIN_ROLE, LEADER_ROLE = "admin", "leader"  # Row.role: jadvaldagi administrator va alohida qatordagi rahbar
 WEEKDAY_SHORT = ("Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya")
 
 
@@ -203,10 +206,24 @@ class Row:
     operator: bool
     total: int = 0
     counts: Counter = field(default_factory=Counter)  # status emoji → son; OTHER — aniqlanmagan
+    role: str = ""  # ADMIN_ROLE — administrator (jadvalda), LEADER_ROLE — rahbar (alohida qatorda), "" — boshqalar
+
+    @property
+    def leader(self) -> bool:
+        return self.role == LEADER_ROLE
+
+    @property
+    def admin(self) -> bool:
+        return self.role == ADMIN_ROLE
+
+    @property
+    def shown(self) -> str:
+        """Qisqa ro'yxatlardagi nom (eng faollar): rahbar — «👔» bilan."""
+        return f"👔 {self.name}" if self.leader else self.name
 
     def as_dict(self) -> dict:
         return {"key": self.key, "name": self.name, "username": self.username, "user_id": self.user_id,
-                "operator": self.operator, "total": self.total, "counts": dict(self.counts)}
+                "operator": self.operator, "total": self.total, "counts": dict(self.counts), "role": self.role}
 
 
 @dataclass
@@ -237,6 +254,16 @@ class Overview:
             total.total += row.total
             total.counts.update(row.counts)
         return total
+
+    @property
+    def leaders(self) -> list[Row]:
+        """Lidni belgilagan rahbarlar (extras ichida, alohida qatorda ko'rsatiladi)."""
+        return [r for r in self.extras if r.leader]
+
+    @property
+    def unlisted(self) -> list[Row]:
+        """Hech qaysi ro'yxatda yo'q, lekin qo'ng'iroq qilganlar."""
+        return [r for r in self.extras if not r.leader]
 
     def positive(self, row: Row) -> int:
         return sum(row.counts.get(s.emoji, 0) for s in self.statuses if s.positive)
@@ -285,6 +312,7 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
     people = await store.people()
     operators = [p for p in people if p.kind == "operator"]
     excluded = [p for p in people if p.kind == "excluded"]
+    leaders = [p for p in people if p.kind == "leader"]
     users = await store.users()
 
     def is_excluded(user_id: int) -> bool:  # istisnolar (rahbarlar va h.k.) hech qayerda sanalmaydi
@@ -340,19 +368,29 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
 
     rows: dict[str, Row] = {}
     extras: dict[str, Row] = {}
+
+    def role_of(person: Person) -> str:
+        return ADMIN_ROLE if person.is_admin else ""
+
     for person in operators:  # ro'yxatdagilar natija bo'lmasa ham ko'rinadi
         key = f"u:{person.user_id}" if person.user_id else f"p:{person.id}"
-        rows[key] = Row(key=key, name=person.label, username=person.username, user_id=person.user_id, operator=True)
+        rows[key] = Row(key=key, name=person.label, username=person.username, user_id=person.user_id, operator=True,
+                        role=role_of(person))
     for (lead_id, user_id), value in status_of.items():
         username, first_name = users.get(user_id, (None, ""))
         key = f"u:{user_id}"
         person = _match(operators, user_id, username)
+        leader = None if person is not None else _match(leaders, user_id, username)
         if person is not None:
             row = rows.get(key) or rows.pop(f"p:{person.id}", None)
             if row is None:
-                row = Row(key=key, name=person.label, username=person.username, user_id=user_id, operator=True)
+                row = Row(key=key, name=person.label, username=person.username, user_id=user_id, operator=True,
+                          role=role_of(person))
             row.key, row.user_id = key, user_id
             rows[key] = row
+        elif leader is not None:  # rahbar — sanaladi, alohida qatorda ro'yxatdagi ismi bilan
+            row = extras.setdefault(key, Row(key=key, name=leader.label, username=leader.username or username,
+                                             user_id=user_id, operator=False, role=LEADER_ROLE))
         elif not operators:
             row = rows.setdefault(key, Row(key=key, name=first_name or (f"@{username}" if username else f"ID {user_id}"),
                                            username=username, user_id=user_id, operator=False))
@@ -379,7 +417,7 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
     )
 
     def order(item: Row) -> tuple:
-        return (-item.total, item.name.lower())
+        return (not item.leader, -item.total, item.name.lower())  # extras'da avval rahbarlar
 
     lead_people: dict[int, list[int]] = {}
     for lead_id, user_id in sorted(status_of):

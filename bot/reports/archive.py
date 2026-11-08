@@ -314,7 +314,7 @@ class ArchiveService:
         if top:
             mark = main.emoji if main is not None else ""
             lines.append("🏆 " + " · ".join(
-                f"{html.escape(r.name)} {r.total}" + (f" ({mark} {ov.positive(r)})" if mark else "") for r in top))
+                f"{html.escape(r.shown)} {r.total}" + (f" ({mark} {ov.positive(r)})" if mark else "") for r in top))
         if ov.pending:
             lines.append(f"⏳ {ov.pending} ta izoh hali tahlil qilinmadi")
         return lines
@@ -441,7 +441,7 @@ class ArchiveService:
             "new_leads": ov.new_leads if ov else 0, "unmarked": ov.unmarked if ov else 0,
             "tasks_due": len(due), "tasks_done": len(done), "tasks_open": sum(1 for t in due if t.status == OPEN),
             "tasks_on_time": sum(1 for t in done if t.done_at and t.due_at and t.done_at <= t.due_at),
-            "top": [[r.name, r.total, ov.positive(r)] for r in top] if ov else [],
+            "top": [[r.shown, r.total, ov.positive(r)] for r in top] if ov else [],
             "period": (f"{period.start:%d.%m %H:%M} → {period.end:%d.%m %H:%M}"
                        if period.start and period.end else ""),
         }
@@ -464,7 +464,7 @@ class ArchiveService:
         if ov is not None:
             for listed, group in ((True, ov.rows), (False, ov.extras)):
                 operators += [OpLine(name=row.name, username=row.username, total=row.total, counts=dict(row.counts),
-                                     positive=ov.positive(row), listed=listed) for row in group]
+                                     positive=ov.positive(row), listed=listed, role=row.role) for row in group]
 
         days: list[DayLine] = []
         for day in report_days(first, last, s):

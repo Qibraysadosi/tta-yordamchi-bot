@@ -1,6 +1,7 @@
-💾 v1.10.1 — Zaxira haftada bir marta
-• Bazaning avtomatik zaxira nusxasi endi har kuni emas, haftada bir marta — har dushanba tunda (03:30) keladi
-• Bot o'sha payt o'chiq turgan bo'lsa, ishga tushganda yuboriladi (o'sha hafta zaxirasi yo'qolmaydi)
-• Hozir olish kerak bo'lsa — /zaxira yoki Mini App → Admin → «Zaxira nusxa», avvalgidek
-• Kun va vaqtni o'zgartirish: serverdagi .env da BACKUP_DAY (dushanba … yakshanba yoki «har kuni») va BACKUP_TIME
-• Yangi versiya chiqqanini tekshirish avvalgidek har kuni
+🧑‍💼 v1.11.0 — Xodimlar hisobotda ismi bilan
+• Yangi /xodimlar buyrug'i: bosing, keyin bitta xabarda har qatorga «@username — Ism — rol» yozing (rollar: operator, admin, rahbar, istisno, o'chir) — bot hammasini qo'shib, har qator natijasini qaytaradi
+• Username'i yo'q xodim: profilida «Поделиться контактом» → shu botni tanlang → bot rol tugmalarini chiqaradi (🎧 Operator, ⭐ Administrator, 👔 Rahbar)
+• Administrator — operatorlar jadvalida birga sanaladi, ismi yonida «*» (Mini App va Excel'da «admin» belgisi)
+• Rahbar lidni o'zi belgilasa — endi sanaladi va alohida «👔 Rahbar: Ism — N ta lid» qatorida chiqadi (Telegram nomi emas, ro'yxatdagi ismi bilan)
+• Ro'yxatda «rahbar» deb yozilgan odam istisnolardan olinadi — hisobotda ko'rinadi
+• Mini App: Operatorlar → «Administrator» tumbleri, «Rahbarlar» bo'limi; Excel va AI javoblarida ham lavozimlar ko'rinadi

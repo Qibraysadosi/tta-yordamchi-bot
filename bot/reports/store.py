@@ -12,6 +12,8 @@ from ..db import Database
 
 ROLES = ("leads", "leaders", "tasks")
 PEOPLE_KINDS = ("operator", "excluded", "leader")
+ADMIN = "admin"  # operator lavozimi: administrator — jadvalda operatorlar bilan, ismi yonida belgi
+TITLES = ("", ADMIN)
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 DEFAULT_STATUSES = (  # (emoji, ma'nosi, asosiy natija)
     ("👍", "keladi", 1),
@@ -81,10 +83,19 @@ class Person:
     user_id: int | None
     name: str
     dm_ok: bool
+    title: str = ""  # operatorda: «admin» — administrator
 
     @property
     def label(self) -> str:
         return self.name or (f"@{self.username}" if self.username else f"ID {self.user_id}")
+
+    @property
+    def is_admin(self) -> bool:
+        return self.kind == "operator" and self.title == ADMIN
+
+    def same(self, username: str | None, user_id: int | None) -> bool:
+        """Shu odammi: username (kichik harfda) yoki Telegram ID bo'yicha."""
+        return bool((username and self.username == username) or (user_id and self.user_id == user_id))
 
 
 @dataclass
@@ -138,8 +149,9 @@ def _group(row: Any) -> Group:
 
 
 def _person(row: Any) -> Person:
+    title = row["title"] if "title" in row.keys() else ""
     return Person(id=row["id"], kind=row["kind"], username=row["username"], user_id=row["user_id"],
-                  name=row["name"], dm_ok=bool(row["dm_ok"]))
+                  name=row["name"], dm_ok=bool(row["dm_ok"]), title=title if title in TITLES else "")
 
 
 def _lead(row: Any) -> Lead:
@@ -273,41 +285,56 @@ class ReportStore:
         row = await self._one("SELECT * FROM rp_people WHERE id = ?", (person_id,))
         return _person(row) if row else None
 
-    async def add_person(self, kind: str, *, username: str | None, user_id: int | None, name: str = "") -> Person:
+    async def add_person(self, kind: str, *, username: str | None, user_id: int | None, name: str = "",
+                         title: str | None = None) -> Person:
+        """Ro'yxatga qo'shadi. Shu ro'yxatda bor bo'lsa — yangi yozuv ochilmaydi: ism (berilgan bo'lsa) va
+        lavozim (title berilgan bo'lsa, faqat operatorda) yangilanadi."""
         if kind not in PEOPLE_KINDS:
             raise ValueError(kind)
         if username is None and user_id is None:
             raise ValueError("username yoki ID kerak")
-        for person in await self.people(kind):
-            if (username and person.username == username) or (user_id and person.user_id == user_id):
-                if name and name != person.name:
-                    await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name, person.id))
-                    person.name = name
-                return person
-        if user_id is None and username:
+        name = name.strip()[:40]
+        if kind != "operator" or title not in TITLES:
+            title = None
+        existing = next((p for p in await self.people(kind) if p.same(username, user_id)), None)
+        if existing is None and user_id is None and username:
             known = await self._one(
                 "SELECT user_id FROM rp_users WHERE username = ? ORDER BY last_seen DESC LIMIT 1", (username,)
             )
             user_id = known["user_id"] if known else None
-            same = next((p for p in await self.people(kind) if user_id and p.user_id == user_id), None)
-            if same is not None:  # shu odam ro'yxatda ID bilan bor — ikkinchi yozuv ochilmaydi
-                await self._run("UPDATE rp_people SET username = ? WHERE id = ?", (username, same.id))
-                if name and name != same.name:
-                    await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name, same.id))
-                return await self.person(same.id)  # type: ignore[return-value]
-        new_id = await self._run(
-            "INSERT INTO rp_people (kind, username, user_id, name, created_at) VALUES (?, ?, ?, ?, ?)",
-            (kind, username, user_id, name.strip()[:40], now_iso()),
-        )
-        person = await self.person(new_id)
+            existing = next((p for p in await self.people(kind) if user_id and p.user_id == user_id), None)
+            if existing is not None:  # shu odam ro'yxatda ID bilan bor — ikkinchi yozuv ochilmaydi
+                await self._run("UPDATE rp_people SET username = ? WHERE id = ?", (username, existing.id))
+        if existing is None:
+            person_id = await self._run(
+                "INSERT INTO rp_people (kind, username, user_id, name, title, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (kind, username, user_id, name, title or "", now_iso()),
+            )
+        else:
+            person_id = existing.id
+            if name and name != existing.name:
+                await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name, person_id))
+            if title is not None and title != existing.title:
+                await self._run("UPDATE rp_people SET title = ? WHERE id = ?", (title, person_id))
+        person = await self.person(person_id)
         assert person is not None
         return person
 
-    async def update_person(self, person_id: int, *, name: str | None = None, kind: str | None = None) -> None:
+    async def update_person(self, person_id: int, *, name: str | None = None, kind: str | None = None,
+                            title: str | None = None) -> None:
         if name is not None:
             await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name.strip()[:40], person_id))
         if kind is not None and kind in PEOPLE_KINDS:
             await self._run("UPDATE rp_people SET kind = ? WHERE id = ?", (kind, person_id))
+        if title is not None and title in TITLES:
+            await self._run("UPDATE rp_people SET title = ? WHERE id = ? AND kind = 'operator'", (title, person_id))
+
+    async def drop_from(self, kind: str, *, username: str | None, user_id: int | None) -> list[Person]:
+        """Shu odamni bitta ro'yxatdan olib tashlaydi (masalan, operator qilinganda — istisnolardan)."""
+        removed = [p for p in await self.people(kind) if p.same(username, user_id)]
+        for person in removed:
+            await self.delete_person(person.id)
+        return removed
 
     async def delete_person(self, person_id: int) -> bool:
         cur = await self.conn.execute("DELETE FROM rp_people WHERE id = ?", (person_id,))
@@ -325,6 +352,12 @@ class ReportStore:
             (user_id, name),
         )
         return {r["kind"] for r in rows}
+
+    async def is_admin(self, user_id: int) -> bool:
+        row = await self._one(
+            "SELECT 1 FROM rp_people WHERE kind = 'operator' AND title = ? AND user_id = ? LIMIT 1", (ADMIN, user_id)
+        )
+        return row is not None
 
     async def bind_user(self, user_id: int, username: str | None) -> None:
         """@username bilan qo'shilgan odamni Telegram ID'si bilan bog'laydi (username o'zgarsa ham taniladi)."""

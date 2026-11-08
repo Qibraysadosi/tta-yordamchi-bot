@@ -444,6 +444,8 @@ a { color: var(--link); }
 /* --- arxiv --- */
 .tile.journal { background: #9333ea; }
 .row .badge { flex: none; margin: 0 2px 0 6px; }
+.badge.lead { background: color-mix(in srgb, #7c3aed 15%, transparent); color: #6d28d9; }
+:root[data-theme="dark"] .badge.lead { color: #c4b5fd; }
 .pre-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; padding: 12px 14px; }
 
 /* --- toast --- */

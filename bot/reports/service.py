@@ -128,6 +128,8 @@ class ReportService:
         self.tasks = TaskService(self)
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
+        self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
+        self.contact_names: dict[int, str] = {}  # v1.11: ulashilgan kontakt (Telegram ID) → hisobotdagi ism
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -439,7 +441,7 @@ class ReportService:
         if "leader" in roles:
             return "leader"
         if "operator" in roles:
-            return "operator"
+            return "admin" if await self.store.is_admin(user.id) else "operator"
         return None
 
     def ai_tools(self, *, masked: bool) -> ReportTools:
@@ -470,14 +472,13 @@ class ReportService:
         keyin eslatmalarni oladi. Yozib bo'lmasa — xodim botga yozganda o'zi ulanadi."""
         if person.user_id is None:
             return False
-        text, markup = self.staff_text(person.kind, person.name or "do'stim")
+        text, markup = self.staff_text("admin" if person.is_admin else person.kind, person.name or "do'stim")
         try:
             await bot.send_message(person.user_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
         except AiogramError as exc:
             log.info("Xodimga salom yuborilmadi (%s): %s", person.user_id, exc)
             return False
-        if person.kind == "operator":
-            await self.store.set_dm_ok(person.user_id)
+        await self.store.set_dm_ok(person.user_id)  # lichkaga yozsa bo'ladi (operator bo'lsa — eslatmalar ham)
         return True
 
     def staff_text(self, role: str, first_name: str) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -498,8 +499,9 @@ class ReportService:
             else:
                 text += "\nKunlik hisobot rahbarlar guruhiga keladi."
         else:
+            who = "administratori" if role == "admin" else "operatori"
             text = (
-                f"👋 Salom, {name}! Siz call center operatori sifatida ro'yxatdasiz.\n"
+                f"👋 Salom, {name}! Siz call center {who} sifatida ro'yxatdasiz.\n"
                 "Hech kim belgilamagan lidlar haqida eslatmalar shu yerga keladi."
             )
         return text, markup

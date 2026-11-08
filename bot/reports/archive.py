@@ -464,7 +464,8 @@ class ArchiveService:
         if ov is not None:
             for listed, group in ((True, ov.rows), (False, ov.extras)):
                 operators += [OpLine(name=row.name, username=row.username, total=row.total, counts=dict(row.counts),
-                                     positive=ov.positive(row), listed=listed, role=row.role) for row in group]
+                                     positive=ov.positive(row), listed=listed, role=row.role, group=row.group)
+                              for row in group]
 
         days: list[DayLine] = []
         for day in report_days(first, last, s):

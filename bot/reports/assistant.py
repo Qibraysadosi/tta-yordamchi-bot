@@ -55,7 +55,7 @@ REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar
 - Qo'ng'iroqlar, operatorlar, lidlar natijasi yoki vazifalar haqida so'ralsa — javobdan oldin report_stats, report_leads yoki task_status vositasi bilan aniq ma'lumot ol. Taxmin qilma, suhbatdagi eski raqamni qayta ishlatma (ma'lumot doim yangilanib turadi).
 - Davr aytilmasa — bugun (joriy hisobot davri). «Kecha», «shu hafta», «o'tgan oy», aniq sana yoki oraliq bo'lsa — mos period bilan. Hisobot davri kalendar kun emas (masalan, kecha 19:00 → bugun 19:00) — kerak bo'lsa javobda ayt.
 - «Qo'ng'iroq» — operator status (reaksiya) qo'ygan yoki natija haqida izoh yozgan lid; bir davrda bitta lid bir operatorga bir marta sanaladi. «Asosiy natija» — 👍 keladi kabi asosiy status.
-- Odamlar: operators — jadvaldagi operatorlar (position=administrator — administrator, operatorlar bilan birga sanaladi); leaders — lidni o'zi belgilagan rahbarlar (sanaladi, alohida qatorda); not_in_operator_list — ro'yxatda yo'qlar. Umumiy son — hammasining yig'indisi.
+- Odamlar: operators — jadvaldagi operatorlar (position=administrator — administrator, operatorlar bilan birga sanaladi); leaders — lidni o'zi belgilagan rahbarlar; other_departments — boshqa bo'limlar xodimlari (position — bo'lim nomi, masalan Marketing); not_in_operator_list — ro'yxatda yo'qlar. Rahbar va bo'limlar ham sanaladi (alohida). Umumiy son — hammasining yig'indisi. accounts — bir odamning bir nechta akkaunti (bitta odam sifatida sanaladi).
 - Javob qisqa bo'lsin: avval asosiy raqam, keyin kerak bo'lsa ro'yxat. Ro'yxat uzun bo'lsa — eng muhimlari va «yana N ta». Statusni ma'nosi bilan yoz (👍 keladi).
 - Vazifa holati: ✅ bajarildi (kim yopgani bilan), ❌ «Yo'q» dedi, 🔔 so'raldi — javob kutilmoqda, ⚠️ javob bermadi, 🔴 muddati o'tdi, ⏳ muddati kelmagan.
 - Vosita «error» qaytarsa, sababini qisqa ayt; odam topilmasa, ro'yxatdagi ismlardan mosini taklif qil."""
@@ -268,8 +268,10 @@ class ReportTools:
                 "main_result": ov.positive(row)}
         if row.username:
             data["username"] = "@" + self._hide(row.username)
-        if row.admin or row.leader:
-            data["position"] = "administrator" if row.admin else "rahbar"
+        if row.admin or row.leader or row.staff:
+            data["position"] = "administrator" if row.admin else "rahbar" if row.leader else self._hide(row.group)
+        if len(row.usernames) > 1:  # bir odamning bir nechta akkaunti (shaxsiy va ish) — bitta qator
+            data["accounts"] = ["@" + self._hide(u) for u in row.usernames]
         return data
 
     # -------------------------------------------------------------- report_stats
@@ -293,6 +295,7 @@ class ReportTools:
                        "main_share": f"{round(main * 100 / calls)}%" if calls else None},
             "operators": [self._row(ov, r, labels) for r in ov.rows],
             "leaders": [self._row(ov, r, labels) for r in ov.leaders],
+            "other_departments": [self._row(ov, r, labels) for _, members in ov.departments for r in members],
             "not_in_operator_list": [self._row(ov, r, labels) for r in ov.unlisted],
             "operator_list_set": ov.has_operator_list,
             "leads": {"new": ov.new_leads, "unmarked": ov.unmarked},

@@ -46,12 +46,15 @@ class OpLine:
     counts: dict[str, int]
     positive: int
     listed: bool = True  # False — operatorlar ro'yxatida yo'q (rahbar yoki ro'yxatda yo'q), lekin qo'ng'iroq qilgan
-    role: str = ""  # «admin» — administrator, «leader» — rahbar (stats.Row.role)
+    role: str = ""  # «admin» — administrator, «leader» — rahbar, «staff» — boshqa bo'lim (stats.Row.role)
+    group: str = ""  # «staff»: bo'lim nomi
 
     @property
     def label(self) -> str:
         if self.role == "leader":
             return f"👔 {self.name}"
+        if self.role == "staff":
+            return f"🧑‍💼 {self.name} ({self.group})" if self.group else f"🧑‍💼 {self.name}"
         if not self.listed:
             return f"➕ {self.name}"
         return f"{self.name} (admin)" if self.role == "admin" else self.name
@@ -313,7 +316,10 @@ def _summary_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
         if any(line.role == "leader" for line in report.operators):
             book.put(ws, row, 1, "👔 — rahbar (lidni o'zi belgilagan)", font=book.muted)
             row += 1
-        if any(not line.listed and line.role != "leader" for line in report.operators):
+        if any(line.role == "staff" for line in report.operators):
+            book.put(ws, row, 1, "🧑‍💼 — boshqa bo'lim xodimi (qavsda bo'limi)", font=book.muted)
+            row += 1
+        if any(not line.listed and not line.role for line in report.operators):
             book.put(ws, row, 1, "➕ — ro'yxatda yo'q, lekin qo'ng'iroq qilgan", font=book.muted)
             row += 1
         book.put(ws, row, 1, "Bir davrda bitta lid bir operator uchun bir marta sanaladi (so'nggi natija).", font=book.muted)

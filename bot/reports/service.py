@@ -10,7 +10,9 @@ import contextlib
 import html
 import json
 import logging
+import re
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -20,11 +22,13 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import (
     AiogramError,
     TelegramAPIError,
+    TelegramBadRequest,
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramServerError,
 )
 from aiogram.types import (
+    BufferedInputFile,
     ChatMemberUpdated,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -40,7 +44,8 @@ from .analysis import USAGE_NAME, USAGE_UID
 from .archive import ARCHIVE_SINCE_KEY, ArchiveService
 from .assistant import LeaderMemory, ReportTools
 from .leads import message_link, parse_lead
-from .render import render_report, split_message
+from .picture import render_card
+from .render import render_caption, render_report, split_message
 from .stats import (
     SCHEDULE_KEY,
     Overview,
@@ -105,7 +110,21 @@ def details_param(day: date | None = None) -> str:
     return "hisobot" if day is None else f"hisobot_{day:%Y%m%d}"
 
 
+CAPTION_LIMIT = 1000  # Telegram rasm izohi 1024 belgigacha (teglarsiz) — zaxira bilan
+TAG_RE = re.compile(r"<[^>]+>")
 BOT_INFO_TTL = 600.0  # soniya: getMe natijasi shuncha vaqt eskirmagan hisoblanadi
+
+
+@dataclass
+class Card:
+    """Hisobot rasmi (v1.12) va uning ostidagi qisqa matn."""
+
+    png: bytes
+    caption: str
+
+    def fits(self) -> bool:
+        plain = html.unescape(TAG_RE.sub("", self.caption))
+        return len(plain.encode("utf-16-le")) // 2 <= CAPTION_LIMIT
 
 
 class ReportService:
@@ -129,7 +148,8 @@ class ReportService:
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
-        self.contact_names: dict[int, str] = {}  # v1.11: ulashilgan kontakt (Telegram ID) → hisobotdagi ism
+        self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
+        self.contact_rename: dict[int, tuple[int, float]] = {}  # «✏️ Boshqa ism»: egasi → (kontakt ID, vaqt)
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -452,7 +472,7 @@ class ReportService:
         """Xarajat hisobotidagi nomlar: guruh tahlili va AI'ga savol bergan rahbarlar."""
         names = {USAGE_UID: USAGE_NAME}
         for person in await self.store.people("leader"):
-            if person.user_id is not None:
+            if person.user_id is not None and person.user_id not in self.owners():  # egasi o'z nomi bilan qoladi
                 names[person.user_id] = f"👔 {person.label}"
         return names
 
@@ -470,8 +490,8 @@ class ReportService:
     async def welcome(self, bot: Bot, person) -> bool:
         """Ro'yxatga qo'shilgan xodimga salom (bot unga yoza olsa — botni avval ochgan bo'lsa): operator shundan
         keyin eslatmalarni oladi. Yozib bo'lmasa — xodim botga yozganda o'zi ulanadi."""
-        if person.user_id is None:
-            return False
+        if person.user_id is None or person.user_id in self.owners() or person.kind not in ("operator", "leader"):
+            return False  # egasi o'zi ro'yxatda bo'lsa (rahbar sifatida) — salom shart emas
         text, markup = self.staff_text("admin" if person.is_admin else person.kind, person.name or "do'stim")
         try:
             await bot.send_message(person.user_id, text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -599,21 +619,64 @@ class ReportService:
         text = render_report(overview, reasons, interim_at=now if interim else None, late=late)
         return overview, text, reasons
 
+    async def card(self, overview: Overview, reasons: list, *, interim: bool, late: bool = False,
+                   now: datetime | None = None) -> Card | None:
+        """Hisobot rasmi (Sozlamalar → «Rasm ko'rinishida» yoqilgan bo'lsa). Chizib bo'lmasa — None (matn ketadi)."""
+        if not (await self.schedule()).picture:
+            return None
+        interim_at = (now or self.now()) if interim else None
+        try:
+            png = await asyncio.to_thread(render_card, overview, interim_at=interim_at, late=late)
+        except Exception:  # noqa: BLE001 — rasm chiqmasa ham hisobot matn bo'lib yetib borsin
+            log.exception("Hisobot rasmi chizilmadi — matn yuboriladi")
+            return None
+        if png is None:
+            return None
+        return Card(png, render_caption(overview, reasons, interim_at=interim_at, late=late))
+
+    async def send_card(self, bot: Bot, chat_id: int, card: Card, markup: InlineKeyboardMarkup | None) -> list[Message]:
+        """Rasm + qisqa matn; matn izohga sig'masa — rasm sarlavha bilan, matn alohida xabarda (tugma oxirgisida)."""
+        photo = BufferedInputFile(card.png, filename="hisobot.png")
+        if card.fits():
+            return [await bot.send_photo(chat_id, photo, caption=card.caption, parse_mode=ParseMode.HTML, reply_markup=markup)]
+        head, _, rest = card.caption.partition("\n\n")
+        messages = [await bot.send_photo(chat_id, photo, caption=head, parse_mode=ParseMode.HTML)]
+        parts = split_message(rest)
+        for index, part in enumerate(parts):
+            messages.append(await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML,
+                                                   reply_markup=markup if index == len(parts) - 1 else None))
+        return messages
+
     async def report_targets(self) -> list[int]:
         return [g.chat_id for g in await self.store.groups_with("leaders")] or self.owners()
 
-    async def _deliver(self, bot: Bot, chat_ids: list[int], text: str,
-                       markup: InlineKeyboardMarkup | None) -> tuple[list[int], list[tuple[int, Exception]]]:
-        """Hisobotni chatlarga yuboradi (uzun bo'lsa bo'laklab, tugma oxirgisida): (yetkazilgan chatlar, xatolar)."""
+    async def _deliver(self, bot: Bot, chat_ids: list[int], text: str, markup: InlineKeyboardMarkup | None,
+                       card: Card | None = None, note: str = "") -> tuple[list[int], list[tuple[int, Exception]]]:
+        """Hisobotni chatlarga yuboradi: rasm + qisqa matn (card) yoki matn (uzun bo'lsa bo'laklab, tugma oxirgisida).
+        Guruhda rasm yuborish taqiqlangan bo'lsa (BadRequest) — o'sha chatga matn. (yetkazilgan chatlar, xatolar)"""
         parts = split_message(text)
         sent: list[int] = []
         failed: list[tuple[int, Exception]] = []
         for chat_id in chat_ids:
             try:
-                for index, part in enumerate(parts):
-                    last = index == len(parts) - 1
-                    msg = await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML, reply_markup=markup if last else None)
-                    if chat_id < 0:  # guruhdagi hisobotga reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
+                messages: list[Message] = []
+                if note:
+                    messages.append(await bot.send_message(chat_id, note, parse_mode=ParseMode.HTML))
+                if card is not None:
+                    try:
+                        messages += await self.send_card(bot, chat_id, card, markup)
+                    except TelegramBadRequest as exc:
+                        log.warning("Hisobot rasmi yuborilmadi (%s): %s — matn yuboriladi", chat_id, exc)
+                        card_failed = True
+                    else:
+                        card_failed = False
+                if card is None or card_failed:
+                    for index, part in enumerate(parts):
+                        last = index == len(parts) - 1
+                        messages.append(await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML,
+                                                               reply_markup=markup if last else None))
+                if chat_id < 0:  # guruhdagi hisobotga reaksiya — qo'ng'iroq emas (eng yaxshi urinish)
+                    for msg in messages:
                         try:
                             await self.store.mark_seen(chat_id, msg.message_id)
                         except Exception:  # noqa: BLE001
@@ -630,12 +693,13 @@ class ReportService:
         vaqtinchalik xatoda (tarmoq, 5xx, 429) o'sha chatga keyinroq qayta urinadi, darhol egasiga o'tkazmaydi."""
         record = (not interim) if record is None else record
         overview, text, reasons = await self.compose(day, now, interim=interim, late=late)
+        card = await self.card(overview, reasons, interim=interim, late=late, now=now)
         await self.refresh_bot_info(bot)
         markup = self.details_markup(None if overview.live else day)
         targets = chat_ids or await self.report_targets()
         key = day.isoformat()
         got, attempts = self._delivery.get(key, (set(), 0)) if record else (set(), 0)
-        delivered, failed = await self._deliver(bot, [c for c in targets if c not in got], text, markup)
+        delivered, failed = await self._deliver(bot, [c for c in targets if c not in got], text, markup, card)
         got = got | set(delivered)
         self.last_fallback = False
         if record and attempts + 1 < REPORT_ATTEMPTS and any(is_transient(exc) for _, exc in failed):
@@ -653,8 +717,11 @@ class ReportService:
             if sent:
                 await self._tell_owners(bot, "⚠️ Hisobot ba'zi chatlarga yuborilmadi:\n" + problem)
             else:  # rahbarlar guruhiga umuman bormadi — hisobot yo'qolmasin, egasiga keladi
-                head = f"⚠️ Hisobot rahbarlar guruhiga yuborilmadi — sizga yuborildi.\n<i>{problem}</i>\n\n"
-                fallback, _ = await self._deliver(bot, owners, head + text, markup)
+                head = f"⚠️ Hisobot rahbarlar guruhiga yuborilmadi — sizga yuborildi.\n<i>{problem}</i>"
+                if card is not None:
+                    fallback, _ = await self._deliver(bot, owners, text, markup, card, note=head)
+                else:
+                    fallback, _ = await self._deliver(bot, owners, head + "\n\n" + text, markup)
                 sent = len(fallback)
                 self.last_fallback = bool(sent)
         if record:

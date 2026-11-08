@@ -1,7 +1,7 @@
-🧑‍💼 v1.11.0 — Xodimlar hisobotda ismi bilan
-• Yangi /xodimlar buyrug'i: bosing, keyin bitta xabarda har qatorga «@username — Ism — rol» yozing (rollar: operator, admin, rahbar, istisno, o'chir) — bot hammasini qo'shib, har qator natijasini qaytaradi
-• Username'i yo'q xodim: profilida «Поделиться контактом» → shu botni tanlang → bot rol tugmalarini chiqaradi (🎧 Operator, ⭐ Administrator, 👔 Rahbar)
-• Administrator — operatorlar jadvalida birga sanaladi, ismi yonida «*» (Mini App va Excel'da «admin» belgisi)
-• Rahbar lidni o'zi belgilasa — endi sanaladi va alohida «👔 Rahbar: Ism — N ta lid» qatorida chiqadi (Telegram nomi emas, ro'yxatdagi ismi bilan)
-• Ro'yxatda «rahbar» deb yozilgan odam istisnolardan olinadi — hisobotda ko'rinadi
-• Mini App: Operatorlar → «Administrator» tumbleri, «Rahbarlar» bo'limi; Excel va AI javoblarida ham lavozimlar ko'rinadi
+🖼 v1.12.0 — Hisobot rasmi, bo'limlar va ikki akkaunt
+• Kunlik hisobot jadvali endi chiroyli rasm bo'lib keladi: to'liq ismlar, rangli status ustunlari, natija chizig'i, JAMI; ostida qisqa matn (yangi lidlar, kurslar, izohlar). Rasmni bot kod bilan chizadi — raqamlar aniq
+• Boshqa bo'limlar: /xodimlar'da «@username — Ism — Marketing» (yoki Menejer…) — lidni belgilasa, hisobotda bo'limi bilan alohida qatorda
+• Bir odamning ikki akkaunti (shaxsiy va ish): bir qatorda ikkala username yoki bir xil ism — hisobotda bitta odam, bitta lid bir marta
+• «direktor» — rahbar sifatida tushuniladi; egasi o'zi ro'yxatda bo'lsa ham huquqlari o'zgarmaydi
+• Username'i yo'q xodim: kontaktini ulashing yoki /xodimlar'dan keyin xabarini uzating (forward) — «🔗 … akkaunti», «✏️ Boshqa ism» tugmalari
+• Mini App: «Boshqa bo'limlar», «Kimning akkaunti?», Sozlamalar → «Rasm ko'rinishida» tumbleri

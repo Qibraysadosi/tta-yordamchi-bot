@@ -28,7 +28,7 @@ class FailingSession(AdminSession):
         self.fail: dict[int, str] = {}
 
     async def make_request(self, bot, method, timeout=None):
-        if type(method).__name__ == "SendMessage" and method.chat_id in self.fail:
+        if type(method).__name__ in ("SendMessage", "SendPhoto") and method.chat_id in self.fail:
             self.calls.append(method)
             if self.fail[method.chat_id] == "network":
                 raise TelegramNetworkError(method=method, message="HTTP Client says - ClientConnectorError")
@@ -36,8 +36,8 @@ class FailingSession(AdminSession):
         return await super().make_request(bot, method, timeout)
 
 
-async def failing_env(tmp_path):
-    env = await start(tmp_path)
+async def failing_env(tmp_path, picture=False):
+    env = await start(tmp_path, picture=picture)
     env.session = FailingSession()
     env.bot.session = env.session
     return env

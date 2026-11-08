@@ -12,10 +12,12 @@ from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     ChatMemberUpdated,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Message,
     MessageReactionUpdated,
 )
@@ -141,7 +143,7 @@ def _report_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
-async def cmd_report(message: Message, ctx) -> None:
+async def cmd_report(message: Message, bot: Bot, ctx) -> None:
     service = _service(ctx)
     if service is None:
         return
@@ -154,9 +156,16 @@ async def cmd_report(message: Message, ctx) -> None:
     wait = await message.answer("📊 Hisobot tayyorlanmoqda…")
     now = service.now()
     day, live = _shown_day(now, await service.schedule(), service.tz)
-    _, text, _ = await service.compose(day, now, interim=live)
+    overview, text, reasons = await service.compose(day, now, interim=live)
+    card = await service.card(overview, reasons, interim=live, now=now)
     with contextlib.suppress(TelegramAPIError):
         await wait.delete()
+    if card is not None:
+        try:
+            await service.send_card(bot, message.chat.id, card, _report_keyboard())
+            return
+        except TelegramBadRequest as exc:  # rasm o'tmasa — matn
+            log.warning("Hisobot rasmi yuborilmadi: %s", exc)
     parts = split_message(text)
     for index, part in enumerate(parts):
         last = index == len(parts) - 1
@@ -190,7 +199,21 @@ async def cb_report(callback: CallbackQuery, bot: Bot, ctx) -> None:
                 await callback.message.answer(note)
         return
     await callback.answer("Yangilanmoqda…")
-    _, text, _ = await service.compose(day, now, interim=live)
+    overview, text, reasons = await service.compose(day, now, interim=live)
+    card = await service.card(overview, reasons, interim=live, now=now)
+    if card is not None and isinstance(callback.message, Message):
+        message = callback.message
+        if message.photo and card.fits():  # o'sha xabarning rasmi va izohi almashtiriladi
+            media = InputMediaPhoto(media=BufferedInputFile(card.png, filename="hisobot.png"), caption=card.caption,
+                                    parse_mode=ParseMode.HTML)
+            try:
+                await message.edit_media(media=media, reply_markup=_report_keyboard())
+                return
+            except TelegramBadRequest as exc:
+                log.info("Hisobot rasmi yangilanmadi, yangisi yuboriladi: %s", exc)
+        with contextlib.suppress(TelegramBadRequest):
+            await service.send_card(bot, message.chat.id, card, _report_keyboard())
+            return
     if isinstance(callback.message, Message):
         parts = split_message(text)
         with contextlib.suppress(TelegramBadRequest):
@@ -498,16 +521,22 @@ async def cmd_staff(message: Message, bot: Bot, ctx) -> None:
     await _send_parts(message, await staff.list_text(service.store))
 
 
+def _waiting(service: ReportService, user_id: int) -> bool:
+    started = service.staff_waiting.get(user_id)
+    return started is not None and time.monotonic() - started <= STAFF_WAIT
+
+
 async def is_staff_list(message: Message, ctx) -> bool:
     """/xodimlar'dan keyingi xabar ro'yxat bo'lsa — qabul qilinadi; boshqa narsa bo'lsa, kutish tugaydi va xabar
-    odatdagidek (AI suhbatiga) ketadi."""
+    odatdagidek (AI suhbatiga) ketadi. Uzatilgan (forward) xabar — is_staff_forward."""
     service = _service(ctx)
     user = message.from_user
     if service is None or user is None or user.id not in service.staff_waiting or not ctx.is_owner(user.id):
         return False
-    fresh = time.monotonic() - service.staff_waiting[user.id] <= STAFF_WAIT
-    if fresh and staff.looks_like_list(message.text or message.caption or ""):
+    if _waiting(service, user.id) and staff.looks_like_list(message.text or message.caption or ""):
         return True
+    if message.forward_origin is not None and _waiting(service, user.id):
+        return False  # xodimning xabari uzatildi — is_staff_forward (kutish davom etadi)
     service.staff_waiting.pop(user.id, None)
     return False
 
@@ -525,6 +554,26 @@ async def is_owner_contact(message: Message, ctx) -> bool:
     return message.contact is not None and user is not None and ctx.is_owner(user.id) and _service(ctx) is not None
 
 
+async def is_staff_forward(message: Message, ctx) -> bool:
+    """/xodimlar'dan keyin xodimning biror xabari uzatildi (username'i va telefoni yo'q xodim uchun)."""
+    service = _service(ctx)
+    user = message.from_user
+    return (service is not None and user is not None and message.forward_origin is not None and ctx.is_owner(user.id)
+            and _waiting(service, user.id))
+
+
+async def _ask_role(message: Message, service: ReportService, user_id: int, username: str | None,
+                    full_name: str, default_name: str) -> None:
+    store = service.store
+    username = username or (await store.users()).get(user_id, (None, ""))[0]
+    current = await staff.listed_as(store, user_id, username)
+    name = next((p.name for p in current if p.name), "") or default_name
+    choices = await staff.contact_choices(store, user_id, username, full_name, name)
+    service.contact_choices[user_id] = choices
+    text = await staff.contact_prompt(store, user_id, username, full_name, name)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=staff.contact_keyboard(user_id, choices))
+
+
 async def on_contact(message: Message, ctx) -> None:
     """Egasi xodim kontaktini ulashdi (username'i yo'q xodim ham): rol tugmalari bilan so'raladi."""
     service = _service(ctx)
@@ -536,16 +585,64 @@ async def on_contact(message: Message, ctx) -> None:
         await message.answer(
             f"📇 «{html.escape(full_name or contact.phone_number)}» kontaktida Telegram ID yo'q — bot uni taniy olmaydi "
             "(raqam Telegram'da ro'yxatdan o'tmagan yoki kontakt telefoningizda saqlanmagan).\n"
-            "Xodimning @username'ini /xodimlar bilan yozing.", parse_mode=ParseMode.HTML)
+            "Xodimning @username'ini /xodimlar bilan yozing yoki /xodimlar'dan keyin uning xabarini uzating.",
+            parse_mode=ParseMode.HTML)
         return
     await service.ensure()
-    store = service.store
-    username = (await store.users()).get(contact.user_id, (None, ""))[0]
-    current = await staff.listed_as(store, contact.user_id, username)
-    name = next((p.name for p in current if p.name), "") or staff.contact_name(contact.first_name, contact.last_name)
-    service.contact_names[contact.user_id] = name
-    text = await staff.contact_prompt(store, contact.user_id, username, full_name, name)
-    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=staff.contact_keyboard(contact.user_id))
+    await _ask_role(message, service, contact.user_id, None, full_name,
+                    staff.contact_name(contact.first_name, contact.last_name))
+
+
+async def on_staff_forward(message: Message, bot: Bot, ctx) -> None:
+    """Uzatilgan xabar: ro'yxat matni bo'lsa — qo'llanadi, bo'lmasa — yuboruvchisi (xodim) rol so'rab qo'shiladi."""
+    service = _service(ctx)
+    if service is None:
+        return
+    text = message.text or message.caption or ""
+    if staff.looks_like_list(text):
+        service.staff_waiting.pop(message.from_user.id, None)
+        await _apply_staff(message, bot, service, text)
+        return
+    origin = message.forward_origin
+    sender = getattr(origin, "sender_user", None)
+    if sender is None or sender.is_bot:
+        hidden = getattr(origin, "sender_user_name", None)
+        await message.answer(
+            (f"🔒 «{html.escape(hidden)}» xabarlarini uzatganda akkaunti yashiriladi (Telegram maxfiylik sozlamasi) — "
+             "bot uni taniy olmaydi." if hidden else "Bu xabar odamdan emas (kanal yoki bot) — xodimning o'z xabarini uzating.")
+            + "\nBoshqa yo'l: u lidga belgi qo'ygach Mini App → Hisobotlar → Operatorlar → «Ro'yxatda yo'q» → bosing → "
+            "«Kimning akkaunti».", parse_mode=ParseMode.HTML)
+        return
+    await service.ensure()
+    username = (sender.username or "").lower() or None
+    await _ask_role(message, service, sender.id, username, sender.full_name, staff.contact_name(sender.first_name, sender.last_name))
+
+
+async def is_contact_rename(message: Message, ctx) -> bool:
+    """«✏️ Boshqa ism» bosilgandan keyingi qisqa matn — kontakt uchun ism."""
+    service = _service(ctx)
+    user = message.from_user
+    if service is None or user is None or user.id not in service.contact_rename or not ctx.is_owner(user.id):
+        return False
+    target, started = service.contact_rename[user.id]
+    value = " ".join((message.text or "").split())
+    if (time.monotonic() - started > STAFF_WAIT or not value or value.startswith("/") or len(value) > staff.NAME_LIMIT
+            or "\n" in (message.text or "") or "@" in value or message.forward_origin is not None
+            or target not in service.contact_choices):
+        service.contact_rename.pop(user.id, None)
+        return False
+    return True
+
+
+async def on_contact_rename(message: Message, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    target, _ = service.contact_rename.pop(message.from_user.id)
+    choices = service.contact_choices[target]
+    choices.name = " ".join((message.text or "").split())
+    text = await staff.contact_prompt(service.store, target, choices.username, choices.full_name, choices.name)
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=staff.contact_keyboard(target, choices))
 
 
 async def cb_staff_contact(callback: CallbackQuery, bot: Bot, ctx) -> None:
@@ -554,16 +651,24 @@ async def cb_staff_contact(callback: CallbackQuery, bot: Bot, ctx) -> None:
         await callback.answer("⛔ Faqat bot egasi uchun", show_alert=True)
         return
     parts = (callback.data or "").split(":")
-    role = staff.CONTACT_ROLES.get(parts[2]) if len(parts) == 3 else None
-    if role is None or not parts[1].isdigit():
+    if len(parts) != 3 or not parts[1].isdigit():
         await callback.answer()
         return
-    user_id = int(parts[1])
-    store = service.store
-    username = (await store.users()).get(user_id, (None, ""))[0]
-    current = await staff.listed_as(store, user_id, username)
-    name = service.contact_names.get(user_id) or next((p.name for p in current if p.name), "")
-    entry = staff.Entry(line_no=1, raw="", username=username, user_id=user_id, name=name, roles={role}, explicit=True)
+    user_id, code = int(parts[1]), parts[2]
+    choices = service.contact_choices.get(user_id)
+    if choices is None:  # bot qayta ishga tushgan — tanlovlar xotirada yo'q
+        await callback.answer("Bu tugma eskirgan — kontaktni yoki xabarni qayta yuboring", show_alert=True)
+        return
+    if code == "nm":
+        service.contact_rename[callback.from_user.id] = (user_id, time.monotonic())
+        await callback.answer()
+        if isinstance(callback.message, Message):
+            await callback.message.answer("✏️ Hisobotdagi ismini yozing (masalan, <b>Mastura</b>):", parse_mode=ParseMode.HTML)
+        return
+    entry = staff.choice_entry(user_id, choices.username, choices, code)
+    if entry is None:
+        await callback.answer()
+        return
     result = await staff.apply(service, bot, [entry])
     await callback.answer("Saqlandi")
     if isinstance(callback.message, Message):
@@ -588,7 +693,9 @@ def build_router() -> Router:
     router.message.register(cmd_excel, Command("excel", "export"), private)
     router.message.register(cmd_staff, Command("xodimlar", "staff"), private, F.forward_origin.is_(None))
     router.message.register(on_contact, private, is_owner_contact)
+    router.message.register(on_contact_rename, private, is_contact_rename)
     router.message.register(on_staff_list, private, is_staff_list)
+    router.message.register(on_staff_forward, private, is_staff_forward)
     router.message.register(on_private_task, private, is_owner_task)
     router.callback_query.register(cb_task_answer, F.data.startswith("tq:"))
     router.callback_query.register(cb_task_owner, F.data.startswith("tk:"))

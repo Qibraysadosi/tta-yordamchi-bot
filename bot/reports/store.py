@@ -11,9 +11,25 @@ from typing import Any, Iterable
 from ..db import Database
 
 ROLES = ("leads", "leaders", "tasks")
-PEOPLE_KINDS = ("operator", "excluded", "leader")
+PEOPLE_KINDS = ("operator", "excluded", "leader", "staff")  # staff (v1.12) — boshqa bo'lim: title = bo'lim nomi
 ADMIN = "admin"  # operator lavozimi: administrator — jadvalda operatorlar bilan, ismi yonida belgi
 TITLES = ("", ADMIN)
+DEPT_LIMIT = 30
+
+
+def clean_dept(value: str | None) -> str:
+    """Bo'lim nomi: «marketing bo'limi» → «Marketing» (bosh harf bilan, 30 belgigacha)."""
+    words = " ".join(str(value or "").split()).strip(" .,:;-—–\"'«»").split(" ")
+    while len(words) > 1 and words[-1].lower().replace("ʻ", "'").replace("’", "'") in (
+            "bo'limi", "bo'lim", "bolimi", "bolim", "otdel", "отдел", "бўлими", "бўлим"):
+        words.pop()
+    text = " ".join(words)[:DEPT_LIMIT].strip()
+    return text[:1].upper() + text[1:]
+
+
+def name_key(name: str | None) -> str:
+    """Bir xil ismli akkauntlar bitta odam (shaxsiy va ish akkaunti): katta-kichik harf va bo'shliqlar farq qilmaydi."""
+    return " ".join(str(name or "").translate({0x2BB: 39, 0x2BC: 39, 0x2018: 39, 0x2019: 39}).lower().split())
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 DEFAULT_STATUSES = (  # (emoji, ma'nosi, asosiy natija)
     ("👍", "keladi", 1),
@@ -83,7 +99,7 @@ class Person:
     user_id: int | None
     name: str
     dm_ok: bool
-    title: str = ""  # operatorda: «admin» — administrator
+    title: str = ""  # operatorda: «admin» — administrator; staff'da — bo'lim nomi («Marketing»)
 
     @property
     def label(self) -> str:
@@ -149,9 +165,24 @@ def _group(row: Any) -> Group:
 
 
 def _person(row: Any) -> Person:
-    title = row["title"] if "title" in row.keys() else ""
+    title = (row["title"] if "title" in row.keys() else "") or ""
+    if row["kind"] == "staff":
+        title = clean_dept(title) or "Boshqa"
+    elif title not in TITLES or row["kind"] != "operator":
+        title = ""
     return Person(id=row["id"], kind=row["kind"], username=row["username"], user_id=row["user_id"],
-                  name=row["name"], dm_ok=bool(row["dm_ok"]), title=title if title in TITLES else "")
+                  name=row["name"], dm_ok=bool(row["dm_ok"]), title=title)
+
+
+def _title_for(kind: str, title: str | None) -> str | None:
+    """Ro'yxatga mos lavozim: operator — «admin» yoki "", staff — bo'lim nomi; boshqalar — yo'q (None)."""
+    if title is None:
+        return None
+    if kind == "operator":
+        return title if title in TITLES else None
+    if kind == "staff":
+        return clean_dept(title) or None
+    return None
 
 
 def _lead(row: Any) -> Lead:
@@ -294,8 +325,9 @@ class ReportStore:
         if username is None and user_id is None:
             raise ValueError("username yoki ID kerak")
         name = name.strip()[:40]
-        if kind != "operator" or title not in TITLES:
-            title = None
+        title = _title_for(kind, title)
+        if kind == "staff" and title is None:
+            title = "Boshqa"
         existing = next((p for p in await self.people(kind) if p.same(username, user_id)), None)
         if existing is None and user_id is None and username:
             known = await self._one(
@@ -326,8 +358,10 @@ class ReportStore:
             await self._run("UPDATE rp_people SET name = ? WHERE id = ?", (name.strip()[:40], person_id))
         if kind is not None and kind in PEOPLE_KINDS:
             await self._run("UPDATE rp_people SET kind = ? WHERE id = ?", (kind, person_id))
-        if title is not None and title in TITLES:
-            await self._run("UPDATE rp_people SET title = ? WHERE id = ? AND kind = 'operator'", (title, person_id))
+        person = await self.person(person_id) if title is not None else None
+        value = _title_for(person.kind, title) if person is not None else None
+        if value is not None:
+            await self._run("UPDATE rp_people SET title = ? WHERE id = ?", (value, person_id))
 
     async def drop_from(self, kind: str, *, username: str | None, user_id: int | None) -> list[Person]:
         """Shu odamni bitta ro'yxatdan olib tashlaydi (masalan, operator qilinganda — istisnolardan)."""
@@ -640,6 +674,19 @@ class ReportStore:
             if row is not None:
                 result[(lead_id, user_id)] = row["status"]
         return result
+
+    async def reaction_before(self, start: str, lead_id: int, user_ids: Iterable[int]) -> str | None:
+        """Davr boshigacha shu odamning (hamma akkauntlari) shu lidga oxirgi reaksiyasi — izohda natija bo'lmasa."""
+        ids = list(dict.fromkeys(user_ids))
+        if not ids:
+            return None
+        marks = ",".join("?" * len(ids))
+        row = await self._one(
+            f"SELECT status FROM rp_events WHERE lead_id = ? AND user_id IN ({marks}) AND kind = 'reaction'"
+            " AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (lead_id, *ids, start),
+        )
+        return row["status"] if row is not None else None
 
     async def counts_since(self, since: str) -> dict[str, int]:
         """Tashxis uchun: oxirgi davrdagi lidlar, reaksiyalar va izohlar soni."""

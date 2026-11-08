@@ -33,6 +33,7 @@ tg://user?id=55555 — Nodir — rahbar, admin
 @eski_odam — o'chir
 @karim_op — Karim — direktor
 @aziz_op — Aziz — istisno, operator
+@baxtiyor_smm — Baxtiyor — marketing bo'limi
 998901234567 — Raqam"""))
     got = [(e.username, e.user_id, e.name, sorted(e.roles), e.explicit, bool(e.error)) for e in entries]
     assert got == [
@@ -44,11 +45,12 @@ tg://user?id=55555 — Nodir — rahbar, admin
         (None, 55555, "Nodir", ["admin", "leader"], True, False),
         ("test_akk", None, "", ["excluded"], True, False),
         ("eski_odam", None, "", ["remove"], True, False),
-        ("karim_op", None, "Karim direktor", ["operator"], False, True),  # noma'lum rol — xato, taxmin qilinmaydi
+        ("karim_op", None, "Karim", ["leader"], True, False),  # direktor — rahbar
         ("aziz_op", None, "Aziz", ["excluded", "operator"], True, True),
+        ("baxtiyor_smm", None, "Baxtiyor", ["staff"], True, False),  # boshqa so'z — bo'lim nomi (v1.12)
         (None, None, "", [], False, True),
     ]
-    assert "telefon" in entries[3].error and "direktor" in entries[8].error
+    assert "telefon" in entries[3].error and entries[10].department == "Marketing"
     assert [e.line_no for e in entries][4:6] == [6, 7]  # sarlavha qatori («Username | Ism | Rol») o'tkazib yuboriladi
     assert staff.parse("@malika_op Malika")[0].roles == {"operator"} and not staff.parse("@malika_op Malika")[0].explicit
     # /xodimlar'dan keyingi xabar: ro'yxatmi yoki oddiy savolmi
@@ -80,7 +82,7 @@ def test_staff_command_and_names_in_report(tmp_path):
             await env.send_text("/xodimlar")
             listing = texts(env)[-1]
             assert "Operatorlar va administratorlar</b> (1)" in listing and "• Eski — @eski_op" in listing
-            assert "🚫 <b>Istisnolar</b> (1)" in listing and "@dilnoza_admin — Dilnoza — admin" in listing
+            assert "🚫 <b>Istisnolar</b> (1)" in listing and "@dilnoza_admin @dilnoza_ish — Dilnoza — admin" in listing
             assert OWNER in reports.staff_waiting
 
             env.session.clear()
@@ -192,7 +194,7 @@ def test_shared_contact_adds_staff_without_username(tmp_path):
             prompt = env.session.of("SendMessage")[-1]
             assert prompt.chat_id == OWNER and f"ID {ASAL}" in prompt.text and "Hisobotda ismi: <b>Asal</b>" in prompt.text
             data = [b.callback_data for row in prompt.reply_markup.inline_keyboard for b in row]
-            assert data == [f"sc:{ASAL}:op", f"sc:{ASAL}:ad", f"sc:{ASAL}:le", f"sc:{ASAL}:ex"]
+            assert data == [f"sc:{ASAL}:op", f"sc:{ASAL}:ad", f"sc:{ASAL}:le", f"sc:{ASAL}:ex", f"sc:{ASAL}:nm"]
             await env.db.add_member(MALIKA, "Malika", "malika_op")
             await env.press(f"sc:{ASAL}:op", user_id=MALIKA)  # a'zo, lekin egasi emas
             assert await store.people() == []

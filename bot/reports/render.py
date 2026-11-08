@@ -83,11 +83,33 @@ def _period_line(ov: Overview, interim_at: datetime | None, late: bool) -> str:
     return f"<i>{text}</i>"
 
 
-def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
-                  interim_at: datetime | None = None, late: bool = False) -> str:
+def _head(ov: Overview, interim_at: datetime | None, late: bool) -> list[str]:
     day = ov.end
     title = "KUNLIK HISOBOT" if interim_at is None else "HISOBOT (oraliq)"
-    lines = [f"📊 <b>{title} · {day:%d.%m.%Y} ({WEEKDAYS[day.weekday()]})</b>", _period_line(ov, interim_at, late), ""]
+    return [f"📊 <b>{title} · {day:%d.%m.%Y} ({WEEKDAYS[day.weekday()]})</b>", _period_line(ov, interim_at, late)]
+
+
+def render_caption(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
+                   interim_at: datetime | None = None, late: bool = False) -> str:
+    """Rasm ostidagi qisqa matn (v1.12): jadval rasmda, bu yerda — jami, yangi lidlar, kurslar va izohlar."""
+    everyone = ov.rows + ov.extras
+    calls = sum(r.total for r in everyone)
+    lines = _head(ov, interim_at, late) + [""]
+    if calls:
+        head = f"📞 <b>{calls}</b> ta lidga qo'ng'iroq"
+        main = next((s for s in ov.statuses if s.positive), None)
+        if main is not None:
+            positive = sum(ov.positive(r) for r in everyone)
+            head += f" · {html.escape(main.emoji)} {positive} ({round(positive * 100 / calls)}%)"
+        lines.append(head)
+    else:
+        lines.append("Bu davrda qo'ng'iroq qayd etilmadi.")
+    return "\n".join(lines + _summary(ov, reasons))
+
+
+def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
+                  interim_at: datetime | None = None, late: bool = False) -> str:
+    lines = _head(ov, interim_at, late) + [""]
     if ov.rows and (ov.totals.total or ov.has_operator_list):
         lines.append(table(ov))
         if any(row.admin for row in ov.rows):
@@ -101,13 +123,25 @@ def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
         lines.append(f"👔 Rahbar: {html.escape(row.name)} — {row.total} ta lid" + (f" ({detail})" if detail else ""))
     if len(leaders) > EXTRAS_SHOWN:
         lines.append(f"👔 … va yana {len(leaders) - EXTRAS_SHOWN} rahbar")
+    for group, members in ov.departments:  # boshqa bo'limlar (Marketing, Menejer…) — bo'lim nomi bilan
+        for row in members[:EXTRAS_SHOWN]:
+            detail = _breakdown(row, cols)
+            lines.append(f"🧑‍💼 {html.escape(group)}: {html.escape(row.name)} — {row.total} ta lid"
+                         + (f" ({detail})" if detail else ""))
+        if len(members) > EXTRAS_SHOWN:
+            lines.append(f"🧑‍💼 {html.escape(group)}: … va yana {len(members) - EXTRAS_SHOWN} kishi")
     for row in unlisted[:EXTRAS_SHOWN]:
         who = html.escape(row.name) + (f" (@{html.escape(row.username)})" if row.username and row.name != f"@{row.username}" else "")
         detail = _breakdown(row, cols)
         lines.append(f"➕ Ro'yxatda yo'q: {who} — {row.total} ta lid" + (f" ({detail})" if detail else ""))
     if len(unlisted) > EXTRAS_SHOWN:
         lines.append(f"➕ … va yana {len(unlisted) - EXTRAS_SHOWN} kishi")
-    lines.append(f"📥 Yangi lidlar: {ov.new_leads} · belgilanmagan: {ov.unmarked}")
+    return "\n".join(lines + _summary(ov, reasons))
+
+
+def _summary(ov: Overview, reasons: list[tuple[str, int]] | None) -> list[str]:
+    """Yangi lidlar, kurslar, izohlardan — matnli hisobot va rasm osti uchun umumiy qism."""
+    lines = [f"📥 Yangi lidlar: {ov.new_leads} · belgilanmagan: {ov.unmarked}"]
 
     positive = [s for s in ov.statuses if s.positive]
     if positive and any(p for _, _, p in ov.courses):
@@ -128,4 +162,4 @@ def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
         lines.append(f"⏳ {ov.pending} ta izoh hali tahlil qilinmadi")
     if ov.conflicts:
         lines.append(f"⚠️ Ziddiyat: {ov.conflicts} ta lidda reaksiya va izoh mos emas")
-    return "\n".join(lines)
+    return lines

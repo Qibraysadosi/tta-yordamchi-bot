@@ -20,7 +20,7 @@ from .archive import MONTH, WEEK, parse_key
 from .excel import hide_numbers
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, display_day, neighbour_day, period_bounds
-from .store import PEOPLE_KINDS, ROLES, TITLES, clean_username, iso
+from .store import PEOPLE_KINDS, ROLES, TITLES, clean_dept, clean_username, iso
 from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, REPEAT_RE, TEXT_LIMIT, Task, default_due, due_label, repeat_label
 
 if TYPE_CHECKING:
@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 
 ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal"}
 SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
-                   "journal_time", "weekly_enabled", "monthly_enabled", "excel_time")
+                   "journal_time", "weekly_enabled", "monthly_enabled", "excel_time", "picture")
 TAG_RE = re.compile(r"<[^>]+>")
 SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
@@ -76,11 +76,14 @@ def _masked_summary(summary: dict | None) -> dict | None:
     return dict(summary, top=[[hide_numbers(str(item[0])), *item[1:]] for item in summary["top"]])
 
 
-def _title(body: dict) -> str | None | bool:
-    """Operator lavozimi: «admin» yoki "" (oddiy operator); berilmagan — None, noto'g'ri qiymat — False."""
+def _title(body: dict, kind: str) -> str | None | bool:
+    """Lavozim: operatorda «admin» yoki "", boshqa bo'limda (staff) — bo'lim nomi; berilmagan — None, noto'g'ri — False."""
     if "title" not in body:
         return None
-    value = str(body.get("title") or "").strip().lower()
+    value = " ".join(str(body.get("title") or "").split())
+    if kind == "staff":
+        return clean_dept(value) or False
+    value = value.lower()
     return value if value in TITLES else False
 
 
@@ -206,7 +209,7 @@ class ReportAPI:
     async def people(self, request: web.Request) -> web.Response:
         owner = bool(request[self.access_key].get("owner"))
         show = self._show(request)
-        result: dict[str, list] = {"operator": [], "excluded": [], "leader": []}
+        result: dict[str, list] = {"operator": [], "excluded": [], "leader": [], "staff": []}
         for person in await self.service.store.people():
             if not owner and person.kind != "operator":
                 continue  # rahbar faqat operatorlarni ko'radi (istisnolar va rahbarlar ro'yxati — egasiga)
@@ -216,7 +219,8 @@ class ReportAPI:
                 "label": show(person.label), "seen": person.user_id is not None, "dm_ok": person.dm_ok,
                 "title": person.title,
             })
-        return _json({"operators": result["operator"], "excluded": result["excluded"], "leaders": result["leader"]})
+        return _json({"operators": result["operator"], "excluded": result["excluded"], "leaders": result["leader"],
+                      "staff": result["staff"]})
 
     # ------------------------------------------------------------------ o'zgartirish (faqat egasi)
     async def add_person(self, request: web.Request) -> web.Response:
@@ -234,18 +238,19 @@ class ReportAPI:
             username = clean_username(who)
             if username is None:
                 return _error("Username noto'g'ri: @ bilan yoki usiz, 4–32 ta lotin harfi, raqam yoki _ (yoki Telegram ID)")
-        title = _title(body)
-        if title is False:
-            return _error("Lavozim noto'g'ri")
+        title = _title(body, kind)
+        if title is False or (kind == "staff" and not title):
+            return _error("Bo'lim nomini yozing (masalan, Marketing)" if kind == "staff" else "Lavozim noto'g'ri")
         store = self.service.store
         before = {p.id for p in await store.people(kind)}
         person = await store.add_person(kind, username=username, user_id=user_id, name=name, title=title)
         if kind in ("operator", "leader") and person.id not in before and person.user_id is not None:
             await self.service.welcome(self.bot, person)  # botni avval ochgan bo'lsa — darrov ulanadi (eslatmalar)
-        # operator va istisno bir-biriga zid: biriga qo'shilsa, ikkinchisidan olinadi
-        opposite = {"operator": "excluded", "excluded": "operator"}.get(kind)
-        if opposite:
-            await store.drop_from(opposite, username=person.username or username, user_id=person.user_id)
+        # operator, istisno va boshqa bo'lim bir-biriga zid: biriga qo'shilsa, qolganlaridan olinadi
+        opposite = {"operator": ("excluded", "staff"), "excluded": ("operator", "staff"),
+                    "staff": ("operator", "leader", "excluded")}.get(kind, ())
+        for other in opposite:
+            await store.drop_from(other, username=person.username or username, user_id=person.user_id)
         return _json({"ok": True, "person": {"id": person.id, "label": person.label}})
 
     async def update_person(self, request: web.Request) -> web.Response:
@@ -254,9 +259,9 @@ class ReportAPI:
             return _error("Topilmadi", 404, "not_found")
         body = await self._body(request)
         name = " ".join(str(body["name"]).split())[:NAME_LIMIT] if "name" in body else None
-        title = _title(body)
+        title = _title(body, person.kind)
         if title is False:
-            return _error("Lavozim noto'g'ri")
+            return _error("Bo'lim nomini yozing" if person.kind == "staff" else "Lavozim noto'g'ri")
         await self.service.store.update_person(person.id, name=name, title=title)
         return _json({"ok": True})
 

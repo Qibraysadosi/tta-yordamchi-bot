@@ -9,7 +9,9 @@ Qoidalar (kelishilgan):
 - Operatorlar ro'yxati bo'sh bo'lsa, hamma sanaladi; bo'lmasa ro'yxatdagilar jadvalda, qolganlar —
   «ro'yxatda yo'q» qatorida; istisnolar hech qayerda sanalmaydi.
 - v1.11: administrator — operatorlar ro'yxatida («admin» lavozimi), jadvalda ismi yonida belgi bilan;
-  rahbar (Kirish · rahbarlar ro'yxati) lidga belgi qo'ysa — sanaladi, alohida qatorda ro'yxatdagi ismi bilan."""
+  rahbar (Kirish · rahbarlar ro'yxati) lidga belgi qo'ysa — sanaladi, alohida qatorda ro'yxatdagi ismi bilan.
+- v1.12: boshqa bo'lim xodimi (staff, masalan «Marketing») — rahbar kabi, bo'limi nomi bilan alohida qatorda.
+  Bir ro'yxatdagi bir xil ismli akkauntlar (shaxsiy va ish) — bitta odam: bitta qator, bitta lid — bir marta."""
 from __future__ import annotations
 
 import json
@@ -18,11 +20,12 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .store import Event, Lead, Person, ReportStore, Status, iso
+from .store import Event, Lead, Person, ReportStore, Status, iso, name_key
 
 SCHEDULE_KEY = "report:schedule"
 OTHER = "❔"  # natijasi aniqlanmagan qo'ng'iroqlar ustuni
-ADMIN_ROLE, LEADER_ROLE = "admin", "leader"  # Row.role: jadvaldagi administrator va alohida qatordagi rahbar
+ADMIN_ROLE, LEADER_ROLE, STAFF_ROLE = "admin", "leader", "staff"  # Row.role: administrator (jadvalda), rahbar va
+# boshqa bo'lim xodimi (alohida qatorlarda); "" — oddiy operator yoki ro'yxatda yo'q
 WEEKDAY_SHORT = ("Du", "Se", "Ch", "Pa", "Ju", "Sh", "Ya")
 
 
@@ -49,6 +52,7 @@ class Schedule:
     weekly_enabled: bool = True  # haftalik Excel — dushanba
     monthly_enabled: bool = True  # oylik Excel — oyning 1-sanasi
     excel_time: str = "09:00"
+    picture: bool = True  # v1.12: kunlik hisobot jadvali rasm bo'lib (ostida qisqa matn); False — oldingidek matn
 
     @classmethod
     def from_json(cls, raw: str | None) -> "Schedule":
@@ -84,6 +88,7 @@ class Schedule:
             weekly_enabled=bool(data.get("weekly_enabled", self.weekly_enabled)),
             monthly_enabled=bool(data.get("monthly_enabled", self.monthly_enabled)),
             excel_time=_hhmm(data.get("excel_time", self.excel_time), self.excel_time),
+            picture=bool(data.get("picture", self.picture)),
         )
 
     def to_json(self) -> str:
@@ -95,6 +100,7 @@ class Schedule:
             "remind_minutes": self.remind_minutes, "work_start": self.work_start, "work_end": self.work_end,
             "journal_enabled": self.journal_enabled, "journal_time": self.journal_time,
             "weekly_enabled": self.weekly_enabled, "monthly_enabled": self.monthly_enabled, "excel_time": self.excel_time,
+            "picture": self.picture,
         }
 
     def days_label(self) -> str:
@@ -199,14 +205,17 @@ def month_of(day: date) -> tuple[date, date]:
 # ---------------------------------------------------------------------- hisob-kitob
 @dataclass
 class Row:
-    key: str  # «u:<id>» yoki «p:<id>» (ro'yxatdagi, hali ko'rinmagan odam)
+    key: str  # ro'yxatdagi odam — «o:…», «l:…», «s:…» (ism bo'yicha); ro'yxatda yo'q — «u:<id>»
     name: str
     username: str | None
     user_id: int | None
     operator: bool
     total: int = 0
     counts: Counter = field(default_factory=Counter)  # status emoji → son; OTHER — aniqlanmagan
-    role: str = ""  # ADMIN_ROLE — administrator (jadvalda), LEADER_ROLE — rahbar (alohida qatorda), "" — boshqalar
+    role: str = ""  # ADMIN_ROLE — administrator (jadvalda), LEADER_ROLE — rahbar, STAFF_ROLE — boshqa bo'lim
+    group: str = ""  # STAFF_ROLE: bo'lim nomi («Marketing»)
+    user_ids: list[int] = field(default_factory=list)  # shu odamning akkauntlari (shaxsiy va ish)
+    usernames: list[str] = field(default_factory=list)
 
     @property
     def leader(self) -> bool:
@@ -217,13 +226,28 @@ class Row:
         return self.role == ADMIN_ROLE
 
     @property
+    def staff(self) -> bool:
+        return self.role == STAFF_ROLE
+
+    @property
     def shown(self) -> str:
-        """Qisqa ro'yxatlardagi nom (eng faollar): rahbar — «👔» bilan."""
-        return f"👔 {self.name}" if self.leader else self.name
+        """Qisqa ro'yxatlardagi nom (eng faollar): rahbar — «👔», boshqa bo'lim — «🧑‍💼» bilan."""
+        return f"👔 {self.name}" if self.leader else f"🧑‍💼 {self.name}" if self.staff else self.name
+
+    def add_account(self, user_id: int | None, username: str | None) -> None:
+        if user_id is not None and user_id not in self.user_ids:
+            self.user_ids.append(user_id)
+        if username and username not in self.usernames:
+            self.usernames.append(username)
+        if self.user_id is None:
+            self.user_id = user_id
+        if not self.username:
+            self.username = username
 
     def as_dict(self) -> dict:
         return {"key": self.key, "name": self.name, "username": self.username, "user_id": self.user_id,
-                "operator": self.operator, "total": self.total, "counts": dict(self.counts), "role": self.role}
+                "operator": self.operator, "total": self.total, "counts": dict(self.counts), "role": self.role,
+                "group": self.group, "user_ids": list(self.user_ids), "usernames": list(self.usernames)}
 
 
 @dataclass
@@ -261,9 +285,18 @@ class Overview:
         return [r for r in self.extras if r.leader]
 
     @property
+    def departments(self) -> list[tuple[str, list[Row]]]:
+        """Boshqa bo'limlar xodimlari (Marketing, Menejer…) — bo'lim bo'yicha, extras tartibida."""
+        groups: dict[str, list[Row]] = {}
+        for row in self.extras:
+            if row.staff:
+                groups.setdefault(row.group, []).append(row)
+        return list(groups.items())
+
+    @property
     def unlisted(self) -> list[Row]:
         """Hech qaysi ro'yxatda yo'q, lekin qo'ng'iroq qilganlar."""
-        return [r for r in self.extras if not r.leader]
+        return [r for r in self.extras if not r.role]
 
     def positive(self, row: Row) -> int:
         return sum(row.counts.get(s.emoji, 0) for s in self.statuses if s.positive)
@@ -312,24 +345,51 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
     people = await store.people()
     operators = [p for p in people if p.kind == "operator"]
     excluded = [p for p in people if p.kind == "excluded"]
-    leaders = [p for p in people if p.kind == "leader"]
+    lists = (("o", operators), ("l", [p for p in people if p.kind == "leader"]),
+             ("s", [p for p in people if p.kind == "staff"]))
     users = await store.users()
 
-    def is_excluded(user_id: int) -> bool:  # istisnolar (rahbarlar va h.k.) hech qayerda sanalmaydi
-        return _match(excluded, user_id, users.get(user_id, (None, ""))[0]) is not None
+    def person_key(prefix: str, person: Person) -> str:
+        """Bir ro'yxatda bir xil ismli akkauntlar — bitta odam (staff'da — bir bo'limda)."""
+        name = name_key(person.name)
+        if not name:
+            return f"{prefix}:u:{person.user_id}" if person.user_id else f"{prefix}:p:{person.id}"
+        return f"{prefix}:n:{name}" + (f":{name_key(person.title)}" if prefix == "s" else "")
 
-    # (lid, odam) bo'yicha harakatlar: so'nggi reaksiya va so'nggi natijali izoh
-    reaction: dict[tuple[int, int], Event] = {}
-    comment: dict[tuple[int, int], Event] = {}
-    called: set[tuple[int, int]] = set()  # qo'ng'iroq haqida izoh yozilgan (natijasi bor-yo'qligidan qat'i nazar)
-    conflicts: set[tuple[int, int]] = set()
+    actors: dict[int, tuple[str, Person | None] | None] = {}
+
+    def actor_of(user_id: int) -> tuple[str, Person | None] | None:
+        """Kim sanaladi: (qator kaliti, ro'yxatdagi yozuv); istisno — None. Ustunlik: operator, rahbar, bo'lim."""
+        if user_id not in actors:
+            username = users.get(user_id, (None, ""))[0]
+            found: tuple[str, Person | None] | None = (f"u:{user_id}", None)
+            if _match(excluded, user_id, username) is not None:  # istisnolar hech qayerda sanalmaydi
+                found = None
+            else:
+                for prefix, plist in lists:
+                    person = _match(plist, user_id, username)
+                    if person is not None:
+                        found = (person_key(prefix, person), person)
+                        break
+            actors[user_id] = found
+        return actors[user_id]
+
+    # (lid, odam) bo'yicha harakatlar: so'nggi reaksiya va so'nggi natijali izoh (odamning hamma akkauntlaridan)
+    reaction: dict[tuple[int, str], Event] = {}
+    comment: dict[tuple[int, str], Event] = {}
+    called: set[tuple[int, str]] = set()  # qo'ng'iroq haqida izoh yozilgan (natijasi bor-yo'qligidan qat'i nazar)
+    conflicts: set[tuple[int, str]] = set()
+    accounts: dict[str, list[int]] = {}  # qator kaliti → harakat qilgan akkauntlar (birinchisi — vakili)
     reasons: Counter = Counter()
     callbacks: set[int] = set()
     comment_count = 0
     for ev in events:
-        if is_excluded(ev.user_id):
+        found = actor_of(ev.user_id)
+        if found is None:
             continue
-        pair = (ev.lead_id, ev.user_id)
+        pair = (ev.lead_id, found[0])
+        if ev.user_id not in accounts.setdefault(found[0], []):
+            accounts[found[0]].append(ev.user_id)
         if ev.kind == "reaction":
             reaction[pair] = ev
         elif ev.kind == "comment" and ev.is_call:
@@ -343,9 +403,12 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
                 callbacks.add(ev.lead_id)
     # Reaksiya olib tashlangan (yoki status emas) va izoh ham yo'q bo'lsa — sanalmaydi
     touched = {pair for pair in set(reaction) | called if pair in called or reaction[pair].status}
-    fallback = await store.reactions_before(start_iso, [p for p in touched if p not in reaction and p not in comment])
+    fallback: dict[tuple[int, str], str | None] = {}
+    for pair in touched:
+        if pair not in reaction and pair not in comment:
+            fallback[pair] = await store.reaction_before(start_iso, pair[0], accounts[pair[1]])
 
-    status_of: dict[tuple[int, int], str] = {}
+    status_of: dict[tuple[int, str], str] = {}
     latest_of_lead: dict[int, tuple[str, str]] = {}  # lid → (vaqt, status) — kurslar kesimi uchun
     for pair in sorted(touched):  # tartib barqaror: bir xil vaqtli harakatlarda natija har safar bir xil
         r, c = reaction.get(pair), comment.get(pair)
@@ -368,37 +431,36 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
 
     rows: dict[str, Row] = {}
     extras: dict[str, Row] = {}
-
-    def role_of(person: Person) -> str:
-        return ADMIN_ROLE if person.is_admin else ""
-
-    for person in operators:  # ro'yxatdagilar natija bo'lmasa ham ko'rinadi
-        key = f"u:{person.user_id}" if person.user_id else f"p:{person.id}"
-        rows[key] = Row(key=key, name=person.label, username=person.username, user_id=person.user_id, operator=True,
-                        role=role_of(person))
-    for (lead_id, user_id), value in status_of.items():
-        username, first_name = users.get(user_id, (None, ""))
-        key = f"u:{user_id}"
-        person = _match(operators, user_id, username)
-        leader = None if person is not None else _match(leaders, user_id, username)
-        if person is not None:
-            row = rows.get(key) or rows.pop(f"p:{person.id}", None)
-            if row is None:
-                row = Row(key=key, name=person.label, username=person.username, user_id=user_id, operator=True,
-                          role=role_of(person))
-            row.key, row.user_id = key, user_id
-            rows[key] = row
-        elif leader is not None:  # rahbar — sanaladi, alohida qatorda ro'yxatdagi ismi bilan
-            row = extras.setdefault(key, Row(key=key, name=leader.label, username=leader.username or username,
-                                             user_id=user_id, operator=False, role=LEADER_ROLE))
-        elif not operators:
-            row = rows.setdefault(key, Row(key=key, name=first_name or (f"@{username}" if username else f"ID {user_id}"),
-                                           username=username, user_id=user_id, operator=False))
+    for person in operators:  # ro'yxatdagilar natija bo'lmasa ham ko'rinadi; bir xil ismlilar — bitta qator
+        key = person_key("o", person)
+        row = rows.setdefault(key, Row(key=key, name=person.label, username=None, user_id=None, operator=True))
+        row.add_account(person.user_id, person.username)
+        if person.is_admin:
+            row.role = ADMIN_ROLE
+    for (lead_id, key), value in status_of.items():
+        user_id = accounts[key][0]
+        person = next((found[1] for uid in accounts[key] if (found := actor_of(uid)) and found[1] is not None), None)
+        if key.startswith("o:"):
+            row = rows[key]
+        elif key.startswith(("l:", "s:")) and person is not None:  # rahbar / bo'lim — sanaladi, alohida qatorda
+            role = LEADER_ROLE if key.startswith("l:") else STAFF_ROLE
+            row = extras.setdefault(key, Row(key=key, name=person.label, username=None, user_id=None, operator=False,
+                                             role=role, group=person.title if role == STAFF_ROLE else ""))
         else:
-            row = extras.setdefault(key, Row(key=key, name=first_name or (f"@{username}" if username else f"ID {user_id}"),
-                                             username=username, user_id=user_id, operator=False))
+            username, first_name = users.get(user_id, (None, ""))
+            target = rows if not operators else extras
+            row = target.setdefault(key, Row(key=key, name=first_name or (f"@{username}" if username else f"ID {user_id}"),
+                                             username=None, user_id=None, operator=False))
+        for uid in accounts[key]:
+            row.add_account(uid, users.get(uid, (None, ""))[0])
         row.total += 1
         row.counts[value] += 1
+    for key, row in list(extras.items()) + list(rows.items()):  # ro'yxatdagi username'lar ham ko'rinsin
+        for prefix, plist in lists:
+            if key.startswith(prefix + ":"):
+                for person in plist:
+                    if person_key(prefix, person) == key:
+                        row.add_account(person.user_id, person.username)
 
     new = await store.leads_between(start_iso, upto_iso)
     marked = await store.touched_lead_ids(lead.id for lead in new)
@@ -416,12 +478,13 @@ async def overview_between(store: ReportStore, s: Schedule, start: datetime, end
         key=lambda item: (-item[2], -item[1], item[0]),
     )
 
-    def order(item: Row) -> tuple:
-        return (not item.leader, -item.total, item.name.lower())  # extras'da avval rahbarlar
+    def order(item: Row) -> tuple:  # extras'da avval rahbarlar, keyin bo'limlar, oxirida ro'yxatda yo'qlar
+        rank = 0 if item.leader else 1 if item.staff else 2
+        return (rank, item.group.lower(), -item.total, item.name.lower())
 
     lead_people: dict[int, list[int]] = {}
-    for lead_id, user_id in sorted(status_of):
-        lead_people.setdefault(lead_id, []).append(user_id)
+    for lead_id, key in sorted(status_of):
+        lead_people.setdefault(lead_id, []).append(accounts[key][0])
     return Overview(
         day=day, start=start, end=end, live=live, statuses=statuses,
         rows=sorted(rows.values(), key=order), extras=sorted(extras.values(), key=order),

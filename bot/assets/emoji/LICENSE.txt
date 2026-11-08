@@ -1,0 +1,4 @@
+Emoji rasmlari — Twemoji (https://github.com/jdecked/twemoji)
+Copyright 2019 Twitter, Inc and other contributors; 2024 jdecked and other contributors.
+Grafika litsenziyasi: CC-BY 4.0 — https://creativecommons.org/licenses/by/4.0/
+SVG manbasi: @twemoji/svg 15.0.0 (npm), 72 px PNG ga aylantirilgan (Telegram reaksiyalari va hisobot belgilari).

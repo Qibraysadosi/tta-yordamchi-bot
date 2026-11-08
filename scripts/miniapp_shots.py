@@ -158,9 +158,11 @@ async def seed_reports(env: Env) -> None:
         await store.add_person("operator", username=username, user_id=None, name=name,
                                title="admin" if username == "nilufar_op" else "")
     await store.add_person("leader", username="dilshod_tta", user_id=None, name="Dilshod aka")
+    await store.add_person("staff", username="baxtiyor_smm", user_id=None, name="Baxtiyor", title="Marketing")  # v1.12
     await store.add_person("excluded", username="shohrux", user_id=None, name="Shohrux")
     extra = (605, "Aziz", "aziz_admin")  # ro'yxatda yo'q, lekin qo'ng'iroq qilgan
     boss = (606, "Dilshod", "dilshod_tta")  # rahbar ham lidni belgilagan — alohida qatorda sanaladi
+    smm = (607, "Baxtiyor", "baxtiyor_smm")  # boshqa bo'lim (Marketing)
     courses = ["Kompyuter savodxonligi", "Massaj", "Ingliz tili", "Excel", "Grafik dizayn", "Buxgalteriya"]
     names = ["Aziza", "Bobur", "Dilnoza", "Eldor", "Feruza", "G'ayrat", "Hilola", "Islom", "Jamshid", "Kamola", "Laziz",
              "Madina", "Nodir", "Oydin", "Rustam", "Sevara", "Tohir", "Umida", "Xurshid", "Yulduz", "Zafar", "Shahnoza",
@@ -180,7 +182,8 @@ async def seed_reports(env: Env) -> None:
         lead = await g.post(card, when)
         if i >= len(names) - 3:
             continue  # oxirgi lidlar hali belgilanmagan
-        uid, op_name, username = extra if i in (5, 14) else boss if i in (9, 17) else rnd.choice(team)
+        uid, op_name, username = (extra if i in (5, 14) else boss if i in (9, 17) else smm if i == 11
+                                  else rnd.choice(team))
         status = rnd.choice(statuses)
         user = person(uid, op_name, username)
         await g.react(lead["message_id"], user, status, when + rnd.randint(4, 40) * 60)
@@ -294,7 +297,7 @@ async def main() -> None:
             await page.goto(base + "#r-ops", timeout=15000)
             await page.wait_for_function("!document.querySelector('.skeleton')", timeout=5000)
             await page.click("button.row.op[data-action=r-edit] >> text=Nilufar")
-            await page.wait_for_selector(".sheet input[name=admin]")
+            await page.wait_for_selector(".sheet input[name=admin]", state="attached")  # tumbler — yashirin checkbox
             await page.wait_for_timeout(350)
             await page.screenshot(path=str(OUT / f"{scheme}-sheet-operator.png"))
             print(scheme, "errors:", errors)

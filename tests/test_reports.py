@@ -168,13 +168,15 @@ class AdminSession(fakes.FakeSession):
         return await super().make_request(bot, method, timeout)
 
 
-async def start(tmp_path, responses=None, **over):
+async def start(tmp_path, responses=None, picture=False, **over):
     env = await Env().start(tmp_path, responses, **over)
     env.session = AdminSession()
     env.bot.session = env.session
     env.ctx.reports.now = lambda: local(WED, "15:00")  # testlar haqiqiy soatga bog'liq bo'lmasin
     await env.ctx.reports.ensure()
     await env.db.set_config("report:since", "2026-10-01T00:00:00")
+    if not picture:  # v1.12 dan oldingi testlar hisobot matnini tekshiradi; rasm — test_report_picture.py
+        await env.ctx.reports.save_schedule({"picture": False})
     return env
 
 

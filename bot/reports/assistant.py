@@ -5,24 +5,27 @@ bajardimi?» kabi savollarga model bazadagi aniq ma'lumotni shu vositalar orqali
 - Rahbarlar: botga yozgan savoliga AI faqat hisobot va vazifalar bo'yicha javob beradi (boshqa vosita va internet
   yo'q), telefon raqamlari yashiriladi; har rahbarga kunlik savollar chegarasi (LEADER_DAILY_LIMIT).
 - Raqamlar kunlik hisobot qoidasida (stats.overview_between): davr — hisobot davri (masalan, 19:00 → 19:00),
-  bir davrda bitta lid bir operatorga bir marta sanaladi."""
+  bir davrda bitta lid bir operatorga bir marta sanaladi; calendar=true — kalendar kunlar (00:00–24:00).
+- v1.13 (bot/reports/insights.py): report_breakdown (kesimlar), report_send (kunlik hisobot / Excel shu chatga);
+  faqat egasiga — bot_status (bot holati) va group_messages (guruh yozishmalari)."""
 from __future__ import annotations
 
 import json
 import re
 import time as clock
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from ..prompt import WEEKDAYS, uz_date
+from . import insights
 from .excel import format_phone, hide_numbers, mask_phone
+from .insights import InsightError
 from .leads import message_link
 from .stats import (
     OTHER,
     Overview,
     Schedule,
-    build_overview,
     current_day,
     month_of,
     neighbour_day,
@@ -38,7 +41,12 @@ from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, Task, due_label, repeat_
 if TYPE_CHECKING:
     from .service import ReportService
 
-TOOL_NAMES = ("report_stats", "report_leads", "task_status")
+BASE_TOOLS = ("report_stats", "report_leads", "task_status")
+SHARED_TOOLS = BASE_TOOLS + ("report_breakdown", "report_send")  # egasi va rahbar
+OWNER_TOOLS = ("bot_status", "group_messages")  # v1.13: faqat egasi
+TOOL_NAMES = SHARED_TOOLS + OWNER_TOOLS
+STATUS_TEXT = {"report_send": "📤 Hisobot tayyorlanmoqda…", "bot_status": "⚙️ Bot holati tekshirilmoqda…",
+               "group_messages": "💬 Guruh yozishmalari o'qilmoqda…"}
 PERIODS = ("today", "yesterday", "this_week", "last_week", "this_month", "last_month", "day", "range")
 LEADS_LIMIT, LEADS_MAX = 30, 100
 TASKS_LIMIT, TASKS_MAX = 20, 100
@@ -53,19 +61,25 @@ STATE_TEXT = {
 
 REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar orqali olinadi):
 - Qo'ng'iroqlar, operatorlar, lidlar natijasi yoki vazifalar haqida so'ralsa — javobdan oldin report_stats, report_leads yoki task_status vositasi bilan aniq ma'lumot ol. Taxmin qilma, suhbatdagi eski raqamni qayta ishlatma (ma'lumot doim yangilanib turadi).
-- Davr aytilmasa — bugun (joriy hisobot davri). «Kecha», «shu hafta», «o'tgan oy», aniq sana yoki oraliq bo'lsa — mos period bilan. Hisobot davri kalendar kun emas (masalan, kecha 19:00 → bugun 19:00) — kerak bo'lsa javobda ayt.
+- Davr aytilmasa — bugun (joriy hisobot davri). «Kecha», «shu hafta», «o'tgan oy», aniq sana yoki oraliq bo'lsa — mos period bilan. Hisobot davri kalendar kun emas (masalan, kecha 19:00 → bugun 19:00), raqamlari kunlik hisobot bilan bir xil. Aniq sana yoki soat bo'yicha so'ralsa («5-noyabrda nechta lid tushdi?», «kecha kechqurun») — calendar=true (00:00–24:00). Javobda qaysi davr ekanini qisqa ayt.
 - «Qo'ng'iroq» — operator status (reaksiya) qo'ygan yoki natija haqida izoh yozgan lid; bir davrda bitta lid bir operatorga bir marta sanaladi. «Asosiy natija» — 👍 keladi kabi asosiy status.
 - Odamlar: operators — jadvaldagi operatorlar (position=administrator — administrator, operatorlar bilan birga sanaladi); leaders — lidni o'zi belgilagan rahbarlar; other_departments — boshqa bo'limlar xodimlari (position — bo'lim nomi, masalan Marketing); not_in_operator_list — ro'yxatda yo'qlar. Rahbar va bo'limlar ham sanaladi (alohida). Umumiy son — hammasining yig'indisi. accounts — bir odamning bir nechta akkaunti (bitta odam sifatida sanaladi).
+- Kesimlar va tahlil (qaysi kurs, tuman, yosh yoki soatda lid ko'p va natija yaxshi; kunlar dinamikasi; lid tushgandan birinchi qo'ng'iroqqacha necha daqiqa; kim lidni birinchi olgan) — report_breakdown. Xulosa va tavsiyani raqamlarga tayanib ayt.
+- Hisobot yoki fayl so'ralsa («kunlik hisobotni yubor», «o'tgan hafta Excel», «1–15 noyabr Excel») — report_send: kind=daily — kunlik hisobot (rasm), bitta kun; kind=excel — hafta, oy yoki oraliq. Fayl chatga o'zi boradi: javobda 1–2 jumla yetarli, raqamlarni qayta sanab o'tirma. Faqat raqam so'ralsa — fayl yuborma.
 - Javob qisqa bo'lsin: avval asosiy raqam, keyin kerak bo'lsa ro'yxat. Ro'yxat uzun bo'lsa — eng muhimlari va «yana N ta». Statusni ma'nosi bilan yoz (👍 keladi).
 - Vazifa holati: ✅ bajarildi (kim yopgani bilan), ❌ «Yo'q» dedi, 🔔 so'raldi — javob kutilmoqda, ⚠️ javob bermadi, 🔴 muddati o'tdi, ⏳ muddati kelmagan.
 - Vosita «error» qaytarsa, sababini qisqa ayt; odam topilmasa, ro'yxatdagi ismlardan mosini taklif qil."""
+
+OWNER_GUIDE = """Bot va guruhlar (faqat egasi uchun):
+- Xarajat, foydalanuvchilar, xodimlar ro'yxati, guruhlar (bot admini, oxirgi faollik), sozlamalar (hisobot vaqti, modellar, zaxira), yuborilgan hisobotlar, bugungi faollik — bot_status (kerakli section bilan).
+- Guruhlarda kim nima yozgani («rahbarlar guruhida bugun nima deyishdi?», «Malika kecha nima yozdi?», «kim narx haqida so'radi?») — group_messages. Avval qisqa xulosa, keyin muhim xabarlar vaqti va muallifi bilan. Botning o'z sozlamalarini o'zgartira olmaysan — buning uchun buyruqlar va Mini App bor."""
 
 LEADER_PROMPT = """Sen TTA o'quv markazining call center hisobotlari va vazifalari bo'yicha yordamchisan. Rahbar bilan gaplashyapsan.
 Bugungi sana: {sana}.
 - Faqat call center natijalari (qo'ng'iroqlar, operatorlar, lidlar va ularning javoblari) va vazifalar haqidagi savollarga javob ber. Boshqa mavzudagi so'rovlarga (xat, tarjima, umumiy savollar) qisqa va muloyim rad javob ber: «Men faqat hisobot va vazifalar bo'yicha yordam beraman».
 - Rahbar qaysi tilda yozsa, o'sha tilda javob ber; o'zbekcha bo'lsa — lotin yozuvida.
 - Telefon raqamlari yashirilgan (+998 90 ***-**-67). To'liq raqam so'ralsa — lid postidagi havola orqali guruhdan ko'rishni yoki bot egasidan so'rashni ayt.
-- Sozlamalarni o'zgartira olmaysan, vazifa bera olmaysan — faqat ma'lumot berasan.
+- Sozlamalarni o'zgartira olmaysan, vazifa bera olmaysan — faqat ma'lumot berasan. Kunlik hisobot yoki Excel so'ralsa — report_send bilan shu chatga yuborasan (telefon raqamlari yashirilgan nusxa).
 - Javoblar Telegram'da ko'rinadi: **qalin** va ro'yxatlar mumkin; keng jadval tuzma — telefonda ro'yxat qulayroq."""
 
 _PERIOD_PROPS: dict[str, Any] = {
@@ -80,6 +94,9 @@ _PERIOD_PROPS: dict[str, Any] = {
     "date": {"type": "string", "description": "period=day uchun sana: YYYY-MM-DD"},
     "date_from": {"type": "string", "description": "period=range: boshlanish sanasi YYYY-MM-DD"},
     "date_to": {"type": "string", "description": "period=range: tugash sanasi YYYY-MM-DD (shu kun ham kiradi)"},
+    "calendar": {"type": "boolean", "description": (
+        "true — kalendar kun(lar) 00:00–24:00 («3-noyabrda nechta lid tushdi?»); standart — hisobot davri "
+        "(masalan, kecha 19:00 → bugun 19:00), kunlik hisobot raqamlari bilan bir xil")},
 }
 
 
@@ -103,6 +120,11 @@ def _date(value: Any, field: str) -> date:
         raise ReportToolError(f"{field}: sana YYYY-MM-DD ko'rinishida bo'lsin") from None
 
 
+def _flag(value: Any) -> bool:
+    """Model ba'zan mantiqiy qiymatni matn qilib yuboradi («false»)."""
+    return value is True or str(value).strip().lower() in ("true", "1", "ha", "yes")
+
+
 def _limit(value: Any, default: int, maximum: int) -> int:
     try:
         return max(1, min(int(value), maximum))
@@ -117,70 +139,122 @@ class Window:
     end: datetime
     days: list[date]  # davrdagi hisobot kunlari
     live: bool
+    first: date | None = None  # so'ralgan sanalar: hafta — dushanba…yakshanba, oy — 1…oxirgi kun
+    last: date | None = None
+    calendar: bool = False  # True — kalendar kunlar (00:00–24:00), aks holda hisobot davri
 
     def as_dict(self, now: datetime) -> dict:
         data = {"label": self.label, "start": f"{self.start:%Y-%m-%d %H:%M}", "end": f"{self.end:%Y-%m-%d %H:%M}",
+                "basis": "kalendar kunlar (00:00–24:00)" if self.calendar else "hisobot davri",
                 "report_days": len(self.days), "live": self.live}
         if self.live:
             data["until_now"] = f"{now:%Y-%m-%d %H:%M}"
         return data
 
+    def day_spans(self, s: Schedule) -> list[tuple[date, datetime, datetime]]:
+        """Kunlarga bo'lish: hisobot davrida — hisobot kunlari, kalendarda — har kalendar kun (00:00–24:00)."""
+        if not self.calendar:
+            return [(day, *period_bounds(day, s, self.start.tzinfo)) for day in self.days]  # type: ignore[arg-type]
+        spans, day = [], self.first or self.start.date()
+        while day <= (self.last or day):
+            start = datetime.combine(day, time(0), tzinfo=self.start.tzinfo)
+            spans.append((day, start, start + timedelta(days=1)))
+            day += timedelta(days=1)
+        return spans
 
-def resolve_window(args: dict, now: datetime, s: Schedule) -> Window:
-    """Savoldagi davr → hisobot davri (boshlanish, tugash). «today» — bugungi hisobot kuni (19:00 dan keyin ham
-    bugungisi, dam olish kuni — keyingi ish kunining davri)."""
-    tz = now.tzinfo
-    period = str(args.get("period") or "today")
-    today = now.date() if now.weekday() in s.days else current_day(now, s)
-    if period in ("today", "yesterday", "day"):
-        if period == "today":
-            day, name = today, "bugun"
-        elif period == "yesterday":
-            day, name = neighbour_day(today, s, -1), "kecha"
-        else:
-            asked = _date(args.get("date"), "date")
-            if asked > now.date():
-                raise ReportToolError("Bu sana hali kelmagan")
-            day, name = (asked if asked.weekday() in s.days else neighbour_day(asked, s, 1)), "sana"
-        start, end = period_bounds(day, s, tz)  # type: ignore[arg-type]
-        label = f"{name}: {day:%d.%m.%Y} ({WEEKDAYS[day.weekday()]}) hisobot davri"
-        return Window(label, start, end, [day], now < end)
+
+def _requested(period: str, args: dict, now: datetime, s: Schedule) -> tuple[str, date, date, bool]:
+    """Davr nomi → (yorliq boshi, birinchi sana, oxirgi sana, bitta kunmi). Bitta kun — hisobot kuni (dam olish
+    kuni — keyingi ish kuni); calendar=true bo'lsa resolve_window sanani o'zgartirmaydi."""
+    calendar = _flag(args.get("calendar"))
+    today = now.date() if calendar or now.weekday() in s.days else current_day(now, s)
+    if period == "today":
+        return "bugun", today, today, True
+    if period == "yesterday":
+        day = today - timedelta(days=1) if calendar else neighbour_day(today, s, -1)
+        return "kecha", day, day, True
+    if period == "day":
+        asked = _date(args.get("date"), "date")
+        if asked > now.date():
+            raise ReportToolError("Bu sana hali kelmagan")
+        day = asked if calendar or asked.weekday() in s.days else neighbour_day(asked, s, 1)
+        return "sana", day, day, True
     if period in ("this_week", "last_week"):
         first, last = week_of(now.date())
         if period == "last_week":
             first, last = week_of(first - timedelta(days=1))
-        label = ("shu hafta" if period == "this_week" else "o'tgan hafta") + f": {first:%d.%m} – {last:%d.%m.%Y}"
-    elif period in ("this_month", "last_month"):
+        return ("shu hafta" if period == "this_week" else "o'tgan hafta"), first, last, False
+    if period in ("this_month", "last_month"):
         first, last = month_of(now.date())
         if period == "last_month":
             first, last = month_of(first - timedelta(days=1))
-        label = ("shu oy" if period == "this_month" else "o'tgan oy") + f": {first:%d.%m} – {last:%d.%m.%Y}"
-    elif period == "range":
+        return ("shu oy" if period == "this_month" else "o'tgan oy"), first, last, False
+    if period == "range":
         first, last = _date(args.get("date_from"), "date_from"), _date(args.get("date_to"), "date_to")
         if first > last:
             first, last = last, first
         if (last - first).days > MAX_DAYS:
             raise ReportToolError(f"Oraliq juda uzun ({MAX_DAYS} kungacha bo'lsin)")
-        label = f"oraliq: {first:%d.%m.%Y} – {last:%d.%m.%Y}"
-    else:
-        raise ReportToolError(f"Noma'lum davr: {period}")
+        if first > now.date():
+            raise ReportToolError("Bu sanalar hali kelmagan")
+        return "oraliq", first, last, False
+    raise ReportToolError(f"Noma'lum davr: {period}")
+
+
+def resolve_window(args: dict, now: datetime, s: Schedule) -> Window:
+    """Savoldagi davr → hisobot davri (boshlanish, tugash). «today» — bugungi hisobot kuni (19:00 dan keyin ham
+    bugungisi, dam olish kuni — keyingi ish kunining davri). calendar=true — kalendar kunlar 00:00–24:00."""
+    tz = now.tzinfo
+    name, first, last, single = _requested(str(args.get("period") or "today"), args, now, s)
+    if _flag(args.get("calendar")):
+        start = datetime.combine(first, time(0), tzinfo=tz)
+        end = datetime.combine(last + timedelta(days=1), time(0), tzinfo=tz)
+        label = (f"{name}: {first:%d.%m.%Y} ({WEEKDAYS[first.weekday()]}), kalendar kun 00:00–24:00" if single
+                 else f"{name}: {first:%d.%m} – {last:%d.%m.%Y}, kalendar kunlar")
+        return Window(label, start, end, report_days(first, last, s), now < end, first, last, calendar=True)
+    if single:
+        start, end = period_bounds(first, s, tz)  # type: ignore[arg-type]
+        label = f"{name}: {first:%d.%m.%Y} ({WEEKDAYS[first.weekday()]}) hisobot davri"
+        return Window(label, start, end, [first], now < end, first, first)
     span = span_bounds(first, last, s, tz)  # type: ignore[arg-type]
     if span is None:
         raise ReportToolError("Bu davrda hisobot kuni yo'q")
-    return Window(label, span[0], span[1], report_days(first, last, s), now < span[1])
+    label = f"{name}: {first:%d.%m} – {last:%d.%m.%Y}" if name != "oraliq" else f"oraliq: {first:%d.%m.%Y} – {last:%d.%m.%Y}"
+    return Window(label, span[0], span[1], report_days(first, last, s), now < span[1], first, last)
 
 
 class ReportTools:
-    """Bitta suhbat navbati uchun vositalar: masked=True — rahbar (telefon raqamlari yashiriladi)."""
+    """Bitta suhbat navbati uchun vositalar: masked=True — rahbar (telefon raqamlari yashiriladi, bot holati va
+    guruh yozishmalari yo'q). report_send uchun bind() — qaysi chatga yuborish."""
 
     def __init__(self, reports: "ReportService", *, masked: bool) -> None:
         self.reports = reports
         self.masked = masked
-        self.names = TOOL_NAMES
+        self.names = SHARED_TOOLS if masked else TOOL_NAMES
+        self.target: tuple[Any, int, int] | None = None  # (bot, chat_id, so'ragan odam)
+        self.sent = 0  # shu navbatda yuborilgan hisobot / fayllar
+
+    def bind(self, bot: Any, chat_id: int, user_id: int) -> "ReportTools":
+        self.target = (bot, chat_id, user_id)
+        return self
+
+    def guide(self) -> str:
+        """Tizim ko'rsatmasiga qo'shiladigan qism (o'zgarmas matn — kesh ishlayveradi)."""
+        return REPORT_GUIDE if self.masked else REPORT_GUIDE + "\n\n" + OWNER_GUIDE
+
+    @staticmethod
+    def status_text(name: str) -> str:
+        return STATUS_TEXT.get(name, "📊 Hisobot ma'lumoti olinmoqda…")
 
     # -------------------------------------------------------------- schema
+    def specs(self) -> list[dict]:
+        specs = self._base_specs() + insights.shared_specs(_PERIOD_PROPS, masked=self.masked)
+        if not self.masked:
+            specs += insights.owner_specs(_PERIOD_PROPS)
+        return [spec for spec in specs if spec["name"] in self.names]
+
     @staticmethod
-    def specs() -> list[dict]:
+    def _base_specs() -> list[dict]:
         return [
             {
                 "name": "report_stats",
@@ -233,12 +307,15 @@ class ReportTools:
         ]
 
     async def run(self, name: str, args: dict) -> str:
-        handler = {"report_stats": self.stats, "report_leads": self.leads, "task_status": self.tasks}.get(name)
+        handlers = {"report_stats": self.stats, "report_leads": self.leads, "task_status": self.tasks,
+                    "report_breakdown": self.breakdown, "report_send": self.send, "bot_status": self.bot_status,
+                    "group_messages": self.group_messages}
+        handler = handlers.get(name) if name in self.names else None
         if handler is None:
             raise ReportToolError(f"Noma'lum vosita: {name}")
         try:
             data = await handler(args)
-        except ReportToolError as exc:
+        except (ReportToolError, InsightError) as exc:
             data = {"error": str(exc)}
         return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
@@ -315,13 +392,13 @@ class ReportTools:
             data = {"period": data["period"], "operator": self._row(ov, row, labels),
                     "rank": ranked.index(row) + 1, "operators_total": len([r for r in ranked if r.total]),
                     "all_calls": calls, "listed": row in ov.rows}
-        if args.get("by_day") and len(window.days) > 1:
+        spans = window.day_spans(s) if _flag(args.get("by_day")) else []
+        if len(spans) > 1:
             days = []
-            for day in window.days[:62]:
-                start, _ = period_bounds(day, s, now.tzinfo)  # type: ignore[arg-type]
+            for day, start, end in spans[:62]:
                 if start >= now:
                     break
-                day_ov = await build_overview(store, s, day, now)
+                day_ov = await overview_between(store, s, start, end, now, day)
                 people = day_ov.rows + day_ov.extras
                 if operator:
                     people = [r for r in people if _matches(operator, r.name, r.username)]
@@ -479,6 +556,50 @@ class ReportTools:
             .strip() for h in history[-8:]
         ]
         return {k: v for k, v in item.items() if v is not None}
+
+    # -------------------------------------------------------------- v1.13: kesimlar
+    async def breakdown(self, args: dict) -> dict:
+        window, s, now = await self._prepare(args)
+        name_of = await self.reports.archive._names()
+        return await insights.breakdown(self.reports, window, s, now, args, masked=self.masked, name_of=name_of)
+
+    # -------------------------------------------------------------- v1.13: hisobot / Excel'ni chatga yuborish
+    async def send(self, args: dict) -> dict:
+        kind = str(args.get("kind") or "")
+        if kind not in ("daily", "excel"):
+            raise ReportToolError("kind: daily (kunlik hisobot) yoki excel (Excel fayl)")
+        if self.target is None:
+            raise ReportToolError("Bu suhbatda fayl yuborib bo'lmaydi")
+        if self.sent >= insights.SEND_LIMIT:
+            raise ReportToolError(f"Bir javobda {insights.SEND_LIMIT} tadan ko'p hisobot yuborilmaydi")
+        if kind == "daily":  # kunlik hisobot — doim hisobot kuni bo'yicha (kalendar kun emas)
+            args = {**args, "calendar": False}
+        window, s, now = await self._prepare(args)
+        bot, chat_id, user_id = self.target
+        key = f"{kind}:{window.start:%Y-%m-%d %H:%M}:{window.end:%Y-%m-%d %H:%M}"
+        if not self.reports.claim_send(user_id, key):
+            raise ReportToolError("Bu hisobot hozirgina yuborildi — chatda turibdi")
+        self.sent += 1
+        try:
+            if kind == "daily":
+                return await insights.send_daily(self.reports, bot, chat_id, window, now)
+            return await insights.send_excel(self.reports, bot, chat_id, window, s, now, masked=self.masked)
+        except BaseException:
+            self.sent -= 1
+            self.reports.release_send(user_id, key)
+            raise
+
+    # -------------------------------------------------------------- v1.13: faqat egasiga
+    async def bot_status(self, args: dict) -> dict:
+        await self.reports.ensure()
+        return await insights.bot_status(self.reports, args, self.reports.now())
+
+    async def group_messages(self, args: dict) -> dict:
+        reports = self.reports
+        await reports.ensure()
+        now = reports.now()
+        window = resolve_window({**args, "calendar": True}, now, await reports.schedule())  # yozishma — kalendar kun
+        return await insights.group_messages(reports, window, args, now)
 
 
 class LeaderMemory:

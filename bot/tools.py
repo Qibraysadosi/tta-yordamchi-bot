@@ -543,7 +543,7 @@ HANDLERS = {
 
 async def run(tctx: ToolContext, name: str, args: dict) -> str:
     if tctx.reports is not None and name in tctx.reports.names:
-        await tctx.status("📊 Hisobot ma'lumoti olinmoqda…")
+        await tctx.status(tctx.reports.status_text(name))
         return await tctx.reports.run(name, args)
     handler = HANDLERS.get(name)
     if handler is None:

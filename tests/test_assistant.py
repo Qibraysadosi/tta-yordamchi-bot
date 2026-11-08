@@ -144,8 +144,9 @@ def test_owner_chat_uses_report_tools(tmp_path):
             await env.send_text("Bugun nechta qo'ng'iroq bo'ldi?")
             first, second = env.api.requests[-2:]
             names = [t.get("name") for t in first["tools"]]
-            assert names[-3:] == ["report_stats", "report_leads", "task_status"] and "create_document" in names
-            assert "Call center va vazifalar" in first["system"]
+            assert names[-7:] == ["report_stats", "report_leads", "task_status", "report_breakdown", "report_send",
+                                  "bot_status", "group_messages"] and "create_document" in names
+            assert "Call center va vazifalar" in first["system"] and "Bot va guruhlar" in first["system"]
             assert tool_result(second)["totals"]["calls"] == 2
             final = env.last_edit()
             assert "2 ta" in final.text and "Malika 1" in final.text
@@ -189,7 +190,9 @@ def test_leader_asks_the_bot(tmp_path):
             await env.send_text("Bu hafta qaysi lidlarga hech kim qo'ng'iroq qilmadi?", user_id=LEADER)
             first, second = env.api.requests[-2:]
             assert "Rahbar bilan gaplashyapsan" in first["system"] and "Shohrux" not in first["system"]
-            assert [t["name"] for t in first["tools"]] == ["report_stats", "report_leads", "task_status"]  # boshqa vosita yo'q
+            assert [t["name"] for t in first["tools"]] == ["report_stats", "report_leads", "task_status",
+                                                           "report_breakdown", "report_send"]  # boshqa vosita yo'q
+            assert "bot_status" not in first["system"] and "group_messages" not in first["system"]
             result = tool_result(second)
             assert result["leads"][0]["name"] == "Nodira" and result["leads"][0]["phone"] == "+998 95 ***-**-33"
             answer = env.session.of("SendMessage")[-1]

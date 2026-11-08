@@ -57,7 +57,8 @@ from .stats import (
     neighbour_day,
     period_bounds,
 )
-from .store import Group, Lead, ReportStore, iso
+from .insights import REPEAT_GAP
+from .store import CHAT_KEEP_DAYS, Group, Lead, ReportStore, iso
 from .tasks import TaskService, task_body
 
 if TYPE_CHECKING:
@@ -111,8 +112,36 @@ def details_param(day: date | None = None) -> str:
 
 
 CAPTION_LIMIT = 1000  # Telegram rasm izohi 1024 belgigacha (teglarsiz) — zaxira bilan
+CHAT_PRUNE_KEY = "chatlog:pruned"
 TAG_RE = re.compile(r"<[^>]+>")
 BOT_INFO_TTL = 600.0  # soniya: getMe natijasi shuncha vaqt eskirmagan hisoblanadi
+
+
+def chat_text(message: Message) -> str:
+    """Yozishma matni: matn yoki izoh; matnsiz media — «[rasm]», «[ovozli xabar]» kabi belgi bilan."""
+    caption = (message.text or message.caption or "").strip()
+    label = ""
+    if message.photo:
+        label = "[rasm]"
+    elif message.video:
+        label = "[video]"
+    elif message.voice:
+        label = f"[ovozli xabar, {message.voice.duration} s]"
+    elif message.video_note:
+        label = "[video xabar]"
+    elif message.audio:
+        label = "[audio]"
+    elif message.document:
+        label = f"[fayl: {message.document.file_name or 'nomsiz'}]"
+    elif message.sticker:
+        label = f"[stiker {message.sticker.emoji or ''}]".replace(" ]", "]")
+    elif message.poll:
+        label = f"[so'rovnoma: {message.poll.question}]"
+    elif message.contact:
+        label = "[kontakt]"
+    elif message.location:
+        label = "[joylashuv]"
+    return " ".join(x for x in (label, caption) if x)
 
 
 @dataclass
@@ -150,6 +179,7 @@ class ReportService:
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
         self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
         self.contact_rename: dict[int, tuple[int, float]] = {}  # «✏️ Boshqa ism»: egasi → (kontakt ID, vaqt)
+        self._sends: dict[tuple[int, str], float] = {}  # v1.13: AI yuborgan hisobotlar — (odam, davr) → vaqt
 
     # ------------------------------------------------------------------ umumiy
     @property
@@ -332,6 +362,7 @@ class ReportService:
             return
         if not group.active or not group.roles:
             return
+        await self._log_chat(message)
         user = message.from_user
         if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and message.sender_chat is None:
             await self.store.remember_user(user.id, user.username, user.full_name)
@@ -409,9 +440,47 @@ class ReportService:
         await self.store.add_comment(lead, message.message_id, user.id, text, iso(message.date), analyzable=analyzable)
         return True
 
+    async def _log_chat(self, message: Message) -> None:
+        """v1.13: guruh yozishmasi — AI so'raganda («rahbarlar guruhida bugun nima deyishdi?»). Kanal postlari (lidlar)
+        alohida saqlanadi; xato yozishni to'xtatmaydi."""
+        if message.is_automatic_forward:
+            return
+        content = chat_text(message)
+        user = message.from_user
+        if not content or (user is not None and user.id == TELEGRAM_SERVICE_ID):
+            return
+        if message.sender_chat is not None:
+            name, user_id, username = message.sender_chat.title or "kanal", None, message.sender_chat.username
+        elif user is not None:
+            name, user_id, username = user.full_name, user.id, user.username
+        else:
+            return
+        reply = message.reply_to_message
+        try:
+            await self.store.log_message(
+                message.chat.id, message.message_id, user_id=user_id, name=name, username=username, text=content,
+                reply_to=reply.message_id if reply is not None and not reply.is_topic_message else None,
+                created_at=iso(message.date),
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("Guruh yozishmasini saqlab bo'lmadi")
+
+    async def prune_chat(self, now: datetime) -> int:
+        """Eski yozishmalar (CHAT_KEEP_DAYS dan oldingi) — kuniga bir marta o'chiriladi."""
+        stamp = now.strftime("%Y-%m-%d")
+        if await self.ctx.db.get_config(CHAT_PRUNE_KEY) == stamp:
+            return 0
+        await self.ctx.db.set_config(CHAT_PRUNE_KEY, stamp)
+        return await self.store.prune_messages(iso(now - timedelta(days=CHAT_KEEP_DAYS)))
+
     async def record_edit(self, message: Message) -> None:
         group = await self.store.group(message.chat.id)
-        if group is None or not group.has("leads"):
+        if group is None or not group.active or not group.roles:
+            return
+        content = chat_text(message)
+        if content and not message.is_automatic_forward:
+            await self.store.edit_logged(message.chat.id, message.message_id, content)
+        if not group.has("leads"):
             return
         text = message.text or message.caption or ""
         info = parse_lead(text)
@@ -467,6 +536,18 @@ class ReportService:
     def ai_tools(self, *, masked: bool) -> ReportTools:
         """AI suhbati uchun hisobot vositalari (v1.10); masked=True — rahbar: telefon raqamlari yashiriladi."""
         return ReportTools(self, masked=masked)
+
+    def claim_send(self, user_id: int, key: str) -> bool:
+        """AI report_send: aynan shu hisobot shu odamga qisqa vaqtda ikki marta yuborilmasin (model takrorlasa)."""
+        moment = time.monotonic()
+        self._sends = {k: t for k, t in self._sends.items() if moment - t < REPEAT_GAP}
+        if (user_id, key) in self._sends:
+            return False
+        self._sends[(user_id, key)] = moment
+        return True
+
+    def release_send(self, user_id: int, key: str) -> None:
+        self._sends.pop((user_id, key), None)
 
     async def usage_names(self) -> dict[int, str]:
         """Xarajat hisobotidagi nomlar: guruh tahlili va AI'ga savol bergan rahbarlar."""
@@ -813,6 +894,7 @@ class ReportService:
             ("vazifalar", lambda: self.tasks.tick(bot, now)),
             ("kundalik", lambda: self.archive.check_journal(bot, now)),
             ("excel", lambda: self.archive.check_exports(bot, now)),
+            ("yozishmalar", lambda: self.prune_chat(now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:

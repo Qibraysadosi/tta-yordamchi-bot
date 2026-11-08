@@ -1,7 +1,7 @@
-🖼 v1.12.0 — Hisobot rasmi, bo'limlar va ikki akkaunt
-• Kunlik hisobot jadvali endi chiroyli rasm bo'lib keladi: to'liq ismlar, rangli status ustunlari, natija chizig'i, JAMI; ostida qisqa matn (yangi lidlar, kurslar, izohlar). Rasmni bot kod bilan chizadi — raqamlar aniq
-• Boshqa bo'limlar: /xodimlar'da «@username — Ism — Marketing» (yoki Menejer…) — lidni belgilasa, hisobotda bo'limi bilan alohida qatorda
-• Bir odamning ikki akkaunti (shaxsiy va ish): bir qatorda ikkala username yoki bir xil ism — hisobotda bitta odam, bitta lid bir marta
-• «direktor» — rahbar sifatida tushuniladi; egasi o'zi ro'yxatda bo'lsa ham huquqlari o'zgarmaydi
-• Username'i yo'q xodim: kontaktini ulashing yoki /xodimlar'dan keyin xabarini uzating (forward) — «🔗 … akkaunti», «✏️ Boshqa ism» tugmalari
-• Mini App: «Boshqa bo'limlar», «Kimning akkaunti?», Sozlamalar → «Rasm ko'rinishida» tumbleri
+🤖 v1.13.0 — AI hamma narsani biladi
+• Botga oddiy yozing: «kechagi hisobotni yubor», «o'tgan hafta Excel», «1–15 noyabr Excel» — kunlik hisobot (rasm) yoki Excel shu chatga keladi
+• Aniq sana bo'yicha: «5-noyabrda nechta lid tushdi?» — kalendar kun (00:00–24:00); standart — hisobot davri (19:00 → 19:00)
+• Tahlil: qaysi kurs, tuman, yosh, soat va kunda lid ko'p, 👍 ulushi, operator lidga necha daqiqada qo'ng'iroq qiladi
+• Bot holati (faqat siz): bugungi faollik, xarajat (kim, qaysi model), foydalanuvchilar, xodimlar, guruhlar, sozlamalar, yuborilgan hisobotlar
+• Guruh yozishmalari (faqat siz): «rahbarlar guruhida bugun nima deyishdi?» — bot ulangan guruhlardagi xabarlarni 120 kun saqlaydi (bot guruhda admin bo'lishi kerak)
+• Rahbarlar ham botdan kunlik hisobot va Excel so'ray oladi — telefonlari yashirilgan nusxa

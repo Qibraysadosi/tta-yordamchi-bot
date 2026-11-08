@@ -41,6 +41,8 @@ DEFAULT_STATUSES = (  # (emoji, ma'nosi, asosiy natija)
 )
 SEEDED_KEY = "report:statuses_seeded"
 TEXT_LIMIT = 1500
+MESSAGE_LIMIT = 2000  # guruh yozishmasi (rp_messages) — bitta xabar matni
+CHAT_KEEP_DAYS = 120  # guruh yozishmalari shuncha kun saqlanadi
 
 
 def _not_excluded(alias: str) -> str:
@@ -697,6 +699,42 @@ class ReportStore:
         counts = {r["kind"]: int(r["n"]) for r in rows}
         return {"leads": int(leads["n"]), "reactions": counts.get("reaction", 0), "comments": counts.get("comment", 0)}
 
+    # ------------------------------------------------------------------ guruh yozishmalari (v1.13)
+    async def log_message(self, chat_id: int, message_id: int, *, user_id: int | None, name: str, username: str | None,
+                          text: str, reply_to: int | None, created_at: str) -> None:
+        await self._run(
+            "INSERT INTO rp_messages (chat_id, message_id, user_id, name, username, text, reply_to, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, message_id) DO NOTHING",
+            (chat_id, message_id, user_id, name[:60], (username or "").lower() or None, text[:MESSAGE_LIMIT], reply_to,
+             created_at),
+        )
+
+    async def edit_logged(self, chat_id: int, message_id: int, text: str) -> None:
+        await self._run("UPDATE rp_messages SET text = ?, edited = 1 WHERE chat_id = ? AND message_id = ?",
+                        (text[:MESSAGE_LIMIT], chat_id, message_id))
+
+    async def logged_messages(self, start: str, end: str, chat_ids: Iterable[int] | None = None) -> list[dict]:
+        query = "SELECT * FROM rp_messages WHERE created_at >= ? AND created_at < ?"
+        params: list[Any] = [start, end]
+        ids = list(chat_ids or [])
+        if chat_ids is not None:
+            if not ids:
+                return []
+            query += f" AND chat_id IN ({','.join('?' * len(ids))})"
+            params += ids
+        return [dict(r) for r in await self._all(query + " ORDER BY created_at, message_id", params)]
+
+    async def message_counts(self, since: str) -> dict[int, int]:
+        rows = await self._all(
+            "SELECT chat_id, COUNT(*) AS n FROM rp_messages WHERE created_at >= ? GROUP BY chat_id", (since,)
+        )
+        return {r["chat_id"]: int(r["n"]) for r in rows}
+
+    async def prune_messages(self, before: str) -> int:
+        cur = await self.conn.execute("DELETE FROM rp_messages WHERE created_at < ?", (before,))
+        await self.conn.commit()
+        return cur.rowcount or 0
+
     # ------------------------------------------------------------------ yuborilgan hisobotlar
     async def report_for_day(self, day: str) -> dict | None:
         """Shu kun («YYYY-MM-DD») uchun yuborilgan kunlik hisobot: vaqt o'zgartirilsa ham bir kunga bitta."""
@@ -712,6 +750,11 @@ class ReportStore:
             " insights = excluded.insights",
             (period_end, period_start, now_iso(), text, insights),
         )
+
+    async def recent_reports(self, limit: int = 10) -> list[dict]:
+        rows = await self._all("SELECT period_start, period_end, sent_at FROM rp_reports ORDER BY sent_at DESC LIMIT ?",
+                               (limit,))
+        return [dict(r) for r in rows]
 
     async def last_report(self) -> dict | None:
         row = await self._one("SELECT period_end, sent_at FROM rp_reports ORDER BY sent_at DESC LIMIT 1")

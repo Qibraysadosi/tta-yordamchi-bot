@@ -42,7 +42,7 @@ from .modes import DEFAULT_MODE, MODES, load_mode_prompt, mode_label
 from .prompt import MONTHS, PromptLoader
 from .reports.analysis import USAGE_NAME as REPORT_USAGE_NAME
 from .reports.analysis import USAGE_UID as REPORT_USAGE_UID
-from .reports.assistant import REPORT_GUIDE, leader_system
+from .reports.assistant import leader_system
 from .reports.leads import mask_phones
 from .tgformat import format_answer, split_plain
 from .github import GitHubClient, GitHubError, is_newer
@@ -174,9 +174,13 @@ ADMIN_HELP = (
     "🧑‍💼 /xodimlar — xodimlar ro'yxati; bitta xabarda «@username — Ism — rol» (operator, admin, rahbar yoki bo'lim "
     "nomi: Marketing, Menejer…) — hisobotlarda ismi bilan chiqadi; ikki akkaunt — bir xil ism. Username'i yo'q "
     "xodim — kontaktini shu botga ulashing yoki /xodimlar'dan keyin xabarini uzating, bot rolini so'raydi\n"
-    "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «kecha kimlar keladi dedi?», "
-    "«Malika vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi. Rahbarlar ham botga yozib so'raydi "
-    "(telefonlar yashirilgan, kuniga LEADER_DAILY_LIMIT ta savol)"
+    "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid "
+    "tushdi?», «kechagi hisobotni yubor», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «Malika "
+    "vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi, hisobot va Excel'ni shu chatga yuboradi. Rahbarlar "
+    "ham botga yozib so'raydi (telefonlar yashirilgan, kuniga LEADER_DAILY_LIMIT ta savol)\n"
+    "🤖 Bot haqida — «rahbarlar guruhida bugun nima deyishdi?», «bu oy qancha xarajat bo'ldi?», «hisobot soat "
+    "nechada ketadi?»: AI guruh yozishmalari (bot admin bo'lgan guruhlarda, 120 kun) va bot holatini ko'radi — "
+    "faqat sizga"
 )
 
 MODE_TEXT = (
@@ -1950,8 +1954,9 @@ async def check_budget(ctx: AppContext, bot: Bot) -> None:
 
 
 async def _report_tools(ctx: AppContext, uid: int):
-    """Hisobot vositalari: egasiga to'liq, rahbarga (parol bilan kirgan bo'lsa ham) telefonlarsiz; boshqalarga — yo'q.
-    Hisobot hali ishlatilmayotgan bo'lsa (lidlar guruhi ham, vazifa ham yo'q) — vositalar qo'shilmaydi."""
+    """Hisobot vositalari: egasiga to'liq (+ bot holati, guruh yozishmalari), rahbarga (parol bilan kirgan bo'lsa ham)
+    telefonlarsiz; boshqalarga — yo'q. Hisobot hali ishlatilmayotgan bo'lsa (lidlar guruhi ham, vazifa ham yo'q;
+    egasida — birorta ulangan guruh ham) — vositalar qo'shilmaydi."""
     reports = ctx.reports
     if reports is None:
         return None
@@ -1959,7 +1964,8 @@ async def _report_tools(ctx: AppContext, uid: int):
         owner = ctx.is_owner(uid)
         if not owner and "leader" not in await reports.store.roles_of(uid, None):
             return None
-        if not await reports.store.groups_with("leads") and not await reports.tasks.store.has_any():
+        in_use = await reports.store.groups_with("leads") or await reports.tasks.store.has_any()
+        if not in_use and not (owner and any(g.roles for g in await reports.store.groups(active_only=True))):
             return None
     except Exception:  # noqa: BLE001 — hisobot xatosi oddiy suhbatni to'xtatmasin
         log.exception("Hisobot vositalarini tayyorlashda xato")
@@ -2032,7 +2038,7 @@ async def leader_answer(message: Message, bot: Bot, ctx: AppContext) -> None:
             model = await pick_model(ctx, uid, [{"type": "text", "text": question}])
         if model == AUTO_MODEL:
             model = ctx.settings.economy_model
-        report_tools = reports.ai_tools(masked=True)
+        report_tools = reports.ai_tools(masked=True).bind(bot, chat_id, uid)
         messages = memory.history(uid) + [{"role": "user", "content": question}]
         listener = _Silent()
         typing = asyncio.create_task(_keep_typing(bot, chat_id))
@@ -2120,7 +2126,8 @@ async def _chat(
     report_tools = await _report_tools(ctx, uid)
     extra = load_mode_prompt(ctx.settings.modes_dir, s.mode) + "\n\n" + tools.TOOLS_GUIDE
     if report_tools is not None:
-        extra += "\n\n" + REPORT_GUIDE
+        report_tools.bind(bot, chat_id, uid)  # report_send — hisobot / Excel shu chatga
+        extra += "\n\n" + report_tools.guide()
     system = ctx.prompt.build(extra=extra)
 
     live = await LiveMessage.start(bot, chat_id, reply_to, label(model))

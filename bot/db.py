@@ -222,6 +222,19 @@ CREATE TABLE IF NOT EXISTS rp_journal (
     sent_at TEXT NOT NULL,             -- UTC
     text    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rp_messages (
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    user_id    INTEGER,                    -- yozgan odam (kanal nomidan bo'lsa — NULL)
+    name       TEXT    NOT NULL DEFAULT '', -- o'sha paytdagi ismi yoki kanal nomi
+    username   TEXT,
+    text       TEXT    NOT NULL,           -- matn, izoh yoki «[rasm]», «[ovozli xabar]» kabi belgi
+    reply_to   INTEGER,                    -- javob berilgan xabar
+    created_at TEXT    NOT NULL,           -- UTC
+    edited     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (chat_id, message_id)
+) WITHOUT ROWID;  -- v1.13: kuzatiladigan guruhlardagi yozishmalar (AI so'raganda; eskisi tozalanadi)
+CREATE INDEX IF NOT EXISTS idx_rp_messages_time ON rp_messages (created_at);
 CREATE TABLE IF NOT EXISTS rp_exports (
     key       TEXT PRIMARY KEY,        -- week:YYYY-MM-DD (dushanba) | month:YYYY-MM
     kind      TEXT NOT NULL,           -- week | month
@@ -824,11 +837,13 @@ class Database:
             size=row["size"], file_id=row["file_id"], path=row["path"], created_at=row["created_at"],
         )
 
-    async def spend_by_model(self, user_id: int, since: datetime) -> list[tuple[str, float, int]]:
+    async def spend_by_model(self, user_id: int | None, since: datetime) -> list[tuple[str, float, int]]:
+        """Modellar bo'yicha sarf; user_id=None — barcha foydalanuvchilar."""
+        where, params = ("created_at >= ?", (_iso(since),)) if user_id is None else (
+            "user_id = ? AND created_at >= ?", (user_id, _iso(since)))
         async with self._conn.execute(
-            "SELECT model, SUM(cost), COUNT(*) FROM usage_log WHERE user_id = ? AND created_at >= ?"
-            " GROUP BY model ORDER BY SUM(cost) DESC",
-            (user_id, _iso(since)),
+            f"SELECT model, SUM(cost), COUNT(*) FROM usage_log WHERE {where} GROUP BY model ORDER BY SUM(cost) DESC",
+            params,
         ) as cur:
             rows = await cur.fetchall()
         return [(row[0], float(row[1]), int(row[2])) for row in rows]

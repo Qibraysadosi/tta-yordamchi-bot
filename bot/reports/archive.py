@@ -55,6 +55,7 @@ log = logging.getLogger(__name__)
 
 ARCHIVE_SINCE_KEY = "report:archive_since"  # v1.9 ishga tushgan vaqt: undan oldingi davrlar avtomatik yuborilmaydi
 WEEK, MONTH = "week", "month"
+RANGE = "range"  # v1.13: AI so'ragan ixtiyoriy oraliq (bitta kun ham) — faqat so'ragan odamga, Arxivga yozilmaydi
 JOURNAL_LATE = timedelta(hours=4)  # bot o'chiq bo'lsa — kundalik shuncha kechikib ham yuboriladi
 SEND_RETRY = timedelta(minutes=10)  # kimgadir yetmasa — qayta urinish (har safar ikki baravar, MAX_RETRY gacha)
 MAX_RETRY = timedelta(hours=6)
@@ -102,6 +103,8 @@ def parse_key(key: str) -> tuple[str, date, date] | None:
 def period_label(kind: str, first: date, last: date) -> str:
     if kind == MONTH:
         return f"{MONTHS[first.month - 1].capitalize()} {first.year}"
+    if first == last:
+        return f"{first.day} {MONTHS[first.month - 1]} {first.year}"
     if (first.year, first.month) == (last.year, last.month):
         return f"{first.day}–{last.day} {MONTHS[first.month - 1]} {first.year}"
     if first.year == last.year:
@@ -144,6 +147,8 @@ class Period:
 
     @property
     def key(self) -> str:
+        if self.kind == RANGE:
+            return f"{RANGE}:{self.first:%Y-%m-%d}:{self.last:%Y-%m-%d}"
         return period_key(self.kind, self.first)
 
     @property
@@ -152,14 +157,18 @@ class Period:
 
     @property
     def title(self) -> str:
-        return ("Haftalik" if self.kind == WEEK else "Oylik") + " hisobot"
+        return {WEEK: "Haftalik hisobot", MONTH: "Oylik hisobot"}.get(self.kind, "Hisobot")
 
     @property
     def filename(self) -> str:
         if self.kind == WEEK:
             name = f"Haftalik_hisobot_{self.first:%Y-%m-%d}_{self.last:%Y-%m-%d}"
-        else:
+        elif self.kind == MONTH:
             name = f"Oylik_hisobot_{self.first:%Y-%m}"
+        elif self.first == self.last:
+            name = f"Hisobot_{self.first:%Y-%m-%d}"
+        else:
+            name = f"Hisobot_{self.first:%Y-%m-%d}_{self.last:%Y-%m-%d}"
         return name + ("_oraliq" if self.live else "") + ".xlsx"
 
 
@@ -597,11 +606,11 @@ class ArchiveService:
 
     async def send_to(self, bot: Bot, chat_id: int, kind: str, first: date, last: date, now: datetime,
                       *, masked: bool) -> Export:
-        """Qo'lda so'ralgan Excel (/excel, Mini App): faqat so'ragan odamga."""
+        """Qo'lda so'ralgan Excel (/excel, Mini App, AI): faqat so'ragan odamga. Oraliq (RANGE) Arxivga yozilmaydi."""
         export = await self.collect(kind, first, last, now)
         (data,) = await self.files(export, masked)
         await self.send_file(bot, chat_id, export, data, masked=masked)
-        if not export.period.live:
+        if not export.period.live and kind != RANGE:
             await self.store.save_export(export.period, export.summary, sent=False)
         return export
 

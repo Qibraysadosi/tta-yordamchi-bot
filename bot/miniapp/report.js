@@ -22,6 +22,7 @@
     leads: ['report', 'inbox', 'lid postlari va izohlar'],
     leaders: ['leader', 'eye', 'kunlik hisobot shu yerga'],
     tasks: ['task', 'listCheck', '«#vazifa» va «Bajardingizmi?»'],
+    vouchers: ['voucher', 'fileText', 'kim vaucherga yuborildi — AI ro\'yxat'],
   };
   const KIND = {
     operator: { title: 'Operator qo\'shish', hint: 'Lidlarga qo\'ng\'iroq qiladigan xodim (administrator ham). Hisobotda alohida qatorda ko\'rinadi.' },
@@ -348,7 +349,7 @@
       cache.people = people;
       const sc = s.schedule;
       const roleText = (g) => g.active && g.roles.length ? g.roles.map((r) => s.role_labels[r] || r).join(', ') : 'kuzatilmaydi';
-      const needsAdmin = (g) => g.active && (g.roles.indexOf('leads') >= 0 || g.roles.indexOf('tasks') >= 0) && !g.is_admin;
+      const needsAdmin = (g) => g.active && ['leads', 'tasks', 'vouchers'].some((r) => g.roles.indexOf(r) >= 0) && !g.is_admin;
       const leadersGroup = s.groups.some((g) => g.active && g.roles.indexOf('leaders') >= 0);
       let html = '<div class="title">Sozlamalar<small>Hisobotlar bo\'limi · faqat siz ko\'rasiz</small></div>';
 
@@ -470,10 +471,10 @@
           '<div class="sub">' + ui[2] + '</div></span>' +
           '<span class="switch"><input type="checkbox" data-rtoggle="r-role" data-chat="' + g.chat_id + '" data-role="' + role + '"' + (g.active && g.roles.indexOf(role) >= 0 ? ' checked' : '') + '><span></span></span></label>';
       };
-      const reads = g.roles.indexOf('leads') >= 0 || g.roles.indexOf('tasks') >= 0;
+      const reads = ['leads', 'tasks', 'vouchers'].some((r) => g.roles.indexOf(r) >= 0);
       openSheet('<h3 class="sheet-title">' + esc(g.title || String(g.chat_id)) + '</h3><p class="sheet-sub">' +
-        (reads ? (g.is_admin ? 'Bot guruhda admin ✅' : '⚠️ Bot admin emas — reaksiya va «#vazifa» xabarlarini ko\'rmaydi') : 'Guruh turini belgilang') + '</p>' +
-        '<div class="group">' + toggle('leads') + toggle('leaders') + toggle('tasks') + '</div>' +
+        (reads ? (g.is_admin ? 'Bot guruhda admin ✅' : '⚠️ Bot admin emas — reaksiya, «#vazifa» va vaucher xabarlarini ko\'rmaydi') : 'Guruh turini belgilang') + '</p>' +
+        '<div class="group">' + toggle('leads') + toggle('leaders') + toggle('tasks') + toggle('vouchers') + '</div>' +
         '<p class="note">Bot faqat «Vazifalar» guruhida «Bajardingizmi?» so\'rovlarini yozadi, qolganini jim o\'qiydi. Hammasi o\'chirilsa, guruh kuzatilmaydi.</p>');
     }
     function statusSheet(st) {

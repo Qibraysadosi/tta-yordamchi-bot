@@ -60,6 +60,8 @@ from .stats import (
 from .insights import REPEAT_GAP
 from .store import CHAT_KEEP_DAYS, Group, Lead, ReportStore, iso
 from .tasks import TaskService, task_body
+from .vouchers import ROLE as VOUCHER_ROLE
+from .vouchers import VoucherService, reply_id
 
 if TYPE_CHECKING:
     from ..handlers import AppContext
@@ -82,12 +84,15 @@ REMIND_GAP = timedelta(minutes=15)  # operatorlarga eslatmalar orasidagi eng kam
 REMIND_FAIL_GAP = timedelta(minutes=5)  # eslatma hech kimga yetmasa — qayta urinish
 FLUSH_BATCHES = 5
 REMIND_SHOWN = 10
-ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar", "tasks": "📋 Vazifalar"}
+ROLE_LABELS = {"leads": "📥 Lidlar", "leaders": "👔 Rahbarlar", "tasks": "📋 Vazifalar", "vouchers": "📄 Vaucherlar"}
 ROLE_HELP = (
     "📥 <b>Lidlar</b> — arizalar va operatorlar izohi tushadigan guruh: statuslar shu yerdan olinadi\n"
     "👔 <b>Rahbarlar</b> — kunlik hisobot shu guruhga yuboriladi\n"
-    "📋 <b>Vazifalar</b> — siz «#vazifa @username …» deb vazifa berasiz, bot muddatida «Bajardingizmi?» deb so'raydi"
+    "📋 <b>Vazifalar</b> — siz «#vazifa @username …» deb vazifa berasiz, bot muddatida «Bajardingizmi?» deb so'raydi\n"
+    "📄 <b>Vaucherlar</b> — kimni vaucherga yuborganingizni yozasiz (matn, rasm): AI o'qib ro'yxat qiladi, kunlik "
+    "hisobotda soni chiqadi"
 )
+VOUCHER_FLUSH = 10  # kunlik hisobotdan oldin tahlil qilinadigan vaucher postlari (ko'pi bilan)
 
 
 def _norm(emoji: str | None) -> str:
@@ -175,6 +180,7 @@ class ReportService:
         self.last_fallback = False  # oxirgi hisobot rahbarlar guruhiga bormay, egasiga yuborildimi
         self.tasks = TaskService(self)
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
+        self.vouchers = VoucherService(self)  # v1.14: «Vaucherlar» guruhi — AI ro'yxat
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
         self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
@@ -311,6 +317,15 @@ class ReportService:
                 if is_admin is False:
                     lines.append("⚠️ Bot bu guruhda admin emas — «#vazifa» xabarlarini ko'rmaydi. Botni admin qiling "
                                  "(huquqlar shart emas) yoki «/vazifa @username …» buyrug'idan foydalaning.")
+        if VOUCHER_ROLE in group.roles:
+            lines.append("📄 Vaucher xabarlari (matn va rasm) shu paytdan boshlab o'qiladi — AI ro'yxat qiladi: soni kunlik "
+                         "hisobotda, ro'yxati — /vaucher. Eski xabarlar: kompyuterdagi Telegram → guruh → ⋮ → Export chat "
+                         "history (JSON, rasmlar bilan) → papkani ZIP qilib shu botga yuboring.")
+            if "leads" not in group.roles and not self.bot_info.get("can_read_all", True):
+                is_admin = await self.check_admin(bot, group.chat_id)
+                if is_admin is False:
+                    lines.append("⚠️ Bot bu guruhda admin emas — xabarlarni ko'rmaydi. Botni admin qiling "
+                                 "(huquqlar shart emas).")
         return "\n".join(lines)
 
     async def on_bot_membership(self, update: ChatMemberUpdated, bot: Bot) -> None:
@@ -363,6 +378,11 @@ class ReportService:
         if not group.active or not group.roles:
             return
         await self._log_chat(message)
+        if VOUCHER_ROLE in group.roles:
+            try:
+                await self.vouchers.record(message)
+            except Exception:  # noqa: BLE001 — vaucher xatosi boshqa yozuvlarni to'xtatmasin
+                log.exception("Vaucher xabarini yozib bo'lmadi")
         user = message.from_user
         if user is not None and not user.is_bot and user.id != TELEGRAM_SERVICE_ID and message.sender_chat is None:
             await self.store.remember_user(user.id, user.username, user.full_name)
@@ -455,12 +475,10 @@ class ReportService:
             name, user_id, username = user.full_name, user.id, user.username
         else:
             return
-        reply = message.reply_to_message
         try:
             await self.store.log_message(
                 message.chat.id, message.message_id, user_id=user_id, name=name, username=username, text=content,
-                reply_to=reply.message_id if reply is not None and not reply.is_topic_message else None,
-                created_at=iso(message.date),
+                reply_to=reply_id(message), created_at=iso(message.date),
             )
         except Exception:  # noqa: BLE001
             log.exception("Guruh yozishmasini saqlab bo'lmadi")
@@ -480,6 +498,8 @@ class ReportService:
         content = chat_text(message)
         if content and not message.is_automatic_forward:
             await self.store.edit_logged(message.chat.id, message.message_id, content)
+        if VOUCHER_ROLE in group.roles:
+            await self.vouchers.record_edit(message)
         if not group.has("leads"):
             return
         text = message.text or message.caption or ""
@@ -697,6 +717,10 @@ class ReportService:
         await self.analyze_pending(FLUSH_BATCHES)
         overview = await self.overview(day, now)
         reasons = await self._grouped_reasons(overview) if overview.reasons else []
+        try:  # v1.14: vaucherlar — rasm ostidagi matnda va matnli hisobotda
+            overview.notes = await self.vouchers.report_lines(overview.start, min(overview.end, now))
+        except Exception:  # noqa: BLE001 — vaucher qismi chiqmasa ham hisobot ketsin
+            log.exception("Hisobotning vaucher qismi tayyorlanmadi")
         text = render_report(overview, reasons, interim_at=now if interim else None, late=late)
         return overview, text, reasons
 
@@ -773,6 +797,12 @@ class ReportService:
         """Hisobotni yuboradi. record (standart: interim emas bo'lsa) — kunlik hisobot: yetgach kun yopiladi;
         vaqtinchalik xatoda (tarmoq, 5xx, 429) o'sha chatga keyinroq qayta urinadi, darhol egasiga o'tkazmaydi."""
         record = (not interim) if record is None else record
+        if await self.store.groups_with(VOUCHER_ROLE):  # davr oxirigacha yozilgan vaucher postlari ham kirsin
+            try:
+                await self.vouchers.drain(bot, before=min(period_bounds(day, await self.schedule(), self.tz)[1], now),
+                                          limit=VOUCHER_FLUSH)
+            except Exception:  # noqa: BLE001
+                log.exception("Vaucher postlarini hisobotdan oldin tahlil qilib bo'lmadi")
         overview, text, reasons = await self.compose(day, now, interim=interim, late=late)
         card = await self.card(overview, reasons, interim=interim, late=late, now=now)
         await self.refresh_bot_info(bot)
@@ -895,6 +925,7 @@ class ReportService:
             ("kundalik", lambda: self.archive.check_journal(bot, now)),
             ("excel", lambda: self.archive.check_exports(bot, now)),
             ("yozishmalar", lambda: self.prune_chat(now)),
+            ("vaucherlar", lambda: self.vouchers.tick(bot, now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:
@@ -909,6 +940,7 @@ class ReportService:
         self._task = asyncio.create_task(self._loop(bot), name="reports")
 
     async def stop(self) -> None:
+        await self.vouchers.stop()
         if self._task is not None and not self._task.done():
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -270,6 +270,7 @@ class Overview:
     has_operator_list: bool
     lead_status: dict[int, str] = field(default_factory=dict)  # lid → so'nggi natija (Excel «Lidlar» varag'i)
     lead_people: dict[int, list[int]] = field(default_factory=dict)  # lid → belgilagan odamlar (Telegram ID)
+    notes: list[str] = field(default_factory=list)  # v1.14: hisobot oxiridagi qo'shimcha qatorlar (vaucherlar), HTML
 
     @property
     def totals(self) -> Row:

@@ -470,11 +470,11 @@ class ArchiveService:
         positive_label = " / ".join(f"{st.emoji} {st.label}" for st in positives) or "Asosiy natija"
 
         operators = []
-        if ov is not None:
+        if ov is not None:  # v1.14: davrda qo'ng'iroq qilmagan (0) operatorlar Excel'da ko'rsatilmaydi
             for listed, group in ((True, ov.rows), (False, ov.extras)):
                 operators += [OpLine(name=row.name, username=row.username, total=row.total, counts=dict(row.counts),
                                      positive=ov.positive(row), listed=listed, role=row.role, group=row.group)
-                              for row in group]
+                              for row in group if row.total]
 
         days: list[DayLine] = []
         for day in report_days(first, last, s):

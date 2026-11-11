@@ -1,5 +1,5 @@
 """Hisobot uchun Telegram yangilanishlari: guruhlar (jim yozib borish), bot a'zoligi, reaksiyalar
-va egasining buyruqlari (/hisobot, /guruhlar, /vazifa, /vazifalar, /kundalik, /excel, /xodimlar)."""
+va egasining buyruqlari (/hisobot, /guruhlar, /vazifa, /vazifalar, /kundalik, /excel, /xodimlar, /vaucher)."""
 from __future__ import annotations
 
 import contextlib
@@ -9,7 +9,7 @@ import time
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType, ParseMode
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import AiogramError, TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
@@ -28,6 +28,7 @@ from .render import split_message
 from .service import ROLE_LABELS, ReportService
 from .stats import display_day, period_bounds
 from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
+from .vouchers import IMPORT_LIMIT, IMPORT_WAIT, VoucherError
 
 log = logging.getLogger(__name__)
 
@@ -242,7 +243,8 @@ async def cmd_groups(message: Message, ctx) -> None:
     for group in groups:
         roles = ", ".join(ROLE_LABELS[r] for r in group.roles if r in ROLE_LABELS) if group.active else ""
         state = roles or "kuzatilmaydi"
-        admin = "" if not group.has("leads") else (" · admin ✅" if group.is_admin else " · admin emas ⚠️")
+        reads = group.has("leads") or group.has("vouchers")  # hamma xabarni o'qishi kerak
+        admin = "" if not reads else (" · admin ✅" if group.is_admin else " · admin emas ⚠️")
         title = html.escape(group.title or str(group.chat_id))
         lines.append(f"• <b>{title}</b> — {state}{admin}")
         rows.append([InlineKeyboardButton(text=f"⚙️ {group.title[:30] or group.chat_id}", callback_data=f"rgo:{group.chat_id}")])
@@ -678,6 +680,84 @@ async def cb_staff_contact(callback: CallbackQuery, bot: Bot, ctx) -> None:
                                              parse_mode=ParseMode.HTML, reply_markup=None)
 
 
+# ---------------------------------------------------------------------- v1.14: vaucherlar
+EXPORT_TOO_BIG = (
+    "⚠️ Fayl 20 MB dan katta — Telegram botlar bundan kattasini yuklab ololmaydi. Eksportni bo'lib qiling: "
+    "Export chat history → «From / To» sanalari (masalan, oyma-oy) yoki rasmlarsiz (faqat JSON) eksport qiling."
+)
+
+
+async def cmd_voucher(message: Message, ctx) -> None:
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    await service.ensure()
+    service.vouchers.waiting[message.from_user.id] = time.monotonic()  # keyingi ZIP — eksport sifatida tekshiriladi
+    await message.answer(await service.vouchers.overview_text(service.now()), parse_mode=ParseMode.HTML)
+
+
+async def is_voucher_export(message: Message, ctx) -> bool:
+    """Egasi Telegram Desktop eksportini yubordi (ZIP yoki result.json): nomidan («ChatExport…», «result.json») yoki
+    /vaucher'dan keyin 15 daqiqa ichida. Yangilanish kutilayotgan bo'lsa (/yangilash) — tegilmaydi."""
+    service = _service(ctx)
+    user, document = message.from_user, message.document
+    if service is None or user is None or document is None or not ctx.is_owner(user.id):
+        return False
+    if user.id in getattr(ctx, "awaiting_update", {}) or (message.caption or "").strip().lower().startswith("/yangilash"):
+        return False
+    name = (document.file_name or "").lower()
+    if not name.endswith((".zip", ".json")):
+        return False
+    if name == "result.json" or name.startswith("chatexport"):
+        return True
+    started = service.vouchers.waiting.get(user.id)
+    return started is not None and time.monotonic() - started <= IMPORT_WAIT
+
+
+async def on_voucher_export(message: Message, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    service.vouchers.waiting.pop(message.from_user.id, None)
+    document = message.document
+    if (document.file_size or 0) > IMPORT_LIMIT:
+        await message.answer(EXPORT_TOO_BIG)
+        return
+    status = await message.answer("📥 Eksport o'qilmoqda…")
+    try:
+        await service.ensure()
+        buffer = await bot.download(document.file_id, timeout=180)
+        result = await service.vouchers.import_export(buffer.read(), document.file_name or "", message.chat.id)
+    except VoucherError as exc:
+        await status.edit_text(f"⚠️ {exc}")
+        return
+    except AiogramError as exc:
+        log.warning("Eksportni yuklab bo'lmadi: %s", exc)
+        await status.edit_text("⚠️ Faylni Telegram'dan yuklab bo'lmadi — qayta yuboring.")
+        return
+    except Exception:  # noqa: BLE001
+        log.exception("Vaucher eksportini o'qishda xato")
+        await status.edit_text("⚠️ Eksportni o'qishda xato. Telegram Desktop'da JSON formatida qayta eksport qilib ko'ring.")
+        return
+    lines = [f"📥 <b>«{html.escape(result.title)}»</b>: eksportda {result.total} ta xabar — {result.new} tasi yangi"
+             + (f", {result.known} tasi avval bor edi" if result.known else "") + "."]
+    if result.photos or result.photos_missing:
+        line = f"🖼 Rasmlar: {result.photos} ta"
+        if result.photos_missing:
+            line += (f"; {result.photos_missing} tasi eksportga kirmagan (Export → «Photos» belgisi bilan qayta eksport "
+                     "qilsangiz, ular ham o'qiladi)")
+        lines.append(line)
+    if result.queued:
+        minutes = max(1, round(result.queued * 4 / 60))
+        cost = f"~${result.estimate_usd:.2f}" if result.estimate_usd >= 0.01 else "<$0.01"
+        lines.append(f"🤖 AI {result.queued} ta postni o'qiydi — taxminan {minutes} daqiqa, {cost}. Tugagach xabar beraman.")
+    else:
+        lines.append("Tahlil qilinadigan yangi xabar yo'q.")
+    await status.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    service.vouchers.kick(bot)
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -692,6 +772,8 @@ def build_router() -> Router:
     router.message.register(cmd_journal, Command("kundalik", "journal"), private)
     router.message.register(cmd_excel, Command("excel", "export"), private)
     router.message.register(cmd_staff, Command("xodimlar", "staff"), private, F.forward_origin.is_(None))
+    router.message.register(cmd_voucher, Command("vaucher", "voucher", "vaucherlar"), private)
+    router.message.register(on_voucher_export, private, is_voucher_export)
     router.message.register(on_contact, private, is_owner_contact)
     router.message.register(on_contact_rename, private, is_contact_rename)
     router.message.register(on_staff_list, private, is_staff_list)

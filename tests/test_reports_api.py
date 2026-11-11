@@ -121,7 +121,8 @@ def test_people_statuses_schedule_and_groups(tmp_path):
             assert [s["emoji"] for s in settings["statuses"]] == ["👍", "👎", "🆒", "🤔", "🤝", "💔"]
             assert settings["schedule"]["time"] == "19:00" and settings["schedule"]["days_label"] == "Du–Sh"
             assert settings["groups"] == [] and settings["model"] == "Haiku 5.5"
-            assert settings["role_labels"] == {"leads": "Lidlar", "leaders": "Rahbarlar", "tasks": "Vazifalar"}
+            assert settings["role_labels"] == {"leads": "Lidlar", "leaders": "Rahbarlar", "tasks": "Vazifalar",
+                                               "vouchers": "Vaucherlar"}
             fire = await api.call("POST", "/api/report/statuses", {"emoji": "🔥", "label": "juda qiziqdi", "positive": True})
             await api.call("POST", "/api/report/statuses", {"emoji": "🔥", "label": "takror"}, status=409)
             await api.call("POST", "/api/report/statuses", {"emoji": "", "label": "x"}, status=400)

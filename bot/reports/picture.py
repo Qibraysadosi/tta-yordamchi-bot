@@ -355,12 +355,13 @@ def _rows(c: Canvas, lay: Layout, y: float, rows: list[Row], **kwargs: Any) -> f
 
 
 def render_card(ov: Overview, *, interim_at: datetime | None = None, late: bool = False) -> bytes | None:
-    """Hisobot rasmi (PNG). Odam juda ko'p bo'lsa — None (matn yuboriladi)."""
-    people = len(ov.rows) + len(ov.leaders) + sum(len(m) for _, m in ov.departments) + min(len(ov.unlisted), UNLISTED_SHOWN)
+    """Hisobot rasmi (PNG). Odam juda ko'p bo'lsa — None (matn yuboriladi). v1.14: qo'ng'iroq qilmagan (0)
+    operatorlar ko'rsatilmaydi — faqat qo'ng'iroq qilganlar."""
+    shown = [row for row in ov.rows if row.total]
+    people = len(shown) + len(ov.leaders) + sum(len(m) for _, m in ov.departments) + min(len(ov.unlisted), UNLISTED_SHOWN)
     if people > MAX_PEOPLE:
         return None
     lay = Layout(ov)
-    shown = ov.rows if (ov.rows and (ov.totals.total or ov.has_operator_list)) else []
     unlisted = ov.unlisted[:UNLISTED_SHOWN]
     more = len(ov.unlisted) - len(unlisted)
     sections = [("👔", "Rahbarlar", "lidni o'zi belgilagan", ov.leaders, {"badge": False})] if ov.leaders else []

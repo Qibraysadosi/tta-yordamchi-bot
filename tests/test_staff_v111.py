@@ -1,5 +1,6 @@
 """v1.11: administratorlar va rahbarlar hisobotlarda ismi bilan; /xodimlar — bitta xabar bilan ro'yxat."""
 import json
+import time
 from collections import Counter
 
 import fakes
@@ -153,7 +154,7 @@ def test_waiting_list_does_not_swallow_questions(tmp_path):
             assert len(env.api.requests) == 1 and not reports.staff_waiting
             assert [p.name for p in await reports.store.people("operator")] == ["Malika"]
             # kutish tugagan: ro'yxat endi faqat /xodimlar bilan
-            reports.staff_waiting[OWNER] = 0.0  # 15 daqiqadan ko'p o'tgan
+            reports.staff_waiting[OWNER] = time.monotonic() - 3600  # 15 daqiqadan ko'p o'tgan
             env.api.responses.append(fakes.simple_answer("Tushunarli."))
             await env.send_text("@malika_op — Malika Aliyeva — admin")
             assert len(env.api.requests) == 2 and not reports.staff_waiting
@@ -301,7 +302,8 @@ def test_admin_mark_fits_name_column():
                   reasons=[], callbacks=0, has_operator_list=True)
     text = render_report(ov)
     table = text.split("<pre>")[1].split("</pre>")[0].splitlines()
-    assert table[1:4] == [f"{'Muhamm…*':<9}{3:>5}{3:>4}", f"{'Ali*':<9}{1:>5}{1:>4}", f"{'Sardor':<9}{0:>5}{0:>4}"]
+    assert table[1:3] == [f"{'Muhamm…*':<9}{3:>5}{3:>4}", f"{'Ali*':<9}{1:>5}{1:>4}"]
+    assert table[3].startswith("─") and "Sardor" not in text  # v1.14: qo'ng'iroq qilmagan (0) — jadvalda yo'q
     assert text.count("👔 Rahbar:") == 5 and "👔 … va yana 2 rahbar" in text and "Ro'yxatda yo'q" not in text
     # faqat rahbarlar belgilagan, operatorlar ro'yxati yo'q — «qayd etilmadi» deyilmaydi
     only = Overview(day=WED, start=local(WED, "09:00"), end=local(WED, "19:00"), live=False, statuses=statuses,

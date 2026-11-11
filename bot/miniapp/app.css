@@ -415,6 +415,7 @@ a { color: var(--link); }
 
 /* --- vazifalar --- */
 .tile.task { background: #2563eb; }
+.tile.voucher { background: #d97706; }
 .seg {
   display: flex; gap: 4px; padding: 4px; margin: 2px 0 4px; border-radius: 12px;
   background: color-mix(in srgb, var(--text) 7%, transparent);

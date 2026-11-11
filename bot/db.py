@@ -235,6 +235,56 @@ CREATE TABLE IF NOT EXISTS rp_messages (
     PRIMARY KEY (chat_id, message_id)
 ) WITHOUT ROWID;  -- v1.13: kuzatiladigan guruhlardagi yozishmalar (AI so'raganda; eskisi tozalanadi)
 CREATE INDEX IF NOT EXISTS idx_rp_messages_time ON rp_messages (created_at);
+CREATE TABLE IF NOT EXISTS rp_voucher_posts (   -- v1.14: «Vaucherlar» guruhi postlari va AI tahlil navbati
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    album       TEXT,                       -- albom (media_group_id; eksportda «imp:<id>»): bir post — bir nechta xabar
+    user_id     INTEGER,                    -- yozgan xodim
+    name        TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,           -- UTC
+    text        TEXT    NOT NULL DEFAULT '',
+    photos      TEXT    NOT NULL DEFAULT '[]', -- JSON: [{"file_id": …}] yoki eksportdan [{"path": …}]
+    reply_to    INTEGER,
+    source      TEXT    NOT NULL DEFAULT 'live', -- live | import (Telegram Desktop eksporti)
+    state       TEXT    NOT NULL DEFAULT 'pending', -- pending | done | skipped | failed
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    result      TEXT,                       -- AI javobi (JSON)
+    analyzed_at TEXT,
+    PRIMARY KEY (chat_id, message_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_rp_voucher_posts_state ON rp_voucher_posts (state, created_at);
+CREATE TABLE IF NOT EXISTS rp_vouchers (        -- v1.14: vaucherga yuborilgan odamlar
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,           -- odam birinchi yozilgan post
+    created_at  TEXT    NOT NULL,           -- o'sha post vaqti (UTC)
+    sender_id   INTEGER,                    -- yuborgan xodim
+    sender_name TEXT    NOT NULL DEFAULT '',
+    name        TEXT    NOT NULL DEFAULT '',
+    name_key    TEXT    NOT NULL DEFAULT '', -- solishtirish uchun (lotin, kichik harf, so'zlar tartibi farqsiz)
+    phone       TEXT    NOT NULL DEFAULT '',
+    course      TEXT    NOT NULL DEFAULT '',
+    district    TEXT    NOT NULL DEFAULT '',
+    mahalla     TEXT    NOT NULL DEFAULT '',
+    pinfl       TEXT    NOT NULL DEFAULT '', -- JSHSHIR
+    passport    TEXT    NOT NULL DEFAULT '',
+    status      TEXT    NOT NULL DEFAULT 'sent', -- sent | approved | rejected | studying | finished | other
+    status_at   TEXT    NOT NULL,
+    status_msg  INTEGER,                    -- holatni yozgan xabar
+    note        TEXT    NOT NULL DEFAULT '',
+    updated_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rp_vouchers_chat ON rp_vouchers (chat_id, created_at);
+CREATE TABLE IF NOT EXISTS rp_voucher_events (  -- v1.14: holat o'zgarishlari (kunlik hisobot shu davrdagilarni sanaydi)
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    voucher_id INTEGER NOT NULL,
+    status     TEXT    NOT NULL,
+    at         TEXT    NOT NULL,            -- UTC (holat yozilgan xabar vaqti)
+    chat_id    INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    UNIQUE (voucher_id, message_id, status)
+);
+CREATE INDEX IF NOT EXISTS idx_rp_voucher_events_at ON rp_voucher_events (at);
 CREATE TABLE IF NOT EXISTS rp_exports (
     key       TEXT PRIMARY KEY,        -- week:YYYY-MM-DD (dushanba) | month:YYYY-MM
     kind      TEXT NOT NULL,           -- week | month

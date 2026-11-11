@@ -18,7 +18,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from ..prompt import WEEKDAYS, uz_date
-from . import insights
+from . import insights, vouchers
 from .excel import format_phone, hide_numbers, mask_phone
 from .insights import InsightError
 from .leads import message_link
@@ -42,11 +42,11 @@ if TYPE_CHECKING:
     from .service import ReportService
 
 BASE_TOOLS = ("report_stats", "report_leads", "task_status")
-SHARED_TOOLS = BASE_TOOLS + ("report_breakdown", "report_send")  # egasi va rahbar
+SHARED_TOOLS = BASE_TOOLS + ("report_breakdown", "report_send", "voucher_list")  # egasi va rahbar
 OWNER_TOOLS = ("bot_status", "group_messages")  # v1.13: faqat egasi
 TOOL_NAMES = SHARED_TOOLS + OWNER_TOOLS
 STATUS_TEXT = {"report_send": "📤 Hisobot tayyorlanmoqda…", "bot_status": "⚙️ Bot holati tekshirilmoqda…",
-               "group_messages": "💬 Guruh yozishmalari o'qilmoqda…"}
+               "group_messages": "💬 Guruh yozishmalari o'qilmoqda…", "voucher_list": "📄 Vaucherlar o'qilmoqda…"}
 PERIODS = ("today", "yesterday", "this_week", "last_week", "this_month", "last_month", "day", "range")
 LEADS_LIMIT, LEADS_MAX = 30, 100
 TASKS_LIMIT, TASKS_MAX = 20, 100
@@ -66,6 +66,7 @@ REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar
 - Odamlar: operators — jadvaldagi operatorlar (position=administrator — administrator, operatorlar bilan birga sanaladi); leaders — lidni o'zi belgilagan rahbarlar; other_departments — boshqa bo'limlar xodimlari (position — bo'lim nomi, masalan Marketing); not_in_operator_list — ro'yxatda yo'qlar. Rahbar va bo'limlar ham sanaladi (alohida). Umumiy son — hammasining yig'indisi. accounts — bir odamning bir nechta akkaunti (bitta odam sifatida sanaladi).
 - Kesimlar va tahlil (qaysi kurs, tuman, yosh yoki soatda lid ko'p va natija yaxshi; kunlar dinamikasi; lid tushgandan birinchi qo'ng'iroqqacha necha daqiqa; kim lidni birinchi olgan) — report_breakdown. Xulosa va tavsiyani raqamlarga tayanib ayt.
 - Hisobot yoki fayl so'ralsa («kunlik hisobotni yubor», «o'tgan hafta Excel», «1–15 noyabr Excel») — report_send: kind=daily — kunlik hisobot (rasm), bitta kun; kind=excel — hafta, oy yoki oraliq. Fayl chatga o'zi boradi: javobda 1–2 jumla yetarli, raqamlarni qayta sanab o'tirma. Faqat raqam so'ralsa — fayl yuborma.
+- Vaucherga yuborilganlar («bu hafta kimlarni vaucherga yubordik?», «Malika nechta odam yubordi?», «kimlar tasdiqlandi / rad etildi?») — voucher_list: «Vaucher» guruhidagi xabar va rasmlardan AI ajratgan ro'yxat.
 - Javob qisqa bo'lsin: avval asosiy raqam, keyin kerak bo'lsa ro'yxat. Ro'yxat uzun bo'lsa — eng muhimlari va «yana N ta». Statusni ma'nosi bilan yoz (👍 keladi).
 - Vazifa holati: ✅ bajarildi (kim yopgani bilan), ❌ «Yo'q» dedi, 🔔 so'raldi — javob kutilmoqda, ⚠️ javob bermadi, 🔴 muddati o'tdi, ⏳ muddati kelmagan.
 - Vosita «error» qaytarsa, sababini qisqa ayt; odam topilmasa, ro'yxatdagi ismlardan mosini taklif qil."""
@@ -248,7 +249,8 @@ class ReportTools:
 
     # -------------------------------------------------------------- schema
     def specs(self) -> list[dict]:
-        specs = self._base_specs() + insights.shared_specs(_PERIOD_PROPS, masked=self.masked)
+        specs = (self._base_specs() + insights.shared_specs(_PERIOD_PROPS, masked=self.masked)
+                 + [vouchers.voucher_spec(_PERIOD_PROPS, masked=self.masked)])
         if not self.masked:
             specs += insights.owner_specs(_PERIOD_PROPS)
         return [spec for spec in specs if spec["name"] in self.names]
@@ -309,13 +311,13 @@ class ReportTools:
     async def run(self, name: str, args: dict) -> str:
         handlers = {"report_stats": self.stats, "report_leads": self.leads, "task_status": self.tasks,
                     "report_breakdown": self.breakdown, "report_send": self.send, "bot_status": self.bot_status,
-                    "group_messages": self.group_messages}
+                    "group_messages": self.group_messages, "voucher_list": self.voucher_list}
         handler = handlers.get(name) if name in self.names else None
         if handler is None:
             raise ReportToolError(f"Noma'lum vosita: {name}")
         try:
             data = await handler(args)
-        except (ReportToolError, InsightError) as exc:
+        except (ReportToolError, InsightError, vouchers.VoucherError) as exc:
             data = {"error": str(exc)}
         return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
@@ -588,6 +590,14 @@ class ReportTools:
             self.sent -= 1
             self.reports.release_send(user_id, key)
             raise
+
+    # -------------------------------------------------------------- v1.14: vaucherlar
+    async def voucher_list(self, args: dict) -> dict:
+        reports = self.reports
+        await reports.ensure()
+        now = reports.now()
+        window = resolve_window(args, now, await reports.schedule())
+        return await vouchers.voucher_list(reports.vouchers, window, args, now, masked=self.masked)
 
     # -------------------------------------------------------------- v1.13: faqat egasiga
     async def bot_status(self, args: dict) -> dict:

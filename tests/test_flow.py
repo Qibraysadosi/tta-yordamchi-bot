@@ -86,6 +86,9 @@ class Env:
         return self
 
     async def close(self):
+        reports = getattr(self.ctx, "reports", None)
+        if reports is not None:  # fon vazifasi (vaucher tahlili) yopilgan bazaga yozmasin
+            await reports.vouchers.stop()
         await self.db.close()
 
     def _msg(self, user_id, **fields):

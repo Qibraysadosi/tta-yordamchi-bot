@@ -58,10 +58,11 @@ def _name(row: Row) -> str:
 
 
 def table(ov: Overview) -> str:
+    """Operatorlar jadvali — faqat qo'ng'iroq qilganlar (v1.14: 0 lik qatorlar chiqmaydi); JAMI — hammasi."""
     cols = ov.columns()
     lines = ["Operator".ljust(NAME_WIDTH) + "Jami".rjust(5) + "".join("  " + c for c in cols)]
     width = NAME_WIDTH + 5 + 4 * len(cols)
-    for row in ov.rows:
+    for row in (r for r in ov.rows if r.total):
         lines.append(_name(row) + str(row.total).rjust(5) + "".join(str(row.counts.get(c, 0)).rjust(4) for c in cols))
     total = ov.totals
     lines.append("─" * width)
@@ -104,15 +105,15 @@ def render_caption(ov: Overview, reasons: list[tuple[str, int]] | None = None, *
         lines.append(head)
     else:
         lines.append("Bu davrda qo'ng'iroq qayd etilmadi.")
-    return "\n".join(lines + _summary(ov, reasons))
+    return "\n".join(lines + _summary(ov, reasons) + ov.notes)
 
 
 def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
                   interim_at: datetime | None = None, late: bool = False) -> str:
     lines = _head(ov, interim_at, late) + [""]
-    if ov.rows and (ov.totals.total or ov.has_operator_list):
+    if any(row.total for row in ov.rows):
         lines.append(table(ov))
-        if any(row.admin for row in ov.rows):
+        if any(row.admin and row.total for row in ov.rows):
             lines.append(ADMIN_LEGEND)
     elif not ov.extras:
         lines.append("Bu davrda qo'ng'iroq qayd etilmadi.")
@@ -136,7 +137,7 @@ def render_report(ov: Overview, reasons: list[tuple[str, int]] | None = None, *,
         lines.append(f"➕ Ro'yxatda yo'q: {who} — {row.total} ta lid" + (f" ({detail})" if detail else ""))
     if len(unlisted) > EXTRAS_SHOWN:
         lines.append(f"➕ … va yana {len(unlisted) - EXTRAS_SHOWN} kishi")
-    return "\n".join(lines + _summary(ov, reasons))
+    return "\n".join(lines + _summary(ov, reasons) + ov.notes)
 
 
 def _summary(ov: Overview, reasons: list[tuple[str, int]] | None) -> list[str]:

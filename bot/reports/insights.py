@@ -40,8 +40,8 @@ SECTIONS = ("all", "activity", "costs", "users", "staff", "groups", "settings", 
 AGE_BUCKETS = ((0, 17, "17 va kichik"), (18, 24, "18–24"), (25, 34, "25–34"), (35, 44, "35–44"), (45, 99, "45+"))
 UNKNOWN = "noma'lum"
 ROLE_WORDS = {"leads": ("lid", "lidlar", "leads", "izoh"), "leaders": ("rahbar", "rahbarlar", "leaders", "direktor"),
-              "tasks": ("vazifa", "vazifalar", "tasks")}
-ROLE_NAMES = {"leads": "lidlar", "leaders": "rahbarlar", "tasks": "vazifalar"}
+              "tasks": ("vazifa", "vazifalar", "tasks"), "vouchers": ("vaucher", "vaucherlar", "voucher", "vouchers")}
+ROLE_NAMES = {"leads": "lidlar", "leaders": "rahbarlar", "tasks": "vazifalar", "vouchers": "vaucherlar"}
 DISTRICT_NOISE = {"tumani", "tuman", "t", "sh", "shahri", "shahar", "r-n", "rayon", "район", "district", "viloyati"}
 _APOS = str.maketrans({c: "'" for c in "ʻʼ‘’`´"})
 
@@ -377,6 +377,7 @@ async def _activity(service: "ReportService", now: datetime) -> dict:
     return {"today_from_00_00": {"leads_and_posts": counts["leads"], "reactions": counts["reactions"],
                                  "lead_comments": counts["comments"], "group_messages": sum(messages.values())},
             "comments_waiting_analysis": await store.pending_count(),
+            "voucher_posts_waiting_analysis": await service.vouchers.store.pending_count(),
             "tasks": await service.tasks.store.task_counts(iso(now))}
 
 

@@ -269,7 +269,8 @@ def test_bot_status(tmp_path):
             assert "section" in (await ask(tools, "bot_status", section="hamma"))["error"]
 
             hidden = reports.ai_tools(masked=True)  # rahbarga — yo'q
-            assert hidden.names == ("report_stats", "report_leads", "task_status", "report_breakdown", "report_send")
+            assert hidden.names == ("report_stats", "report_leads", "task_status", "report_breakdown", "report_send",
+                                    "voucher_list")
             assert [s["name"] for s in hidden.specs()] == list(hidden.names)
             with pytest.raises(ReportToolError):
                 await hidden.run("bot_status", {})

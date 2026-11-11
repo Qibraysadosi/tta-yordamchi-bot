@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from ..db import Database
 
-ROLES = ("leads", "leaders", "tasks")
+ROLES = ("leads", "leaders", "tasks", "vouchers")
 PEOPLE_KINDS = ("operator", "excluded", "leader", "staff")  # staff (v1.12) — boshqa bo'lim: title = bo'lim nomi
 ADMIN = "admin"  # operator lavozimi: administrator — jadvalda operatorlar bilan, ismi yonida belgi
 TITLES = ("", ADMIN)

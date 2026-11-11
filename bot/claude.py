@@ -387,11 +387,12 @@ class ClaudeService:
         return level, numbers, cost_usd(model, numbers)
 
     async def complete_json(
-        self, model: str, system: str, payload: str, max_tokens: int = 4000
+        self, model: str, system: str, payload: str | list[dict], max_tokens: int = 4000
     ) -> tuple[Any, dict[str, int], float]:
         """Bitta oqimsiz so'rov, javobdan JSON (massiv yoki obyekt) ajratiladi. JSON bo'lmasa — None.
 
-        Hisobot tahlili uchun (izohlarni tasniflash): fikrlash o'chiq (Haiku), effort past."""
+        Hisobot tahlili uchun (izohlarni tasniflash, vaucher xabarlari): fikrlash o'chiq (Haiku), effort past.
+        payload — matn yoki kontent bloklari (matn + rasmlar)."""
         extra: dict[str, Any] = {"thinking": {"type": "disabled"}} if model in CLASSIFY_NO_THINKING else {}
         try:
             response = await self.client.messages.create(

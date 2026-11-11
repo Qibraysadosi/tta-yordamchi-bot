@@ -270,7 +270,9 @@ def test_long_report_is_sent_in_parts(tmp_path):
             store = env.ctx.reports.store
             for i in range(140):
                 await store.add_person("operator", username=None, user_id=10_000 + i, name=f"Operator {i}")
-            await g.post(CARD_1, ts(WED, "09:00"))
+            lead = await g.post(CARD_1, ts(WED, "09:00"))
+            for i in range(140):  # v1.14: jadvalda faqat qo'ng'iroq qilganlar — hammasi belgilaydi
+                await g.react(lead["message_id"], person(10_000 + i, f"Operator {i}"), "👍", ts(WED, "10:00"))
             assert await env.ctx.reports.check_daily(env.bot, local(WED, "19:02"))
             parts = texts(env, LEADERS)
             assert len(parts) >= 2 and all(len(t) < 4096 for t in parts)

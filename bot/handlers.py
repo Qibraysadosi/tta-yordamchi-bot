@@ -94,6 +94,7 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="kundalik", description="📓 Kundalik: bugungi raqamlar va vazifalar"),
     BotCommand(command="excel", description="📊 Haftalik / oylik Excel hisobot"),
     BotCommand(command="xodimlar", description="🧑‍💼 Xodimlar: operator, admin, rahbar (ismlari)"),
+    BotCommand(command="vaucher", description="📄 Vaucherga yuborilganlar, eski xabarlarni yuklash"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
@@ -174,6 +175,8 @@ ADMIN_HELP = (
     "🧑‍💼 /xodimlar — xodimlar ro'yxati; bitta xabarda «@username — Ism — rol» (operator, admin, rahbar yoki bo'lim "
     "nomi: Marketing, Menejer…) — hisobotlarda ismi bilan chiqadi; ikki akkaunt — bir xil ism. Username'i yo'q "
     "xodim — kontaktini shu botga ulashing yoki /xodimlar'dan keyin xabarini uzating, bot rolini so'raydi\n"
+    "📄 /vaucher — vaucherga yuborilganlar (bugun, hafta, oy): «📄 Vaucherlar» guruhidagi xabar va rasmlarni AI o'qiydi; "
+    "eski xabarlar — Telegram Desktop eksporti (ZIP) shu chatga\n"
     "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid "
     "tushdi?», «kechagi hisobotni yubor», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «Malika "
     "vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi, hisobot va Excel'ni shu chatga yuboradi. Rahbarlar "
@@ -1964,7 +1967,8 @@ async def _report_tools(ctx: AppContext, uid: int):
         owner = ctx.is_owner(uid)
         if not owner and "leader" not in await reports.store.roles_of(uid, None):
             return None
-        in_use = await reports.store.groups_with("leads") or await reports.tasks.store.has_any()
+        in_use = (await reports.store.groups_with("leads") or await reports.tasks.store.has_any()
+                  or await reports.store.groups_with("vouchers"))
         if not in_use and not (owner and any(g.roles for g in await reports.store.groups(active_only=True))):
             return None
     except Exception:  # noqa: BLE001 — hisobot xatosi oddiy suhbatni to'xtatmasin

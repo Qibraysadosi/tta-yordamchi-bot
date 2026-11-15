@@ -90,7 +90,7 @@ def test_auth_and_me(tmp_path):
             me = await app.get("/api/me")
             assert me["user"] == {"id": OWNER, "name": "Shohrux", "username": "shohrux", "is_owner": True}
             assert me["version"] == "1.1.0" and me["settings"]["model"] == "claude-opus-5-5"
-            assert [m["id"] for m in me["models"]][:2] == ["auto", "claude-fable-5-1"]
+            assert [m["id"] for m in me["models"]][:3] == ["auto", "claude-fable-5-2", "claude-fable-5-1"]
             assert me["modes"][0]["key"] == "oddiy" and me["budget"]["monthly"] == 100.0
             assert me["conversation"]["title"] == "Yangi suhbat" and me["webapp_url"].endswith("/yordamchi/")
 

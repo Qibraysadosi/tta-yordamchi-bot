@@ -1,8 +1,8 @@
-📄 v1.14.0 — Vaucherlar guruhi
-• Botni vaucher guruhiga qo'shing (admin qiling) va «📄 Vaucherlar» deb belgilang — xodimlar yozgan xabar va rasmlarni AI o'qiydi
-• Har odam: F.I.Sh., telefon, kurs, tuman, mahalla, JSHSHIR / pasport, kim va qachon yubordi, holati (tasdiqlandi, rad etildi…)
-• Bir odam bir marta sanaladi (kirill / lotin ism ham taniladi); holat — post ostidagi javobdan
-• Kunlik hisobotda: «📄 Vaucher: N ta yuborildi — kim nechta · ✅ tasdiqlandi»; /vaucher — bugun, hafta, oy
-• Eski xabarlar: Telegram Desktop → Export chat history (JSON, rasmlar bilan) → ZIP'ni botga yuboring
-• AI'dan so'rang: «bu hafta kimlarni vaucherga yubordik?» (rahbarlarga — telefon va JSHSHIR'siz)
-• Call center hisobotida (rasm, matn, Excel) endi faqat qo'ng'iroq qilganlar — 0 talar ko'rinmaydi
+💡 v1.15.0 — Kunlik tavsiya (AI)
+• Har ish kuni 20:30 da Fable 5.2 kun natijalari, lidlar, izohlar, guruh yozishmalari, vaucher va vazifalarni ko'rib, sizga lichkada nimani yaxshilashni yozadi
+• Bo'limlar: 🎯 asosiy xulosa, 📣 reklama (qaysi kurs, hudud, yosh, soatni kuchaytirish), 📞 call center (ismi bilan), 📄 vaucher, 📋 vazifalar
+• Operatorlar uchun tayyor xabar — alohida: guruhga uzatasiz (bot operatorlarga o'zi yubormaydi)
+• /tavsiya — so'nggi kun bo'yicha, /tavsiya bugun — hozirgi holat, /tavsiya 21:00 — vaqti, /tavsiya o'chir; tavsiyaga javob yozsangiz — AI davom ettiradi
+• Mini App: Sozlamalar → «Kunlik tavsiya (AI)», Arxiv → «Tavsiya»; xarajat /xarajat da «💡 Kunlik tavsiya» qatorida (~$0.3–0.7 / kun)
+• Reklama xarajati hali yo'q — tavsiya lidlar oqimidan; Meta Ads ulanishi — keyingi paket
+• /model menyusida yangi Fable 5.2 ($8 / $40 — Fable 5.1 dan kuchli va arzon)

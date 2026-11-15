@@ -115,9 +115,12 @@ class Settings:
     leader_daily_limit: int = 30  # rahbarning AI'ga kunlik savollari (0 — cheklanmagan)
     update_probation: int = 30  # yangi versiya shuncha soniya ishlab tursa — yangilanish muvaffaqiyatli
     backup_day: int | None = 0  # avtomatik zaxira kuni: 0 — dushanba … 6 — yakshanba; None — har kuni
+    advice_model: str = "claude-fable-5-2"  # v1.15: kunlik tavsiya — hisobot, lidlar va yozishmalarni tahlil qiladi
+    advice_effort: str = "high"  # kunlik tavsiya uchun fikrlash darajasi: low | medium | high
 
 
 OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
+ADVICE_EFFORTS = ("low", "medium", "high")  # kunlik tavsiya: xhigh / max — bitta tahlil uchun ortiqcha qimmat
 DEFAULT_GITHUB_REPO = "Qibraysadosi/tta-yordamchi-bot"
 
 
@@ -163,9 +166,14 @@ def load_settings() -> Settings:
     quick_model = _env("QUICK_MODEL", "claude-haiku-5-5")
     economy_model = _env("ECONOMY_MODEL", "claude-haiku-5-5")
     report_model = _env("REPORT_MODEL", "claude-haiku-5-5")
-    for name, value in (("QUICK_MODEL", quick_model), ("ECONOMY_MODEL", economy_model), ("REPORT_MODEL", report_model)):
+    advice_model = _env("ADVICE_MODEL", "claude-fable-5-2")
+    for name, value in (("QUICK_MODEL", quick_model), ("ECONOMY_MODEL", economy_model), ("REPORT_MODEL", report_model),
+                        ("ADVICE_MODEL", advice_model)):
         if value not in MODELS:
             raise ConfigError(f"{name} quyidagilardan biri bo'lsin: {', '.join(MODELS)}")
+    advice_effort = _env("ADVICE_EFFORT", "high").lower()
+    if advice_effort not in ADVICE_EFFORTS:
+        raise ConfigError(f"ADVICE_EFFORT quyidagilardan biri bo'lsin: {', '.join(ADVICE_EFFORTS)}")
 
     backup_time: str | None = _env("BACKUP_TIME", "03:30")
     if backup_time.lower() in ("off", "none", "0", "yoq", "yo'q"):
@@ -259,4 +267,6 @@ def load_settings() -> Settings:
         leader_daily_limit=_int("LEADER_DAILY_LIMIT", 30, 0, 10_000),
         update_probation=_int("UPDATE_PROBATION", 30, 0, 600),
         backup_day=_backup_day(),
+        advice_model=advice_model,
+        advice_effort=advice_effort,
     )

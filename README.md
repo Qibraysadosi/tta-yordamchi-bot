@@ -11,10 +11,11 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Xodimlar ismi bilan (🧑‍💼 /xodimlar, v1.11–1.12):** operator, administrator, rahbar va boshqa bo'limlarni (Marketing, Menejer…) bitta xabar bilan qo'shasiz (`@username — Ism — rol`) — hisobotlarda Telegram nomi emas, siz yozgan ism chiqadi: administrator jadvalda operatorlar bilan, lidni o'zi belgilagan rahbar va bo'lim xodimlari — alohida qatorlarda. Bir odamning ikki akkaunti (shaxsiy va ish) — bitta odam
 - **Hisobot rasmi (v1.12):** kunlik hisobot jadvali chiroyli rasm bo'lib keladi (to'liq ismlar, rangli status ustunlari, natija chizig'i, JAMI), ostida qisqa matn — yangi lidlar, kurslar, izohlardan. Rasmni bot o'zi kod bilan chizadi (raqamlar aniq); o'chirish — Mini App → Sozlamalar → «Rasm ko'rinishida»
 - **AI'dan hisobot so'rash (v1.10, v1.13):** chatda oddiy yozing — «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid tushdi?», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «rahbarlar guruhida bugun nima deyishdi?», «bu oy qancha xarajat bo'ldi?» — bot hisobot, guruh yozishmalari va o'z holatini o'qib javob beradi, kunlik hisobot yoki Excel'ni shu chatga yuboradi. Rahbarlar ham botga yozib so'raydi (telefon raqamlari yashirilgan). Batafsil — pastda «AI'dan hisobot so'rash»
+- **Kunlik tavsiya (💡 /tavsiya, v1.15):** har ish kuni 20:30 da eng kuchli model (Fable 5.2) kun natijalari, lidlar, operator izohlari, guruh yozishmalari, vaucher va vazifalarni ko'rib chiqib, sizga lichkada nimani yaxshilash kerakligini yozadi: reklama (qaysi kurs, hudud, yosh, soatni kuchaytirish, qaysi mavzuda reklama berish), call center (operatorlar ismi bilan), vaucher, vazifalar; operatorlarga uzatish uchun tayyor xabar — alohida. Batafsil — pastda «Kunlik tavsiya»
 - **Vaucherlar (📄 /vaucher, v1.14):** botni vaucher guruhiga qo'shasiz — xodimlar kimni vaucherga yuborganini yozadi va rasm tashlaydi, AI har xabar va rasmni o'qib ro'yxat qiladi (F.I.Sh., telefon, kurs, tuman, mahalla, JSHSHIR / pasport, holati); kunlik hisobotda «📄 Vaucher: N ta», kim nechta yubordi. Eski xabarlar — Telegram Desktop eksporti (ZIP). Batafsil — pastda «Vaucherlar»
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
-- **Modellar:** Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
+- **Modellar:** Fable 5.2, Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5 — `/model` bilan almashtiriladi; **✨ Avto** savol murakkabligiga qarab arzon yoki kuchli modelni o'zi tanlaydi
 - **Ish rejimlari:** `/rejim` — rasmiy xat (TKHTA nomidan), Instagram post, Meta reklama, tarjimon, dasturchi
 - **Javob ostidagi tugmalar:** 🔄 qayta, ✂️ qisqartirish, 🌐 tarjima (uz/ru/en), 📄 Word fayl, 🔡 kirill yozuvi
 - **Suhbatlar tarixi:** `/tarix` — eski suhbatlar ro'yxati va qidiruv, istalganiga qaytib davom ettirish
@@ -82,6 +83,7 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/excel` (`/export`) | Haftalik yoki oylik Excel hisobot: o'tgan / shu hafta, o'tgan / shu oy |
 | `/xodimlar` (`/staff`) | Xodimlar ro'yxati; bitta xabarda qo'shish: har qatorga `@username — Ism — rol` (operator, admin, rahbar, istisno, o'chir). Username'i yo'q xodim — kontaktini botga ulashing |
 | `/vaucher` (`/voucher`) | Vaucherga yuborilganlar: bugun, hafta, oy, kim nechta yubordi; keyin Telegram Desktop eksporti (ZIP) yuborilsa — eski xabarlar ham o'qiladi |
+| `/tavsiya` (`/advice`) | Kunlik AI tavsiya: so'nggi tugagan hisobot kuni bo'yicha (har ish kuni 20:30 da o'zi keladi); `/tavsiya bugun` — hozirgi holat, `/tavsiya 21:00` — vaqti, `/tavsiya o'chir` / `yoq` |
 
 ## Mini App (Telegram ichidagi ilova)
 
@@ -187,6 +189,22 @@ Xodimlar alohida guruhga kimni kasb-hunar vaucheriga (sertifikat.mehnat.uz) yubo
 5. **/vaucher** — bugun, shu hafta, shu oy (kalendar kunlar), kim ko'p yubordi, tahlil navbati. **AI'dan so'rash**: «bu hafta kimlarni vaucherga yubordik?», «Malika nechta odam yubordi?», «kimlar rad etildi va nega?» — ro'yxat F.I.Sh., telefon, kurs, holati va xabarga havola bilan. Rahbarlarga telefonlar yashirilgan, JSHSHIR va pasport ko'rsatilmaydi.
 
 **Eski xabarlar** (bot guruhga qo'shilishidan oldingilari — Telegram botlarga tarixni bermaydi): kompyuterdagi **Telegram Desktop**'da guruhni oching → ⋮ → **Export chat history** → «Photos» belgilangan, Format: **JSON** → Export. Chiqqan papkani ZIP qiling va botga yuboring (fayl nomi «ChatExport…» bo'lsa — darhol taniydi; boshqa nom bo'lsa — avval /vaucher). Telegram botlar 20 MB dan katta faylni yuklab ololmaydi — katta bo'lsa «From / To» sanalari bilan bo'lib (masalan, oyma-oy) yoki rasmlarsiz eksport qiling. Bot nechta xabar va rasm qabul qilganini, taxminiy vaqt va xarajatni aytadi, tahlil tugagach xabar beradi; avval qo'shilgan xabarlar takrorlanmaydi. Eksport rasmlari faqat tahlil uchun saqlanadi va keyin o'chiriladi. Xarajat kam (arzon model; importda bot taxminiy summani oldindan aytadi) — `/xarajat` da «📊 Guruh tahlili» qatorida.
+
+## Kunlik tavsiya
+
+Har ish kuni (hisobot kunlari) **20:30** da sizga lichkada «💡 Kunlik tavsiya» keladi: eng kuchli model (`ADVICE_MODEL`, standart **Fable 5.2**) botdagi ma'lumotni ko'rib chiqadi va ertadan nimani o'zgartirish kerakligini raqamlarga tayanib yozadi.
+
+**Nimani ko'radi:** shu kungi hisobot (operatorlar, statuslar, kurslar, rad sabablari), shu kungi lidlar va operator izohlari, lid tushgandan birinchi qo'ng'iroqqacha daqiqalar, so'nggi 14 kun dinamikasi, so'nggi 30 kun kesimlari (kurs, tuman, yosh, soat, hafta kuni, operator), ulangan guruhlardagi shu kungi yozishmalar, vaucherga yuborilganlar, vazifalar, xodimlar va guruhlar holati, oldingi kunlardagi o'z tavsiyalari (takrorlamaslik uchun).
+
+**Nima yozadi:** 🎯 asosiy xulosa · 📣 reklama — qaysi kurs, hudud, yosh yoki soatni kuchaytirish, nimani kamaytirish, qaysi mavzuda yangi reklama yoki post kerak (lidlarning savol va e'tirozlaridan) · 📞 call center — operatorlar ismi bilan: tezlik, belgilanmagan lidlar, qayta qo'ng'iroqlar · 📄 vaucher · 📋 vazifalar · ⚠️ e'tibor bering. Operatorlarga aytadigan gap bo'lsa — **alohida xabar**: uni call center guruhiga uzatasiz (forward); operatorlarga bot o'zi yubormaydi.
+
+**Reklama xarajati** (summa, ko'rishlar, lid narxi) hozircha botda yo'q — reklama bo'yicha tavsiya lidlar oqimi va natijasidan. Meta Ads ulanishi — keyingi alohida paket. Modelga telefon raqamlar, JSHSHIR va pasport yuborilmaydi.
+
+**Boshqarish:** `/tavsiya` — so'nggi tugagan hisobot kuni bo'yicha (tayyor bo'lsa — saqlangani, bepul; «🔄 Qayta tahlil qilish» tugmasi — yangidan); `/tavsiya bugun` — kun tugamasdan, hozirgi holat; `/tavsiya 21:00` — vaqtini o'zgartirish; `/tavsiya o'chir` / `/tavsiya yoq`. Mini App → Hisobotlar → Sozlamalar → «Kunlik tavsiya (AI)»; o'tgan tavsiyalar — Arxiv → «Tavsiya». Vaqt hisobot vaqtidan oldin bo'lsa (masalan, 09:00) — oldingi hisobot kuni bo'yicha keladi. Bot o'chiq bo'lsa — 4 soat ichida keladi.
+
+**Davomi:** tavsiya xabariga javob (reply) qilib yozing — «reklama matnini yozib ber», «Malikaga nima deyay?» — AI shu tavsiya va hisobot vositalari bilan davom ettiradi. «Kechagi tavsiyada nima deyilgan edi?» degan savolga ham javob beradi.
+
+**Xarajat:** bitta tahlil taxminan $0.3–0.7 (Fable 5.2: kirish $8, chiqish $40 / 1M token; fikrlash ham chiqishga kiradi), oyiga taxminan $8–18. Aniq summa — har tavsiya ostida va `/xarajat` da «💡 Kunlik tavsiya» qatorida. Fable 5.2 ishlamasa (masalan, API kalitga ruxsat yo'q) — botning asosiy modeli tayyorlaydi va xabarda aytiladi; kredit tejamkor rejim chegarasiga yetsa — tejamkor model. Model va fikrlash darajasi `.env` da: `ADVICE_MODEL` (standart `claude-fable-5-2`) va `ADVICE_EFFORT` (`low` / `medium` / `high`, standart `high`).
 
 ## AI'dan hisobot so'rash
 
@@ -325,7 +343,8 @@ Botning xulq-atvori `prompts/system.md` faylida. Uni tahrirlasangiz, keyingi xab
 
 | Model | Narx, 1M token (kirish / chiqish) | Qachon |
 |---|---|---|
-| Fable 5.1 | $10 / $50 | Eng og'ir mantiqiy masalalar |
+| Fable 5.2 | $8 / $40 | Eng kuchli: eng og'ir masalalar, kunlik tavsiya |
+| Fable 5.1 | $10 / $50 | Oldingi Fable (5.2 kuchliroq va arzonroq) |
 | Opus 5.5 | $4 / $20 | Ko'p ishlar uchun asosiy (standart) |
 | Sonnet 5.5 | $2 / $10 | Tez va yetarlicha kuchli |
 | Haiku 5.5 | $0.10 / $0.50 | Oddiy, tez ishlar |

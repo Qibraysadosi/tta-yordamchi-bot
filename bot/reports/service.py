@@ -40,6 +40,7 @@ from aiogram.types import (
 
 from ..claude import ClaudeError
 from . import analysis
+from .advisor import ADVICE_NAME, ADVICE_UID, AdvisorService
 from .analysis import USAGE_NAME, USAGE_UID
 from .archive import ARCHIVE_SINCE_KEY, ArchiveService
 from .assistant import LeaderMemory, ReportTools
@@ -181,6 +182,7 @@ class ReportService:
         self.tasks = TaskService(self)
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
         self.vouchers = VoucherService(self)  # v1.14: «Vaucherlar» guruhi — AI ro'yxat
+        self.advisor = AdvisorService(self)  # v1.15: kunlik AI tavsiya (egasiga)
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
         self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
@@ -571,7 +573,7 @@ class ReportService:
 
     async def usage_names(self) -> dict[int, str]:
         """Xarajat hisobotidagi nomlar: guruh tahlili va AI'ga savol bergan rahbarlar."""
-        names = {USAGE_UID: USAGE_NAME}
+        names = {USAGE_UID: USAGE_NAME, ADVICE_UID: ADVICE_NAME}
         for person in await self.store.people("leader"):
             if person.user_id is not None and person.user_id not in self.owners():  # egasi o'z nomi bilan qoladi
                 names[person.user_id] = f"👔 {person.label}"
@@ -926,6 +928,7 @@ class ReportService:
             ("excel", lambda: self.archive.check_exports(bot, now)),
             ("yozishmalar", lambda: self.prune_chat(now)),
             ("vaucherlar", lambda: self.vouchers.tick(bot, now)),
+            ("tavsiya", lambda: self.advisor.check(bot, now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:
@@ -941,6 +944,7 @@ class ReportService:
 
     async def stop(self) -> None:
         await self.vouchers.stop()
+        await self.advisor.stop()
         if self._task is not None and not self._task.done():
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

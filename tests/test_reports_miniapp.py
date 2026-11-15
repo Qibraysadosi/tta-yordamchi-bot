@@ -273,7 +273,7 @@ def test_archive_tab(tmp_path):
                 page, base = await open_page(api)
                 await page.goto(base + "#r-arch")
                 await settled(page)
-                assert await page.locator(".seg button").all_inner_texts() == ["Kunlik", "Haftalik", "Oylik", "Kundalik"]
+                assert await page.locator(".seg button").all_inner_texts() == ["Kunlik", "Haftalik", "Oylik", "Kundalik", "Tavsiya"]
                 text = await page.evaluate(TEXT)
                 assert "19–25 oktabr 2026" in text and "joriy" in text and "28 sentabr – 4 oktabr 2026" in text
                 assert "rahbarlar guruhiga (telefon raqamlari yashirilgan) va sizga (to'liq)" in text

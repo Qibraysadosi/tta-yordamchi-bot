@@ -200,18 +200,21 @@ class ClaudeService:
         effort: str | None,
         web_search: bool,
         tools: list[dict] | None = None,
+        cache: bool = True,
     ) -> dict[str, Any]:
-        cache_control: dict[str, str] = {"type": "ephemeral"}
-        if self.cache_ttl == "1h":
-            cache_control["ttl"] = "1h"
         params: dict[str, Any] = {
             "model": model,
             "max_tokens": self.max_tokens,
             "system": system,
             "messages": messages,
-            # Avtomatik kesh: takrorlanuvchi suhbat tarixi 10–40 baravar arzon o'qiladi
-            "cache_control": cache_control,
         }
+        if cache:
+            # Avtomatik kesh: takrorlanuvchi suhbat tarixi 10–40 baravar arzon o'qiladi.
+            # cache=False — bir martalik so'rov (kunlik tavsiya): keshga yozish 25% qimmat, foydasi yo'q
+            cache_control: dict[str, str] = {"type": "ephemeral"}
+            if self.cache_ttl == "1h":
+                cache_control["ttl"] = "1h"
+            params["cache_control"] = cache_control
         if effort:
             params["output_config"] = {"effort": effort}
         all_tools: list[dict] = []
@@ -240,6 +243,7 @@ class ClaudeService:
         listener: StreamListener,
         tools: list[dict] | None = None,
         tool_runner: ToolRunner | None = None,
+        cache: bool = True,
     ) -> TurnResult:
         assistant_blocks: list[Any] = []  # javobning barcha bloklari (matn tarixga shu yerdan olinadi)
         pending_blocks: list[Any] = []  # pause_turn: to'xtagan javobni o'zgarishsiz qaytarib, davom ettiramiz
@@ -260,7 +264,8 @@ class ClaudeService:
             if pending_blocks:
                 convo.append({"role": "assistant", "content": list(pending_blocks)})
             params = self.build_params(
-                model=model, system=system, messages=convo, effort=effort, web_search=web_search, tools=tools
+                model=model, system=system, messages=convo, effort=effort, web_search=web_search, tools=tools,
+                cache=cache,
             )
             try:
                 async with self.client.messages.stream(**params) as stream:

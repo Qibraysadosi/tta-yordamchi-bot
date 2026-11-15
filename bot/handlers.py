@@ -95,8 +95,11 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="excel", description="📊 Haftalik / oylik Excel hisobot"),
     BotCommand(command="xodimlar", description="🧑‍💼 Xodimlar: operator, admin, rahbar (ismlari)"),
     BotCommand(command="vaucher", description="📄 Vaucherga yuborilganlar, eski xabarlarni yuklash"),
+    BotCommand(command="tavsiya", description="💡 Kunlik AI tavsiya: nimani yaxshilash kerak"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
+# Bot yuborgan, lekin suhbat tarixida yo'q xabarlar: ularga javob (reply) yozilsa, matni iqtibos qilinadi
+REPORT_QUOTE_PREFIXES = ("💡 Kunlik tavsiya", "📊 KUNLIK HISOBOT", "📊 HISOBOT (oraliq)", "📓 KUNDALIK")
 BUSY_QUEUED_TEXT = "⏳ Oldingi xabaringiz hali ishlanmoqda — bu xabar navbatga qo'yildi."
 PASSWORD_KEY = "password_hash"
 
@@ -177,6 +180,9 @@ ADMIN_HELP = (
     "xodim — kontaktini shu botga ulashing yoki /xodimlar'dan keyin xabarini uzating, bot rolini so'raydi\n"
     "📄 /vaucher — vaucherga yuborilganlar (bugun, hafta, oy): «📄 Vaucherlar» guruhidagi xabar va rasmlarni AI o'qiydi; "
     "eski xabarlar — Telegram Desktop eksporti (ZIP) shu chatga\n"
+    "💡 /tavsiya — kunlik AI tavsiya: har ish kuni 20:30 da kuchli model (standart Fable 5.2) kun natijalari, lidlar, "
+    "yozishmalar, vaucher va vazifalarni ko'rib, nimani yaxshilashni yozadi (reklama, call center). «/tavsiya bugun» — "
+    "hozirgi holat; «/tavsiya 21:00» — vaqti; «/tavsiya o'chir». Tavsiyaga javob (reply) yozsangiz — AI davom ettiradi\n"
     "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid "
     "tushdi?», «kechagi hisobotni yubor», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «Malika "
     "vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi, hisobot va Excel'ni shu chatga yuboradi. Rahbarlar "
@@ -1712,12 +1718,16 @@ async def on_attachment(message: Message, bot: Bot, ctx: AppContext) -> None:
 
 
 def _quoted(message: Message, bot_id: int) -> str | None:
-    """Foydalanuvchi boshqa xabarga javob qaytarsa (reply), o'sha matnni ham qo'shamiz."""
+    """Foydalanuvchi boshqa xabarga javob qaytarsa (reply), o'sha matnni ham qo'shamiz. Botning o'z javoblari suhbat
+    tarixida bor — qo'shilmaydi; kunlik tavsiya, hisobot va kundalik esa tarixda yo'q — ular qo'shiladi."""
     if message.quote is not None and message.quote.text:
         return message.quote.text.strip()
     reply = message.reply_to_message
-    if reply is not None and (reply.from_user is None or reply.from_user.id != bot_id):
-        content = (reply.text or reply.caption or "").strip()
+    if reply is None:
+        return None
+    content = (reply.text or reply.caption or "").strip()
+    own = reply.from_user is not None and reply.from_user.id == bot_id
+    if not own or content.startswith(REPORT_QUOTE_PREFIXES):
         return content[:4000] or None
     return None
 

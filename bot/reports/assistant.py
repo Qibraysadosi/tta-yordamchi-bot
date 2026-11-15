@@ -73,7 +73,8 @@ REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar
 
 OWNER_GUIDE = """Bot va guruhlar (faqat egasi uchun):
 - Xarajat, foydalanuvchilar, xodimlar ro'yxati, guruhlar (bot admini, oxirgi faollik), sozlamalar (hisobot vaqti, modellar, zaxira), yuborilgan hisobotlar, bugungi faollik — bot_status (kerakli section bilan).
-- Guruhlarda kim nima yozgani («rahbarlar guruhida bugun nima deyishdi?», «Malika kecha nima yozdi?», «kim narx haqida so'radi?») — group_messages. Avval qisqa xulosa, keyin muhim xabarlar vaqti va muallifi bilan. Botning o'z sozlamalarini o'zgartira olmaysan — buning uchun buyruqlar va Mini App bor."""
+- Guruhlarda kim nima yozgani («rahbarlar guruhida bugun nima deyishdi?», «Malika kecha nima yozdi?», «kim narx haqida so'radi?») — group_messages. Avval qisqa xulosa, keyin muhim xabarlar vaqti va muallifi bilan. Botning o'z sozlamalarini o'zgartira olmaysan — buning uchun buyruqlar va Mini App bor.
+- Kunlik tavsiya: bot har ish kuni kechqurun egasiga «💡 Kunlik tavsiya» yuboradi (kuchli model kun ma'lumotlarini alohida tahlil qiladi; /tavsiya). Egasi unga javob (reply) yozsa, matni [Iqtibos] ichida keladi — shu asosda davom et, raqamlarni vositalar bilan tekshir. Oldingi tavsiyalar matni — bot_status (section=advice)."""
 
 LEADER_PROMPT = """Sen TTA o'quv markazining call center hisobotlari va vazifalari bo'yicha yordamchisan. Rahbar bilan gaplashyapsan.
 Bugungi sana: {sana}.
@@ -234,6 +235,7 @@ class ReportTools:
         self.names = SHARED_TOOLS if masked else TOOL_NAMES
         self.target: tuple[Any, int, int] | None = None  # (bot, chat_id, so'ragan odam)
         self.sent = 0  # shu navbatda yuborilgan hisobot / fayllar
+        self.clock = lambda: self.reports.now()  # «hozir»; kunlik tavsiya (advisor.py) aniq vaqtni beradi
 
     def bind(self, bot: Any, chat_id: int, user_id: int) -> "ReportTools":
         self.target = (bot, chat_id, user_id)
@@ -329,11 +331,18 @@ class ReportTools:
         reports = self.reports
         await reports.ensure()
         s = await reports.schedule()
-        now = reports.now()
+        now = self.clock()
         if not await reports.store.groups_with("leads"):
             raise ReportToolError("Lidlar guruhi hali ulanmagan — call center ma'lumoti yo'q")
         await reports.analyze_pending(ANALYZE_BATCHES)  # yangi izohlar ham hisobga kirsin
-        return resolve_window(args, now, s), s, now
+        return self._window(args, now, s), s, now
+
+    @staticmethod
+    def _window(args: dict, now: datetime, s: Schedule) -> Window:
+        """Davr: odatda savoldagi period; kunlik tavsiya (advisor.py) tayyor Window beradi («_window» — faqat koddan,
+        model JSON orqali Window obyektini yubora olmaydi)."""
+        ready = args.get("_window")
+        return ready if isinstance(ready, Window) else resolve_window(args, now, s)
 
     @staticmethod
     def _labels(ov: Overview) -> dict[str, str]:
@@ -506,7 +515,7 @@ class ReportTools:
         await reports.ensure()
         service = reports.tasks
         store = service.store
-        now = reports.now()
+        now = self.clock()
         status = str(args.get("status") or "all")
         if status in (OPEN, "overdue"):
             items = await store.tasks(OPEN, 1000)
@@ -595,19 +604,19 @@ class ReportTools:
     async def voucher_list(self, args: dict) -> dict:
         reports = self.reports
         await reports.ensure()
-        now = reports.now()
-        window = resolve_window(args, now, await reports.schedule())
+        now = self.clock()
+        window = self._window(args, now, await reports.schedule())
         return await vouchers.voucher_list(reports.vouchers, window, args, now, masked=self.masked)
 
     # -------------------------------------------------------------- v1.13: faqat egasiga
     async def bot_status(self, args: dict) -> dict:
         await self.reports.ensure()
-        return await insights.bot_status(self.reports, args, self.reports.now())
+        return await insights.bot_status(self.reports, args, self.clock())
 
     async def group_messages(self, args: dict) -> dict:
         reports = self.reports
         await reports.ensure()
-        now = reports.now()
+        now = self.clock()
         window = resolve_window({**args, "calendar": True}, now, await reports.schedule())  # yozishma — kalendar kun
         return await insights.group_messages(reports, window, args, now)
 

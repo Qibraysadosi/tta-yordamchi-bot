@@ -1,6 +1,6 @@
 """Claude modellari va ularning narxlari.
 
-Narxlar ($ / 1M token) rasmiy sahifadan olingan (2026-10-12):
+Narxlar ($ / 1M token) rasmiy sahifadan olingan (2026-11-15; Fable 5.2 — 2026-11-09 da chiqqan):
 https://platform.claude.com/docs/en/about-claude/pricing
 Narx o'zgarsa, faqat shu faylni yangilang.
 """
@@ -42,7 +42,8 @@ class ModelSpec:
 MODELS: dict[str, ModelSpec] = {
     spec.id: spec
     for spec in (
-        ModelSpec("claude-fable-5-1", "Fable 5.1", "eng kuchli, sekinroq", Rates(10, 50, 12.5, 20, 0.25)),
+        ModelSpec("claude-fable-5-2", "Fable 5.2", "eng kuchli, sekinroq", Rates(8, 40, 10, 16, 0.20)),
+        ModelSpec("claude-fable-5-1", "Fable 5.1", "oldingi Fable, qimmatroq", Rates(10, 50, 12.5, 20, 0.25)),
         ModelSpec("claude-opus-5-5", "Opus 5.5", "kuchli, o'rtacha tezlik", Rates(4, 20, 5, 8, 0.20)),
         ModelSpec("claude-sonnet-5-5", "Sonnet 5.5", "tez va arzonroq", Rates(2, 10, 2.5, 4, 0.10)),
         ModelSpec(
@@ -59,7 +60,7 @@ MODELS: dict[str, ModelSpec] = {
 }
 
 # /model menyusida ko'rinadiganlar
-SELECTABLE_MODELS = ("claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+SELECTABLE_MODELS = ("claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
 # Avto: har savol uchun model murakkablikka qarab tanlanadi (sozlama sifatida saqlanadi, API'ga yuborilmaydi)
 AUTO_MODEL = "auto"
 AUTO_LABEL = "✨ Avto"

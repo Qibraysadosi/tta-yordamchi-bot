@@ -27,7 +27,7 @@ DESCRIPTION = (
     "📎 Rasm, PDF, Word va Excel fayllarni o'qiydi\n"
     "📄 Word, Excel, PowerPoint va PDF fayllar yaratadi\n"
     "🔎 Yangi ma'lumotni internetdan topadi\n"
-    "🧠 Fable 5.1, Opus 5.5, Sonnet 5.5 va Haiku 5.5 modellari\n\n"
+    "🧠 Fable 5.2, Opus 5.5, Sonnet 5.5 va Haiku 5.5 modellari\n\n"
     "🔒 Bot parol bilan ishlaydi: «Start» ni bosing va parolni yuboring."
 )
 # Bot profilida va havolani ulashganda ko'rinadi (≤ 120 belgi)

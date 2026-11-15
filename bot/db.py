@@ -285,6 +285,17 @@ CREATE TABLE IF NOT EXISTS rp_voucher_events (  -- v1.14: holat o'zgarishlari (k
     UNIQUE (voucher_id, message_id, status)
 );
 CREATE INDEX IF NOT EXISTS idx_rp_voucher_events_at ON rp_voucher_events (at);
+CREATE TABLE IF NOT EXISTS rp_advice (          -- v1.15: kunlik AI tavsiyalar (egasiga) — hisobot kuniga bitta
+    day        TEXT PRIMARY KEY,           -- hisobot kuni YYYY-MM-DD
+    created_at TEXT NOT NULL,              -- UTC: tahlil qilingan vaqt
+    sent_at    TEXT,                       -- egasiga yetgan vaqt (NULL — hali yuborilmagan)
+    model      TEXT NOT NULL DEFAULT '',
+    text       TEXT NOT NULL,              -- tavsiya matni (Markdown)
+    staff_text TEXT NOT NULL DEFAULT '',   -- operatorlarga uzatish uchun tayyor xabar
+    note       TEXT NOT NULL DEFAULT '',   -- izoh (masalan, zaxira model ishlatildi)
+    cost       REAL NOT NULL DEFAULT 0,    -- USD
+    interim    INTEGER NOT NULL DEFAULT 0  -- davr tugamasdan so'ralgan (/tavsiya bugun)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS rp_exports (
     key       TEXT PRIMARY KEY,        -- week:YYYY-MM-DD (dushanba) | month:YYYY-MM
     kind      TEXT NOT NULL,           -- week | month

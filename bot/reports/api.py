@@ -16,6 +16,7 @@ from aiohttp import web
 
 from ..models import label
 from ..prompt import MONTHS, WEEKDAYS
+from .advisor import plain_text
 from .archive import MONTH, WEEK, parse_key
 from .excel import hide_numbers
 from .service import ROLE_LABELS, ReportService
@@ -30,9 +31,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal"}
+ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal", "advice"}
+OWNER_KINDS = {"journal": "Kundalik faqat bot egasiga ko'rinadi.", "advice": "Tavsiyalar faqat bot egasiga ko'rinadi."}
 SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
-                   "journal_time", "weekly_enabled", "monthly_enabled", "excel_time", "picture")
+                   "journal_time", "weekly_enabled", "monthly_enabled", "excel_time", "picture", "advice_enabled",
+                   "advice_time")
 TAG_RE = re.compile(r"<[^>]+>")
 SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
@@ -299,6 +302,7 @@ class ReportAPI:
                     "has_main_web_app": bool(service.bot_info.get("has_main_web_app")),
                     "can_read_all": bool(service.bot_info.get("can_read_all"))},
             "model": label(self.ctx.settings.report_model),
+            "advice_model": service.advisor.model_label(),
             "last_report": await store.last_report(),
             "diag": await store.counts_since(since),
             "operators_dm": sum(1 for p in operators if p.dm_ok),
@@ -560,8 +564,8 @@ class ReportAPI:
         kind = request.query.get("kind", "weekly")
         if kind not in ARCHIVE_KINDS:
             kind = "weekly"
-        if kind == "journal" and not owner:
-            return _error("Kundalik faqat bot egasiga ko'rinadi.", 403, "forbidden")
+        if kind in OWNER_KINDS and not owner:
+            return _error(OWNER_KINDS[kind], 403, "forbidden")
         archive = service.archive
         now = service.now()
         items: list[dict] = []
@@ -580,12 +584,19 @@ class ReportAPI:
                 sent = archive.local(entry["sent_at"])
                 items.append({"key": f"journal:{entry['day']}", "label": _day_label(day),
                               "sent_label": f"{sent:%d.%m %H:%M}" if sent else None})
+        elif kind == "advice":
+            for advice in await service.advisor.store.latest():
+                sent = archive.local(advice.sent_at)
+                items.append({"key": f"advice:{advice.day.isoformat()}", "label": _day_label(advice.day),
+                              "sent_label": f"{sent:%d.%m %H:%M}" if sent else None, "interim": advice.interim,
+                              "model": label(advice.model)})
         else:
             items = await archive.periods(WEEK if kind == "weekly" else MONTH, now)
             if not owner:
                 items = [dict(item, summary=_masked_summary(item.get("summary"))) for item in items]
         schedule = await service.schedule()
         return _json({"kind": kind, "items": items, "schedule": _schedule(schedule), "owner": owner,
+                      "advice_model": service.advisor.model_label(),
                       "has_groups": bool(await service.store.groups_with("leads")),
                       "leaders_group": bool(await service.store.groups_with("leaders"))})
 
@@ -600,6 +611,17 @@ class ReportAPI:
                 return _error("Kundalik topilmadi", 404, "not_found")
             day = datetime.strptime(entry["day"], "%Y-%m-%d").date()
             return _json({"key": key, "kind": "journal", "label": _day_label(day), "text": _plain(entry["text"])})
+        if key.startswith("advice:"):
+            if not request[self.access_key].get("owner"):
+                return _error(OWNER_KINDS["advice"], 403, "forbidden")
+            advice = await service.advisor.store.get(key.partition(":")[2])
+            if advice is None:
+                return _error("Tavsiya topilmadi", 404, "not_found")
+            sent = service.archive.local(advice.sent_at)
+            return _json({"key": key, "kind": "advice", "label": _day_label(advice.day), "text": plain_text(advice.text),
+                          "staff_text": plain_text(advice.staff_text), "note": advice.note, "interim": advice.interim,
+                          "model": label(advice.model), "cost": round(advice.cost, 2),
+                          "sent_label": f"{sent:%d.%m %H:%M}" if sent else None})
         await service.ensure()
         period = await self._period(key)
         if period is None:

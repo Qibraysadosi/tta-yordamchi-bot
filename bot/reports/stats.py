@@ -53,6 +53,8 @@ class Schedule:
     monthly_enabled: bool = True  # oylik Excel — oyning 1-sanasi
     excel_time: str = "09:00"
     picture: bool = True  # v1.12: kunlik hisobot jadvali rasm bo'lib (ostida qisqa matn); False — oldingidek matn
+    advice_enabled: bool = True  # v1.15: kunlik AI tavsiya — egasiga lichkada (ish kunlari)
+    advice_time: str = "20:30"  # kunlik hisobot (19:00) va kundalikdan (20:00) keyin
 
     @classmethod
     def from_json(cls, raw: str | None) -> "Schedule":
@@ -89,6 +91,8 @@ class Schedule:
             monthly_enabled=bool(data.get("monthly_enabled", self.monthly_enabled)),
             excel_time=_hhmm(data.get("excel_time", self.excel_time), self.excel_time),
             picture=bool(data.get("picture", self.picture)),
+            advice_enabled=bool(data.get("advice_enabled", self.advice_enabled)),
+            advice_time=_hhmm(data.get("advice_time", self.advice_time), self.advice_time),
         )
 
     def to_json(self) -> str:
@@ -100,7 +104,7 @@ class Schedule:
             "remind_minutes": self.remind_minutes, "work_start": self.work_start, "work_end": self.work_end,
             "journal_enabled": self.journal_enabled, "journal_time": self.journal_time,
             "weekly_enabled": self.weekly_enabled, "monthly_enabled": self.monthly_enabled, "excel_time": self.excel_time,
-            "picture": self.picture,
+            "picture": self.picture, "advice_enabled": self.advice_enabled, "advice_time": self.advice_time,
         }
 
     def days_label(self) -> str:

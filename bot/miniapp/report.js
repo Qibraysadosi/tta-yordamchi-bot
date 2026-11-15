@@ -17,7 +17,8 @@
   };
   const TFILTERS = [['open', 'Ochiq'], ['done', 'Bajarilgan'], ['cancelled', 'Bekor qilingan']];
   // arxiv bo'limlari: [tur, yozuv, faqat egasi]
-  const AKINDS = [['daily', 'Kunlik'], ['weekly', 'Haftalik'], ['monthly', 'Oylik'], ['journal', 'Kundalik', true]];
+  const AKINDS = [['daily', 'Kunlik'], ['weekly', 'Haftalik'], ['monthly', 'Oylik'], ['journal', 'Kundalik', true], ['advice', 'Tavsiya', true]];
+  const OWNER_KINDS = ['journal', 'advice'];  // faqat egasiga ko'rinadigan arxiv bo'limlari (lidlar guruhisiz ham ochiladi)
   const ROLE_UI = {
     leads: ['report', 'inbox', 'lid postlari va izohlar'],
     leaders: ['leader', 'eye', 'kunlik hisobot shu yerga'],
@@ -223,16 +224,16 @@
     async function renderArchive(live) {
       const isOwner = owner();
       let k = cache.archKind || 'weekly';
-      if (k === 'journal' && !isOwner) k = 'weekly';
+      if (OWNER_KINDS.indexOf(k) >= 0 && !isOwner) k = 'weekly';
       $screen.innerHTML = '<div class="title">Arxiv</div>' + skeleton(5);
       const d = await api('api/report/archive?kind=' + k);
       if (!live()) return;
       cache.archive = d;
       const sc = d.schedule;
-      let html = '<div class="title">Arxiv<small>Hisobotlar, Excel fayllar' + (isOwner ? ' va kundalik' : '') + '</small></div>';
-      html += '<div class="seg" role="tablist">' + AKINDS.filter((x) => !x[2] || isOwner).map((x) => '<button role="tab" aria-selected="' + (x[0] === k) +
+      let html = '<div class="title">Arxiv<small>Hisobotlar, Excel fayllar' + (isOwner ? ', kundalik va AI tavsiyalar' : '') + '</small></div>';
+      html += '<div class="seg' + (isOwner ? ' dense' : '') + '" role="tablist">' + AKINDS.filter((x) => !x[2] || isOwner).map((x) => '<button role="tab" aria-selected="' + (x[0] === k) +
         '" class="' + (x[0] === k ? 'on' : '') + '" data-action="r-akind" data-k="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
-      if (k !== 'journal' && !d.has_groups) {
+      if (OWNER_KINDS.indexOf(k) < 0 && !d.has_groups) {
         $screen.innerHTML = html + noGroups(isOwner);
         return;
       }
@@ -248,6 +249,13 @@
           : emptyState('fileText', 'Hali kundalik yo\'q', sc.journal_enabled ? 'Kundalik har ish kuni ' + sc.journal_time + ' da sizga lichkada keladi.'
             : 'Kundalik o\'chiq — Sozlamalar → Kundalik va Excel.')) + '</div></div>';
         note = 'Kundalik faqat sizga ko\'rinadi: kunning raqamlari va vazifalar. Hozirgi holat — botda /kundalik.';
+      } else if (k === 'advice') {
+        html += '<div class="section"><div class="section-h">Kunlik tavsiyalar</div><div class="group">' + (d.items.length
+          ? d.items.map((it) => row('advice', 'sparkles', esc(it.label), (it.interim ? 'hozirgi holat · ' : '') + esc(it.model) +
+            (it.sent_label ? ' · yuborildi ' + esc(it.sent_label) : ''), chev(), 'r-advice', 'data-key="' + esc(it.key) + '"')).join('')
+          : emptyState('sparkles', 'Hali tavsiya yo\'q', sc.advice_enabled ? 'AI tavsiyasi har ish kuni ' + sc.advice_time + ' da sizga lichkada keladi. Hozir olish — botda /tavsiya.'
+            : 'Kunlik tavsiya o\'chiq — Sozlamalar → Kunlik tavsiya.')) + '</div></div>';
+        note = 'Faqat sizga ko\'rinadi. ' + d.advice_model + ' kun natijalari, lidlar, yozishmalar, vaucher va vazifalarni ko\'rib, nimani yaxshilashni yozadi. Hozir olish — botda /tavsiya.';
       } else {
         const weekly = k === 'weekly';
         const on = weekly ? sc.weekly_enabled : sc.monthly_enabled;
@@ -290,6 +298,18 @@
       const d = await api('api/report/archive/' + encodeURIComponent(key));
       if (!sameScreen(mine)) return;
       openSheet('<h3 class="sheet-title">Kundalik</h3><p class="sheet-sub">' + esc(d.label) + '</p><div class="group"><div class="pre-text">' + esc(d.text) + '</div></div>');
+    }
+    async function adviceSheet(key) {
+      const mine = A.seq && A.seq();
+      const d = await api('api/report/archive/' + encodeURIComponent(key));
+      if (!sameScreen(mine)) return;
+      let html = '<h3 class="sheet-title">Kunlik tavsiya</h3><p class="sheet-sub">' + esc(d.label) + (d.interim ? ' · hozirgi holat' : '') +
+        ' · ' + esc(d.model) + ' · $' + Number(d.cost || 0).toFixed(2) + '</p>' + (d.note ? '<p class="note">' + esc(d.note) + '</p>' : '') +
+        '<div class="group"><div class="pre-text">' + esc(d.text) + '</div></div>';
+      if (d.staff_text) {
+        html += '<div class="section"><div class="section-h">Operatorlar uchun xabar</div><div class="group"><div class="pre-text">' + esc(d.staff_text) + '</div></div></div>';
+      }
+      openSheet(html + '<p class="note">Savolingiz bo\'lsa — botda tavsiya xabariga javob (reply) yozing: AI shu tavsiya bo\'yicha davom ettiradi.</p>');
     }
 
     // ---------------------------------------------------------- OPERATORLAR
@@ -384,6 +404,12 @@
         row('clock', 'clock', 'Excel yuborish vaqti', '', value(esc(sc.excel_time)) + chev(), 'r-xtime') +
         '</div><p class="note">Excel ' + (leadersGroup ? 'rahbarlar guruhiga telefon raqamlari yashirilgan holda, sizga — to\'liq' : 'sizga (rahbarlar guruhi belgilanmagan)') +
         ' yuboriladi. Istalgan davr — Arxiv yoki botda /excel.</p></div>';
+
+      html += '<div class="section"><div class="section-h">Kunlik tavsiya (AI)</div><div class="group">' +
+        rt(A.toggleRow('advice', 'sparkles', 'Kunlik tavsiya', esc(s.advice_model || 'AI') + ' · ish kunlari sizga', 'r-advice', sc.advice_enabled !== false)) +
+        row('clock', 'clock', 'Tavsiya vaqti', 'kunlik hisobotdan keyin', value(esc(sc.advice_time || '20:30')) + chev(), 'r-atime') +
+        '</div><p class="note">Kuchli model kun natijalari, lidlar, operator izohlari, guruh yozishmalari, vaucher va vazifalarni ko\'rib, nimani yaxshilashni yozadi: ' +
+        'reklama, call center, vaucher. Hozir olish — botda /tavsiya. Xarajati «Xarajatlar»da alohida qatorda («💡 Kunlik tavsiya»).</p></div>';
 
       const excludedToo = (p) => people.excluded.some((x) => (p.user_id && x.user_id === p.user_id) || (p.username && x.username === p.username));
       const personRows = (list, kind, tile, ic) => list.map((p) => row(tile, ic, esc(p.label), (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) +
@@ -661,11 +687,13 @@
       'r-status-delete': (el) => guard(async () => { await api('api/report/statuses/' + el.dataset.id, { method: 'DELETE' }); closeSheet(); toast('Status o\'chirildi'); rerender(); }),
       'r-time': () => timeSheet('time', 'Yuborish vaqti', 'Hisobot davri — oldingi hisobot vaqtidan shu vaqtgacha'),
       'r-jtime': () => timeSheet('journal_time', 'Kundalik vaqti', 'Ish kunlari shu vaqtda sizga lichkada keladi'),
+      'r-atime': () => timeSheet('advice_time', 'Tavsiya vaqti', 'Ish kunlari shu vaqtda AI tavsiyasi sizga lichkada keladi — o\'sha paytgacha tugagan so\'nggi hisobot kuni bo\'yicha'),
       'r-xtime': () => timeSheet('excel_time', 'Excel yuborish vaqti', 'Dushanba (o\'tgan hafta) va oyning 1-sanasi (o\'tgan oy)'),
       'r-days': daysSheet, 'r-work': workSheet, 'r-remind': remindSheet,
       'r-akind': (el) => { cache.archKind = el.dataset.k; rerender(); },
       'r-period': (el) => guard(() => periodSheet(el.dataset.key)),
       'r-journal': (el) => guard(() => journalSheet(el.dataset.key)),
+      'r-advice': (el) => guard(() => adviceSheet(el.dataset.key)),
       'r-xl-send': (el) => guard(async () => {
         toast('Tayyorlanmoqda…');
         const r = await api('api/report/archive/' + encodeURIComponent(el.dataset.key) + '/send', { method: 'POST', body: {} });
@@ -728,7 +756,7 @@
       }),
       'r-schedule': (fd) => guard(() => {
         const body = {};
-        ['time', 'journal_time', 'excel_time'].forEach((k) => { if (fd.has(k)) body[k] = fd.get(k); });
+        ['time', 'journal_time', 'excel_time', 'advice_time'].forEach((k) => { if (fd.has(k)) body[k] = fd.get(k); });
         if (fd.has('work_start')) { body.work_start = fd.get('work_start'); body.work_end = fd.get('work_end'); }
         if (document.querySelector('.sheet [name=days]')) {
           body.days = fd.getAll('days').map(Number);
@@ -739,6 +767,7 @@
     };
     const SWITCHES = {
       'r-journal': ['journal_enabled', 'Kundalik yoqildi', 'Kundalik o\'chirildi'],
+      'r-advice': ['advice_enabled', 'Kunlik tavsiya yoqildi', 'Kunlik tavsiya o\'chirildi'],
       'r-weekly': ['weekly_enabled', 'Haftalik Excel yoqildi', 'Haftalik Excel o\'chirildi'],
       'r-monthly': ['monthly_enabled', 'Oylik Excel yoqildi', 'Oylik Excel o\'chirildi'],
       'r-picture': ['picture', 'Hisobot rasm bo\'lib keladi', 'Hisobot matn bo\'lib keladi'],

@@ -36,7 +36,8 @@ GROUPS_SHOWN = 40
 MESSAGES_LIMIT, MESSAGES_MAX = 60, 200
 MESSAGE_SHOWN = 500  # bitta xabardan model ko'radigan belgilar
 REPLY_SHOWN = 80
-SECTIONS = ("all", "activity", "costs", "users", "staff", "groups", "settings", "deliveries")
+SECTIONS = ("all", "activity", "costs", "users", "staff", "groups", "settings", "deliveries", "advice")
+ADVICE_TEXTS, ADVICE_TEXT_LIMIT = 3, 3500  # bot_status(section=advice): so'nggi tavsiyalar matni
 AGE_BUCKETS = ((0, 17, "17 va kichik"), (18, 24, "18–24"), (25, 34, "25–34"), (35, 44, "35–44"), (45, 99, "45+"))
 UNKNOWN = "noma'lum"
 ROLE_WORDS = {"leads": ("lid", "lidlar", "leads", "izoh"), "leaders": ("rahbar", "rahbarlar", "leaders", "direktor"),
@@ -140,7 +141,8 @@ def owner_specs(period_props: dict) -> list[dict]:
                 "foydalanuvchilar va modellar bo'yicha); users — botdan parol bilan foydalanuvchilar; staff — xodimlar "
                 "ro'yxati (operator, administrator, rahbar, bo'limlar, istisnolar); groups — ulangan guruhlar (vazifasi, "
                 "bot adminmi, oxirgi faollik, yozishmalar soni); settings — versiya, hisobot jadvali, statuslar, "
-                "modellar, zaxira; deliveries — yuborilgan kunlik hisobotlar, Excel'lar, kundaliklar, so'nggi zaxira."
+                "modellar, zaxira; deliveries — yuborilgan kunlik hisobotlar, Excel'lar, kundaliklar, tavsiyalar, "
+                "so'nggi zaxira; advice — so'nggi kunlik AI tavsiyalar matni (faqat alohida so'ralganda, all'ga kirmaydi)."
             ),
             "input_schema": {"type": "object", "properties": {
                 "section": {"type": "string", "enum": list(SECTIONS), "description": "Qaysi qism (standart: all — hammasi)"},
@@ -357,8 +359,8 @@ async def bot_status(service: "ReportService", args: dict, now: datetime) -> dic
     if section not in SECTIONS:
         raise InsightError(f"section: {', '.join(SECTIONS)} dan biri")
     builders = {"activity": _activity, "costs": _costs, "users": _users, "staff": _staff, "groups": _groups,
-                "settings": _settings, "deliveries": _deliveries}
-    parts = list(builders) if section == "all" else [section]
+                "settings": _settings, "deliveries": _deliveries, "advice": _advice}
+    parts = [name for name in builders if name != "advice"] if section == "all" else [section]  # matnlar — alohida
     data: dict[str, Any] = {"now": _stamp(now)}
     for part in parts:
         data[part] = await builders[part](service, now)
@@ -458,6 +460,8 @@ async def _settings(service: "ReportService", now: datetime) -> dict:
     return {
         "version": ctx.updater.version if ctx.updater is not None else None,
         "daily_report": {"enabled": s.enabled, "time": s.time, "days": s.days_label(), "as_picture": s.picture},
+        "daily_advice": {"enabled": s.advice_enabled, "time": s.advice_time, "model": label(settings.advice_model),
+                         "to": "egasiga lichkada, ish kunlari"},
         "unmarked_reminder": (f"{s.remind_minutes} daqiqadan keyin, {s.work_start}–{s.work_end}"
                               if s.remind_minutes else "o'chiq"),
         "journal_to_owner": s.journal_time if s.journal_enabled else "o'chiq",
@@ -486,9 +490,28 @@ async def _deliveries(service: "ReportService", now: datetime) -> dict:
     db = service.ctx.db
     return {"daily_reports": daily, "excel": excel,
             "journals": [j["day"] for j in await archive.journals(7)],
+            "daily_advice": [{"report_day": a.day.isoformat(), "sent": _stamp(_local(a.sent_at, tz)),
+                              "model": label(a.model), "usd": round(a.cost, 2)}
+                             for a in await service.advisor.store.latest(7)],
             "last_backup": await db.get_config(BACKUP_STAMP_KEY) or "hali yo'q",
             "last_update_check": await db.get_config(UPDATE_CHECK_KEY) or "hali yo'q",
             "last_report_went_to_owner_instead": service.last_fallback}
+
+
+async def _advice(service: "ReportService", now: datetime) -> dict:
+    """So'nggi kunlik tavsiyalar matni (egasi «kechagi tavsiyada nima deyilgan edi?» deb so'rasa)."""
+    s = await service.schedule()
+    items = []
+    for advice in await service.advisor.store.latest(ADVICE_TEXTS):
+        item = {"report_day": advice.day.isoformat(), "sent": _stamp(_local(advice.sent_at, service.tz)),
+                "model": label(advice.model), "advice": advice.text[:ADVICE_TEXT_LIMIT]}
+        if advice.interim:
+            item["interim"] = True
+        if advice.staff_text:
+            item["message_for_operators"] = advice.staff_text[:ADVICE_TEXT_LIMIT]
+        items.append(item)
+    return {"enabled": s.advice_enabled, "time": s.advice_time, "latest": items,
+            "note": "Kunlik tavsiya — bot har ish kuni egasiga yuboradigan AI tahlili; qo'lda: /tavsiya"}
 
 
 # ---------------------------------------------------------------------- guruh yozishmalari (faqat egasiga)

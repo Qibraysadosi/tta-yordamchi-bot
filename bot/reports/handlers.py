@@ -1,16 +1,20 @@
 """Hisobot uchun Telegram yangilanishlari: guruhlar (jim yozib borish), bot a'zoligi, reaksiyalar
-va egasining buyruqlari (/hisobot, /guruhlar, /vazifa, /vazifalar, /kundalik, /excel, /xodimlar, /vaucher)."""
+va egasining buyruqlari (/hisobot, /guruhlar, /vazifa, /vazifalar, /kundalik, /excel, /xodimlar, /vaucher,
+/tavsiya)."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
 import logging
+import re
 import time
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import AiogramError, TelegramAPIError, TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -23,10 +27,11 @@ from aiogram.types import (
 )
 
 from . import staff
+from .advisor import INTERIM_REUSE, Advice, AdviceError
 from .archive import parse_key
 from .render import split_message
 from .service import ROLE_LABELS, ReportService
-from .stats import display_day, period_bounds
+from .stats import display_day, latest_due_day, period_bounds
 from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
 from .vouchers import IMPORT_LIMIT, IMPORT_WAIT, VoucherError
 
@@ -758,6 +763,145 @@ async def on_voucher_export(message: Message, bot: Bot, ctx) -> None:
     service.vouchers.kick(bot)
 
 
+# ---------------------------------------------------------------------- v1.15: kunlik tavsiya
+ADVICE_ON = ("yoq", "yoqish", "on")
+ADVICE_OFF = ("o'chir", "ochir", "o'chirish", "off")
+ADVICE_NOW = ("bugun", "hozir", "today", "now")
+ADVICE_TIME_RE = re.compile(r"([01]?\d|2[0-3])[:.]([0-5]\d)")
+ADVICE_REDO_DAYS = 14  # «🔄 Qayta tahlil» — shuncha kundan eski tavsiya uchun ishlamaydi
+ADVICE_HELP = (
+    "💡 <b>Kunlik tavsiya</b>\n"
+    "AI kun natijalari, lidlar, operator izohlari, guruh yozishmalari, vaucher va vazifalarni ko'rib chiqib, nimani "
+    "yaxshilash kerakligini yozadi: reklama, call center, vaucher, vazifalar.\n\n"
+    "/tavsiya — so'nggi tugagan hisobot kuni bo'yicha\n"
+    "/tavsiya bugun — hozirgi holat bo'yicha (kun tugamasdan)\n"
+    "/tavsiya 20:30 — har kuni keladigan vaqtni o'zgartirish\n"
+    "/tavsiya o'chir · /tavsiya yoq — avtomatik yuborish\n\n"
+    "Tavsiya xabariga «Ответить» qilib savol yozsangiz, AI shu tavsiya bo'yicha davom ettiradi."
+)
+
+
+def _advice_markup(advice: Advice) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 Qayta tahlil qilish", callback_data=f"adv:re:{advice.day.isoformat()}")
+    ]])
+
+
+async def _typing(bot: Bot, chat_id: int) -> None:
+    while True:
+        with contextlib.suppress(AiogramError):
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        await asyncio.sleep(4.5)
+
+
+async def _advice_generate(bot: Bot, chat_id: int, service: ReportService, day: date) -> None:
+    """Hozir tahlil qilib, natijani shu chatga yuboradi (holat xabari bilan)."""
+    advisor = service.advisor
+    status = await bot.send_message(
+        chat_id, f"🧠 {advisor.model_label()} kun ma'lumotlarini tahlil qilmoqda… Odatda 1–3 daqiqa.")
+    typing = asyncio.create_task(_typing(bot, chat_id))
+
+    async def ready(advice: Advice) -> None:
+        typing.cancel()
+        with contextlib.suppress(TelegramAPIError):
+            await status.delete()
+        await advisor.deliver(bot, [chat_id], advice, markup=_advice_markup(advice))
+
+    try:
+        await advisor.request(bot, day, service.now(), on_ready=ready)
+    except AdviceError as exc:
+        text = f"⚠️ Tavsiya tayyorlanmadi: {html.escape(str(exc))}"
+        if exc.retryable:
+            text += "\nBirozdan keyin qayta urinib ko'ring: /tavsiya"
+        with contextlib.suppress(TelegramAPIError):
+            await status.edit_text(text, parse_mode=ParseMode.HTML)
+        return
+    except Exception:  # noqa: BLE001
+        log.exception("Tavsiya tayyorlashda xato")
+        with contextlib.suppress(TelegramAPIError):
+            await status.edit_text("⚠️ Tavsiya tayyorlashda xato. Birozdan keyin qayta urinib ko'ring: /tavsiya")
+        return
+    finally:
+        typing.cancel()
+
+
+async def cmd_advice(message: Message, command: CommandObject, bot: Bot, ctx) -> None:
+    """/tavsiya — saqlangan tavsiya yoki hozir tahlil; «bugun» — oraliq; vaqt, yoq / o'chir — jadval."""
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    await service.ensure()
+    advisor = service.advisor
+    arg = " ".join((command.args or "").lower().split())
+    if arg in ADVICE_OFF:
+        await service.save_schedule({"advice_enabled": False})
+        await message.answer("🔕 Kunlik tavsiya o'zi kelmaydi. Kerak bo'lganda: /tavsiya · qayta yoqish: /tavsiya yoq")
+        return
+    moment = ADVICE_TIME_RE.fullmatch(arg)
+    if arg in ADVICE_ON or moment:
+        changes: dict = {"advice_enabled": True}
+        if moment:
+            changes["advice_time"] = f"{int(moment.group(1)):02d}:{moment.group(2)}"
+        schedule = await service.save_schedule(changes)
+        await message.answer(f"✅ Kunlik tavsiya: {advisor.describe(schedule)}.")
+        return
+    schedule = await service.schedule()
+    if arg and arg not in ADVICE_NOW:
+        await message.answer(f"{ADVICE_HELP}\n\nHozir: {html.escape(advisor.describe(schedule))}.", parse_mode=ParseMode.HTML)
+        return
+    if not await service.store.groups_with("leads"):
+        await message.answer(NO_GROUPS_TEXT, parse_mode=ParseMode.HTML)
+        return
+    if advisor.busy:  # jadvaldagi yoki boshqa tahlil — tugagach o'zi keladi
+        await message.answer("⏳ Tahlil ketmoqda — tayyor bo'lishi bilan shu yerga keladi.")
+        return
+    now = service.now()
+    day = display_day(now, schedule) if arg in ADVICE_NOW else (latest_due_day(now, schedule) or display_day(now, schedule))
+    live = now < period_bounds(day, schedule, service.tz)[1]
+    saved = await advisor.store.get(day.isoformat())
+    if saved is not None and (_fresh(saved) if live else not saved.interim):
+        await advisor.deliver(bot, [message.chat.id], saved, markup=_advice_markup(saved))  # saqlangani — bepul
+        return
+    await _advice_generate(bot, message.chat.id, service, day)
+
+
+def _fresh(advice: Advice) -> bool:
+    """Oraliq tavsiya hozirgina tayyorlangan (ketma-ket bosilganda qayta tahlil qilinmaydi)."""
+    try:
+        created = datetime.strptime(advice.created_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - created < INTERIM_REUSE
+
+
+async def cb_advice(callback: CallbackQuery, bot: Bot, ctx) -> None:
+    """«🔄 Qayta tahlil qilish» — o'sha kun uchun yangidan (pullik) tahlil."""
+    service = _service(ctx)
+    if service is None or not ctx.is_owner(callback.from_user.id):
+        await callback.answer("⛔ Faqat bot egasi uchun", show_alert=True)
+        return
+    try:
+        day = datetime.strptime((callback.data or "").split(":")[2], "%Y-%m-%d").date()
+    except (IndexError, ValueError):
+        await callback.answer()
+        return
+    await service.ensure()
+    now = service.now()
+    schedule = await service.schedule()
+    if day.weekday() not in schedule.days or not timedelta(0) <= display_day(now, schedule) - day <= timedelta(days=ADVICE_REDO_DAYS):
+        await callback.answer("Bu kun uchun qayta tahlil qilib bo'lmaydi — /tavsiya", show_alert=True)
+        return
+    if service.advisor.busy:
+        await callback.answer("⏳ Tahlil allaqachon ketmoqda — kuting", show_alert=True)
+        return
+    await callback.answer("Tahlil boshlandi…")
+    chat_id = callback.message.chat.id if callback.message is not None else callback.from_user.id
+    await _advice_generate(bot, chat_id, service, day)
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -773,6 +917,7 @@ def build_router() -> Router:
     router.message.register(cmd_excel, Command("excel", "export"), private)
     router.message.register(cmd_staff, Command("xodimlar", "staff"), private, F.forward_origin.is_(None))
     router.message.register(cmd_voucher, Command("vaucher", "voucher", "vaucherlar"), private)
+    router.message.register(cmd_advice, Command("tavsiya", "advice", "maslahat"), private)
     router.message.register(on_voucher_export, private, is_voucher_export)
     router.message.register(on_contact, private, is_owner_contact)
     router.message.register(on_contact_rename, private, is_contact_rename)
@@ -786,4 +931,5 @@ def build_router() -> Router:
     router.callback_query.register(cb_report, F.data.startswith("rp:"))
     router.callback_query.register(cb_excel, F.data.startswith("xl:"))
     router.callback_query.register(cb_staff_contact, F.data.startswith("sc:"))
+    router.callback_query.register(cb_advice, F.data.startswith("adv:"))
     return router

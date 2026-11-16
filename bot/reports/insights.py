@@ -130,7 +130,7 @@ def shared_specs(period_props: dict, *, masked: bool) -> list[dict]:
 
 
 def owner_specs(period_props: dict) -> list[dict]:
-    """Faqat egasi uchun: bot_status, group_messages."""
+    """Faqat egasi uchun: bot_status, group_messages, ads_stats."""
     no_calendar = {k: v for k, v in period_props.items() if k != "calendar"}
     return [
         {
@@ -162,6 +162,23 @@ def owner_specs(period_props: dict) -> list[dict]:
                 "search": {"type": "string", "description": "Matndan bir qism (so'z yoki ibora)"},
                 "limit": {"type": "integer",
                           "description": f"Nechta xabar (standart {MESSAGES_LIMIT}, ko'pi bilan {MESSAGES_MAX})"},
+            }},
+        },
+        {
+            "name": "ads_stats",
+            "description": (
+                "Reklama (Meta Ads, v1.16): sarf, ko'rsatishlar, kliklar, CTR, CPM, chastota, Meta bo'yicha lidlar va "
+                "lid narxi — kabinet, kampaniya, ad set yoki reklama bo'yicha; bizning natija bilan birga: lidlar "
+                "guruhiga tushgan lidlar, asosiy natija (masalan, 👍 keladi) va vaucherga yuborilganlar va har birining "
+                "narxi; rad etilgan yoki muammoli reklamalar. Davr — kalendar kunlar (standart: bugun). Meta ulanmagan "
+                "bo'lsa — xato matnida qanday ulash yozilgan."
+            ),
+            "input_schema": {"type": "object", "properties": {
+                **no_calendar,
+                "level": {"type": "string", "enum": ["account", "campaign", "adset", "ad"],
+                          "description": "Qaysi daraja (standart: campaign — kampaniyalar)"},
+                "by_day": {"type": "boolean", "description": "Har kun bo'yicha alohida qatorlar"},
+                "limit": {"type": "integer", "description": "Nechta qator (standart 20, ko'pi bilan 100)"},
             }},
         },
     ]
@@ -462,6 +479,8 @@ async def _settings(service: "ReportService", now: datetime) -> dict:
         "daily_report": {"enabled": s.enabled, "time": s.time, "days": s.days_label(), "as_picture": s.picture},
         "daily_advice": {"enabled": s.advice_enabled, "time": s.advice_time, "model": label(settings.advice_model),
                          "to": "egasiga lichkada, ish kunlari"},
+        "ads_control": {"alerts": s.ads_alerts, "meta_ads": "ulangan" if service.ads.connected else "ulanmagan",
+                        **({"meta_problem": settings.meta_problem} if settings.meta_problem else {})},
         "unmarked_reminder": (f"{s.remind_minutes} daqiqadan keyin, {s.work_start}–{s.work_end}"
                               if s.remind_minutes else "o'chiq"),
         "journal_to_owner": s.journal_time if s.journal_enabled else "o'chiq",

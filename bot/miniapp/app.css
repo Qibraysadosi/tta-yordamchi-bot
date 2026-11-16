@@ -445,6 +445,8 @@ a { color: var(--link); }
 /* --- arxiv --- */
 .tile.journal { background: #9333ea; }
 .tile.advice { background: #db2777; }
+.tile.ads { background: #ea580c; }
+.tile.meta { background: #2563eb; }
 .seg.dense { gap: 2px; }
 .seg.dense button { font-size: 13px; padding: 8px 2px; }
 .row .badge { flex: none; margin: 0 2px 0 6px; }

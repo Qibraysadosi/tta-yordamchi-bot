@@ -902,6 +902,37 @@ async def cb_advice(callback: CallbackQuery, bot: Bot, ctx) -> None:
     await _advice_generate(bot, chat_id, service, day)
 
 
+# ---------------------------------------------------------------------- v1.16: reklama nazorati
+async def cmd_ads(message: Message, command: CommandObject, bot: Bot, ctx) -> None:
+    """/reklama — lid oqimi va Meta Ads holati; «o'chir» / «yoq» — ogohlantirishlar."""
+    service = _service(ctx)
+    if service is None:
+        return
+    if not ctx.is_owner(message.from_user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    await service.ensure()
+    arg = " ".join((command.args or "").lower().split())
+    if arg in ADVICE_OFF:
+        await service.save_schedule({"ads_alerts": False})
+        await message.answer("🔕 Reklama nazorati ogohlantirishlari o'chirildi (lid kelmay qolsa, Meta reklamasida "
+                             "muammo bo'lsa). Yoqish: /reklama yoq")
+        return
+    if arg in ADVICE_ON:
+        await service.save_schedule({"ads_alerts": True})
+        await message.answer("🔔 Ogohlantirishlar yoqildi: lid kelmay qolsa yoki Meta reklamasida muammo bo'lsa — "
+                             "sizga darrov xabar keladi.")
+        return
+    status = await message.answer("📣 Reklama ma'lumoti olinmoqda…") if service.ads.connected else None
+    text = await service.ads.overview_text(service.now())
+    parts = split_message(text)
+    if status is not None:
+        with contextlib.suppress(TelegramAPIError):
+            await status.delete()
+    for part in parts:
+        await message.answer(part, parse_mode=ParseMode.HTML)
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -918,6 +949,7 @@ def build_router() -> Router:
     router.message.register(cmd_staff, Command("xodimlar", "staff"), private, F.forward_origin.is_(None))
     router.message.register(cmd_voucher, Command("vaucher", "voucher", "vaucherlar"), private)
     router.message.register(cmd_advice, Command("tavsiya", "advice", "maslahat"), private)
+    router.message.register(cmd_ads, Command("reklama", "ads"), private)
     router.message.register(on_voucher_export, private, is_voucher_export)
     router.message.register(on_contact, private, is_owner_contact)
     router.message.register(on_contact_rename, private, is_contact_rename)

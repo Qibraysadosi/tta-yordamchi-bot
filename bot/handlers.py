@@ -96,6 +96,7 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="xodimlar", description="🧑‍💼 Xodimlar: operator, admin, rahbar (ismlari)"),
     BotCommand(command="vaucher", description="📄 Vaucherga yuborilganlar, eski xabarlarni yuklash"),
     BotCommand(command="tavsiya", description="💡 Kunlik AI tavsiya: nimani yaxshilash kerak"),
+    BotCommand(command="reklama", description="📣 Reklama nazorati: Meta Ads, lid oqimi"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 # Bot yuborgan, lekin suhbat tarixida yo'q xabarlar: ularga javob (reply) yozilsa, matni iqtibos qilinadi
@@ -183,6 +184,8 @@ ADMIN_HELP = (
     "💡 /tavsiya — kunlik AI tavsiya: har ish kuni 20:30 da kuchli model (standart Fable 5.2) kun natijalari, lidlar, "
     "yozishmalar, vaucher va vazifalarni ko'rib, nimani yaxshilashni yozadi (reklama, call center). «/tavsiya bugun» — "
     "hozirgi holat; «/tavsiya 21:00» — vaqti; «/tavsiya o'chir». Tavsiyaga javob (reply) yozsangiz — AI davom ettiradi\n"
+    "📣 /reklama — reklama nazorati: Meta Ads sarfi, lid, «keladi» va vaucher narxi, kampaniyalar, rad etilgan "
+    "reklamalar; ish vaqtida lid kelmay qolsa — darrov xabar. «/reklama o'chir» — ogohlantirishlarsiz\n"
     "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid "
     "tushdi?», «kechagi hisobotni yubor», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «Malika "
     "vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi, hisobot va Excel'ni shu chatga yuboradi. Rahbarlar "

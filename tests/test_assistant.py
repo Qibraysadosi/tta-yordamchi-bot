@@ -144,8 +144,8 @@ def test_owner_chat_uses_report_tools(tmp_path):
             await env.send_text("Bugun nechta qo'ng'iroq bo'ldi?")
             first, second = env.api.requests[-2:]
             names = [t.get("name") for t in first["tools"]]
-            assert names[-8:] == ["report_stats", "report_leads", "task_status", "report_breakdown", "report_send",
-                                  "voucher_list", "bot_status", "group_messages"] and "create_document" in names
+            assert names[-9:] == ["report_stats", "report_leads", "task_status", "report_breakdown", "report_send",
+                                  "voucher_list", "bot_status", "group_messages", "ads_stats"] and "create_document" in names
             assert "Call center va vazifalar" in first["system"] and "Bot va guruhlar" in first["system"]
             assert tool_result(second)["totals"]["calls"] == 2
             final = env.last_edit()

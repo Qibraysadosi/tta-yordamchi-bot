@@ -1,8 +1,7 @@
-💡 v1.15.0 — Kunlik tavsiya (AI)
-• Har ish kuni 20:30 da Fable 5.2 kun natijalari, lidlar, izohlar, guruh yozishmalari, vaucher va vazifalarni ko'rib, sizga lichkada nimani yaxshilashni yozadi
-• Bo'limlar: 🎯 asosiy xulosa, 📣 reklama (qaysi kurs, hudud, yosh, soatni kuchaytirish), 📞 call center (ismi bilan), 📄 vaucher, 📋 vazifalar
-• Operatorlar uchun tayyor xabar — alohida: guruhga uzatasiz (bot operatorlarga o'zi yubormaydi)
-• /tavsiya — so'nggi kun bo'yicha, /tavsiya bugun — hozirgi holat, /tavsiya 21:00 — vaqti, /tavsiya o'chir; tavsiyaga javob yozsangiz — AI davom ettiradi
-• Mini App: Sozlamalar → «Kunlik tavsiya (AI)», Arxiv → «Tavsiya»; xarajat /xarajat da «💡 Kunlik tavsiya» qatorida (~$0.3–0.7 / kun)
-• Reklama xarajati hali yo'q — tavsiya lidlar oqimidan; Meta Ads ulanishi — keyingi paket
-• /model menyusida yangi Fable 5.2 ($8 / $40 — Fable 5.1 dan kuchli va arzon)
+📣 v1.16.0 — Reklama nazorati
+• Lid kelmay qolsa — darrov xabar: ish vaqtida odatdagidan uzoq jimlik (oqimni bot so'nggi 14 kundan o'zi biladi); lidlar qaytsa — «tiklandi»
+• Meta Ads ulash (ixtiyoriy, faqat o'qish): sarf, Meta lidlari, guruhga tushganlar, «keladi» va vaucher narxi — /reklama
+• Rad etilgan reklama, kabinet bloklanishi, to'lov muammosi yoki xarajat chegarasi — sizga darrov xabar
+• Kundalik va kunlik tavsiyada reklama bloki: AI qaysi kampaniyaga byudjet qo'shish yoki to'xtatishni raqam bilan aytadi
+• AI'dan so'rang: «bu hafta reklamaga qancha ketdi?», «qaysi kampaniyada keladi narxi arzon?»
+• Ulash: serverdagi .env ga META_ACCESS_TOKEN va META_AD_ACCOUNT_ID (README → «Reklama nazorati»); rahbarlarga ko'rinmaydi

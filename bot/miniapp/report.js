@@ -299,6 +299,25 @@
       if (!sameScreen(mine)) return;
       openSheet('<h3 class="sheet-title">Kundalik</h3><p class="sheet-sub">' + esc(d.label) + '</p><div class="group"><div class="pre-text">' + esc(d.text) + '</div></div>');
     }
+    function metaSheet() {
+      const ads = (cache.settings || {}).ads || {};
+      let html = '<h3 class="sheet-title">Meta Ads</h3>';
+      if (ads.connected && !ads.error) {
+        html += '<p class="sheet-sub">' + esc(ads.account || '') + ' · ' + esc(ads.status || '') + ' · ' + esc(ads.currency || '') + '</p>' +
+          '<p class="note">Sarf, lid, «keladi» va vaucher narxi, kampaniyalar — botda /reklama, kundalikda va kunlik tavsiyada. ' +
+          'Rad etilgan reklama, to\'lov yoki kabinet muammosi bo\'lsa — sizga darrov xabar keladi. Bot reklamani o\'zgartirmaydi, faqat o\'qiydi.</p>';
+      } else {
+        html += '<p class="sheet-sub">' + esc(ads.error || (ads.problem ? 'Sozlamada xato: ' + ads.problem : 'Ulanmagan')) + '</p>' +
+          '<div class="group"><div class="pre-text">' + esc(
+            '1. business.facebook.com → Sozlamalar → Foydalanuvchilar → Tizim foydalanuvchilari → Qo\'shish (rol: Xodim).\n' +
+            '2. ⋯ → Aktivlarni biriktirish → Reklama kabineti → «Ko\'rsatkichlarni ko\'rish».\n' +
+            '3. «Token yaratish» → ilovangiz → muddati: Hech qachon → ads_read → tokenni nusxalang.\n' +
+            '4. Serverdagi .env: META_ACCESS_TOKEN=… va META_AD_ACCOUNT_ID=act_… (Ads Manager manzilidagi act= raqami).\n' +
+            '5. docker compose up -d --force-recreate') + '</div></div>' +
+          '<p class="note">Batafsil — README → «Reklama nazorati». Token faqat serverdagi .env da turadi, botga yozmang.</p>';
+      }
+      openSheet(html);
+    }
     async function adviceSheet(key) {
       const mine = A.seq && A.seq();
       const d = await api('api/report/archive/' + encodeURIComponent(key));
@@ -410,6 +429,14 @@
         row('clock', 'clock', 'Tavsiya vaqti', 'kunlik hisobotdan keyin', value(esc(sc.advice_time || '20:30')) + chev(), 'r-atime') +
         '</div><p class="note">Kuchli model kun natijalari, lidlar, operator izohlari, guruh yozishmalari, vaucher va vazifalarni ko\'rib, nimani yaxshilashni yozadi: ' +
         'reklama, call center, vaucher. Hozir olish — botda /tavsiya. Xarajati «Xarajatlar»da alohida qatorda («💡 Kunlik tavsiya»).</p></div>';
+
+      const ads = s.ads || {};
+      const metaSub = ads.connected ? (ads.error ? '⚠️ ' + ads.error : (ads.account || '') + (ads.status ? ' · ' + ads.status : ''))
+        : 'ulanmagan' + (ads.problem ? ' — ' + ads.problem : '');
+      html += '<div class="section"><div class="section-h">Reklama nazorati</div><div class="group">' +
+        rt(A.toggleRow('ads', 'megaphone', 'Ogohlantirishlar', 'lid kelmasa · reklama to\'xtasa', 'r-ads', sc.ads_alerts !== false)) +
+        row('meta', 'chart', 'Meta Ads', esc(metaSub), value(ads.connected && !ads.error ? (ads.active === false ? '⚠️' : 'ulangan') : '') + chev(), 'r-meta') +
+        '</div><p class="note">' + esc(s.watch || '') + '. Batafsil — botda /reklama.</p></div>';
 
       const excludedToo = (p) => people.excluded.some((x) => (p.user_id && x.user_id === p.user_id) || (p.username && x.username === p.username));
       const personRows = (list, kind, tile, ic) => list.map((p) => row(tile, ic, esc(p.label), (p.username ? '@' + esc(p.username) : 'ID ' + esc(p.user_id)) +
@@ -694,6 +721,7 @@
       'r-period': (el) => guard(() => periodSheet(el.dataset.key)),
       'r-journal': (el) => guard(() => journalSheet(el.dataset.key)),
       'r-advice': (el) => guard(() => adviceSheet(el.dataset.key)),
+      'r-meta': () => metaSheet(),
       'r-xl-send': (el) => guard(async () => {
         toast('Tayyorlanmoqda…');
         const r = await api('api/report/archive/' + encodeURIComponent(el.dataset.key) + '/send', { method: 'POST', body: {} });
@@ -768,6 +796,7 @@
     const SWITCHES = {
       'r-journal': ['journal_enabled', 'Kundalik yoqildi', 'Kundalik o\'chirildi'],
       'r-advice': ['advice_enabled', 'Kunlik tavsiya yoqildi', 'Kunlik tavsiya o\'chirildi'],
+      'r-ads': ['ads_alerts', 'Ogohlantirishlar yoqildi', 'Ogohlantirishlar o\'chirildi'],
       'r-weekly': ['weekly_enabled', 'Haftalik Excel yoqildi', 'Haftalik Excel o\'chirildi'],
       'r-monthly': ['monthly_enabled', 'Oylik Excel yoqildi', 'Oylik Excel o\'chirildi'],
       'r-picture': ['picture', 'Hisobot rasm bo\'lib keladi', 'Hisobot matn bo\'lib keladi'],

@@ -296,6 +296,13 @@ class ArchiveService:
             await reports.analyze_pending(FLUSH_BATCHES)  # izohlar tahlilsiz qolmasin
             report_day = day if day.weekday() in s.days else current_day(now, s)
             lines += [""] + self._journal_calls(await build_overview(reports.store, s, report_day, now))
+            try:
+                ads = await reports.ads.journal_lines(day, now)  # v1.16: Meta Ads (faqat egasiga — kundalik shunday)
+            except Exception:  # noqa: BLE001 — reklama bloki chiqmasa ham kundalik ketsin
+                log.exception("Kundalikka reklama bloki qo'shilmadi")
+                ads = []
+            if ads:
+                lines += [""] + ads
         lines += [""] + await self._journal_tasks(now, s, day)
         return "\n".join(lines)
 

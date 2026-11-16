@@ -12,6 +12,7 @@ Claude API asosida ishlaydigan shaxsiy Telegram bot. Max tarifidagi oylik $100 A
 - **Hisobot rasmi (v1.12):** kunlik hisobot jadvali chiroyli rasm bo'lib keladi (to'liq ismlar, rangli status ustunlari, natija chizig'i, JAMI), ostida qisqa matn — yangi lidlar, kurslar, izohlardan. Rasmni bot o'zi kod bilan chizadi (raqamlar aniq); o'chirish — Mini App → Sozlamalar → «Rasm ko'rinishida»
 - **AI'dan hisobot so'rash (v1.10, v1.13):** chatda oddiy yozing — «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid tushdi?», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «rahbarlar guruhida bugun nima deyishdi?», «bu oy qancha xarajat bo'ldi?» — bot hisobot, guruh yozishmalari va o'z holatini o'qib javob beradi, kunlik hisobot yoki Excel'ni shu chatga yuboradi. Rahbarlar ham botga yozib so'raydi (telefon raqamlari yashirilgan). Batafsil — pastda «AI'dan hisobot so'rash»
 - **Kunlik tavsiya (💡 /tavsiya, v1.15):** har ish kuni 20:30 da eng kuchli model (Fable 5.2) kun natijalari, lidlar, operator izohlari, guruh yozishmalari, vaucher va vazifalarni ko'rib chiqib, sizga lichkada nimani yaxshilash kerakligini yozadi: reklama (qaysi kurs, hudud, yosh, soatni kuchaytirish, qaysi mavzuda reklama berish), call center (operatorlar ismi bilan), vaucher, vazifalar; operatorlarga uzatish uchun tayyor xabar — alohida. Batafsil — pastda «Kunlik tavsiya»
+- **Reklama nazorati (📣 /reklama, v1.16):** ish vaqtida odatdagidan uzoq lid tushmasa — sizga darrov xabar (reklama, forma yoki forma → Telegram ulanishini tekshirish uchun); Meta Ads ulansa — kunlik sarf, Meta lidlari, guruhga tushganlar, «keladi» va vaucher narxi, kampaniyalar, rad etilgan reklama va kabinet muammolari haqida ogohlantirish; kundalik va kunlik tavsiyada reklama tahlili. Faqat sizga ko'rinadi. Batafsil — pastda «Reklama nazorati»
 - **Vaucherlar (📄 /vaucher, v1.14):** botni vaucher guruhiga qo'shasiz — xodimlar kimni vaucherga yuborganini yozadi va rasm tashlaydi, AI har xabar va rasmni o'qib ro'yxat qiladi (F.I.Sh., telefon, kurs, tuman, mahalla, JSHSHIR / pasport, holati); kunlik hisobotda «📄 Vaucher: N ta», kim nechta yubordi. Eski xabarlar — Telegram Desktop eksporti (ZIP). Batafsil — pastda «Vaucherlar»
 - **Fayl yaratish:** «Word qilib ber», «Excel jadval tuz», «taqdimot tayyorla», «PDF qil» — bot Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, Markdown yoki matn faylni o'zi yasab chatga yuboradi; raqamli ma'lumot bo'yicha grafik (ustunli, chiziqli, doira) chizadi
 - **Fayllar ustida amallar:** skaner rasmi yoki PDF → Word (matn ko'chiriladi); Word faylni formatini saqlab tarjima qilish; PDF'larni birlashtirish, sahifalarini olish/bo'lish/burish, rasmlarni PDF qilish; ikki hujjatni solishtirish — oddiy so'z bilan so'raladi
@@ -84,6 +85,7 @@ Bot fayl yaratganda javob ostida «📎 1» (yuborilgan fayllar soni) ko'rinadi.
 | `/xodimlar` (`/staff`) | Xodimlar ro'yxati; bitta xabarda qo'shish: har qatorga `@username — Ism — rol` (operator, admin, rahbar, istisno, o'chir). Username'i yo'q xodim — kontaktini botga ulashing |
 | `/vaucher` (`/voucher`) | Vaucherga yuborilganlar: bugun, hafta, oy, kim nechta yubordi; keyin Telegram Desktop eksporti (ZIP) yuborilsa — eski xabarlar ham o'qiladi |
 | `/tavsiya` (`/advice`) | Kunlik AI tavsiya: so'nggi tugagan hisobot kuni bo'yicha (har ish kuni 20:30 da o'zi keladi); `/tavsiya bugun` — hozirgi holat, `/tavsiya 21:00` — vaqti, `/tavsiya o'chir` / `yoq` |
+| `/reklama` (`/ads`) | Reklama nazorati: lid oqimi holati; Meta Ads ulangan bo'lsa — bugun, kecha, 7 va 30 kun sarf, lid / «keladi» / vaucher narxi, kampaniyalar, muammoli reklamalar. `/reklama o'chir` / `yoq` — ogohlantirishlar |
 
 ## Mini App (Telegram ichidagi ilova)
 
@@ -198,13 +200,43 @@ Har ish kuni (hisobot kunlari) **20:30** da sizga lichkada «💡 Kunlik tavsiya
 
 **Nima yozadi:** 🎯 asosiy xulosa · 📣 reklama — qaysi kurs, hudud, yosh yoki soatni kuchaytirish, nimani kamaytirish, qaysi mavzuda yangi reklama yoki post kerak (lidlarning savol va e'tirozlaridan) · 📞 call center — operatorlar ismi bilan: tezlik, belgilanmagan lidlar, qayta qo'ng'iroqlar · 📄 vaucher · 📋 vazifalar · ⚠️ e'tibor bering. Operatorlarga aytadigan gap bo'lsa — **alohida xabar**: uni call center guruhiga uzatasiz (forward); operatorlarga bot o'zi yubormaydi.
 
-**Reklama xarajati** (summa, ko'rishlar, lid narxi) hozircha botda yo'q — reklama bo'yicha tavsiya lidlar oqimi va natijasidan. Meta Ads ulanishi — keyingi alohida paket. Modelga telefon raqamlar, JSHSHIR va pasport yuborilmaydi.
+**Reklama xarajati:** Meta Ads ulangan bo'lsa (v1.16, pastda «Reklama nazorati») — AI sarf, lid, «keladi» va vaucher narxini kampaniya, ad set va reklama bo'yicha ko'rib, qaysi reklamaga byudjet qo'shish, qaysini kamaytirish yoki to'xtatishni nomi bilan aytadi; ulanmagan bo'lsa — lidlar oqimi va natijasidan xulosa qiladi. Modelga telefon raqamlar, JSHSHIR va pasport yuborilmaydi.
 
 **Boshqarish:** `/tavsiya` — so'nggi tugagan hisobot kuni bo'yicha (tayyor bo'lsa — saqlangani, bepul; «🔄 Qayta tahlil qilish» tugmasi — yangidan); `/tavsiya bugun` — kun tugamasdan, hozirgi holat; `/tavsiya 21:00` — vaqtini o'zgartirish; `/tavsiya o'chir` / `/tavsiya yoq`. Mini App → Hisobotlar → Sozlamalar → «Kunlik tavsiya (AI)»; o'tgan tavsiyalar — Arxiv → «Tavsiya». Vaqt hisobot vaqtidan oldin bo'lsa (masalan, 09:00) — oldingi hisobot kuni bo'yicha keladi. Bot o'chiq bo'lsa — 4 soat ichida keladi.
 
 **Davomi:** tavsiya xabariga javob (reply) qilib yozing — «reklama matnini yozib ber», «Malikaga nima deyay?» — AI shu tavsiya va hisobot vositalari bilan davom ettiradi. «Kechagi tavsiyada nima deyilgan edi?» degan savolga ham javob beradi.
 
 **Xarajat:** bitta tahlil taxminan $0.3–0.7 (Fable 5.2: kirish $8, chiqish $40 / 1M token; fikrlash ham chiqishga kiradi), oyiga taxminan $8–18. Aniq summa — har tavsiya ostida va `/xarajat` da «💡 Kunlik tavsiya» qatorida. Fable 5.2 ishlamasa (masalan, API kalitga ruxsat yo'q) — botning asosiy modeli tayyorlaydi va xabarda aytiladi; kredit tejamkor rejim chegarasiga yetsa — tejamkor model. Model va fikrlash darajasi `.env` da: `ADVICE_MODEL` (standart `claude-fable-5-2`) va `ADVICE_EFFORT` (`low` / `medium` / `high`, standart `high`).
+
+## Reklama nazorati
+
+Ikki qism: **lid oqimi nazorati** (kalitsiz, darrov ishlaydi) va **Meta Ads** (ixtiyoriy, `.env` da kalit bilan). Hammasi faqat sizga ko'rinadi — rahbarlar guruhidagi hisobotga chiqmaydi. Holat va qisqa xulosa — `/reklama`.
+
+**Lid kelmay qolsa.** Ish kunlari, ish vaqtida (Mini App → Sozlamalar → «Ish vaqti») bot lidlar guruhiga ariza tushishini kuzatadi. Odatdagi oqimni o'zi biladi: so'nggi 14 ish kunida har soatda o'rtacha nechta lid tushgan. Jimlik shu oqimga ko'ra tasodif bo'lolmaydigan darajada cho'zilsa (masalan, soatiga 2 ta lid tushadigan bo'lsa — taxminan 2 soat 20 daqiqa), sizga xabar keladi: «⚠️ Lid kelmay qoldi — 10:05 dan beri…». Lidlar yana tushsa — «✅ Lidlar yana tushyapti, tanaffus 2 soat 55 daqiqa». Har jimlik uchun bitta xabar. Lid kam tushsa (14 kunda 20 tadan kam) ogohlantirmaydi — tanaffuslar oddiy hol. O'chirish: `/reklama o'chir` yoki Mini App → Sozlamalar → «Reklama nazorati».
+
+**Meta Ads** (faqat o'qish — bot reklamani o'zgartirmaydi):
+- `/reklama` — bugun, kecha, 7 va 30 kun: sarf, Meta bo'yicha lidlar (forma to'ldirilgani), guruhga tushgan lidlar, «keladi» va vaucher — har birining narxi bilan; eng ko'p sarflangan kampaniyalar; muammoli reklamalar.
+- **Ogohlantirish** (30 daqiqada bir tekshiradi): reklama, ad set yoki kampaniya rad etilsa yoki muammoli bo'lsa, kabinet bloklansa yoki to'lov muammosi bo'lsa, xarajat chegarasining 90% i ishlatilsa — har muammo bir marta.
+- **Kundalik** (20:00) — «📣 Reklama» bloki: bugun va 7 kun; Meta'da lid ko'p, guruhga kam tushgan bo'lsa — «forma → Telegram ulanishini tekshiring».
+- **Kunlik tavsiya** (20:30) — AI kampaniya, ad set va reklamalar bo'yicha raqamlarni ko'radi va byudjet haqida aniq tavsiya beradi.
+- **Lid kelmay qolganda** — xabarda sabab ham: kabinet holati, bugungi sarf, Meta bo'yicha lidlar.
+- **AI'dan so'rang:** «bu hafta reklamaga qancha ketdi?», «qaysi kampaniyada keladi narxi arzon?», «rad etilgan reklama bormi?».
+
+Meta kunlari — kalendar kunlar, reklama kabineti vaqti bilan (kabinet vaqti bot vaqtidan farq qilsa, bot buni yozadi). «Keladi» va vaucher narxi — o'sha kunlarda tushgan lidlardan nechtasi shu natijaga yetgani bo'yicha. Meta API bepul; AI xarajati qo'shilmaydi (faqat kunlik tavsiya ma'lumoti biroz kattalashadi).
+
+**Ulash** (bir marta, ~10 daqiqa; Meta Business Suite'da admin bo'lishingiz kerak):
+1. [business.facebook.com](https://business.facebook.com) → ⚙️ Sozlamalar (Settings) → Foydalanuvchilar → **Tizim foydalanuvchilari** (System users) → Qo'shish: nomi «TTA Yordamchi», rol — **Xodim** (Employee).
+2. Uning yonidagi ⋯ → **Aktivlarni biriktirish** (Assign assets) → Reklama kabinetlari → kabinetingiz → **«Ko'rsatkichlarni ko'rish»** (View performance) → Saqlash.
+3. **Token yaratish** (Generate new token) → Meta ilovangizni tanlang (yo'q bo'lsa: [developers.facebook.com](https://developers.facebook.com) → My Apps → Create App → Business) → muddati: **Hech qachon** (Never) → ruxsat: **ads_read** → Yaratish → tokenni nusxalang (qayta ko'rsatilmaydi).
+4. Kabinet raqami: Ads Manager manzilidagi `act=` dan keyingi raqam (yoki kabinet nomi ostidagi ID).
+5. Serverdagi `.env` ga yozing va konteynerni qayta yarating (`docker compose up -d --force-recreate`):
+   ```
+   META_ACCESS_TOKEN=EAAG...
+   META_AD_ACCOUNT_ID=act_1234567890
+   ```
+6. Botda `/reklama` — kabinet nomi va bugungi sarf chiqsa, ulandi.
+
+Ixtiyoriy: `META_APP_SECRET` — ilova sozlamasida «Require App Secret» yoqilgan bo'lsa (ilovaning App Secret'i); `META_API_VERSION` — Graph API versiyasi (standart `v26.0`, eskirsa yangisini yozing). Token faqat serverdagi `.env` da turadi — botga yoki chatga yozmang. Xato bo'lsa (token eskirgan, ruxsat yetmaydi, kabinet topilmadi) bot sizga sutkada bir marta aytadi; `.env` dagi yozuv noto'g'ri bo'lsa bot ishlayveradi, `/reklama` sababini ko'rsatadi.
 
 ## AI'dan hisobot so'rash
 

@@ -40,6 +40,7 @@ from aiogram.types import (
 
 from ..claude import ClaudeError
 from . import analysis
+from .ads import AdsService
 from .advisor import ADVICE_NAME, ADVICE_UID, AdvisorService
 from .analysis import USAGE_NAME, USAGE_UID
 from .archive import ARCHIVE_SINCE_KEY, ArchiveService
@@ -63,6 +64,7 @@ from .store import CHAT_KEEP_DAYS, Group, Lead, ReportStore, iso
 from .tasks import TaskService, task_body
 from .vouchers import ROLE as VOUCHER_ROLE
 from .vouchers import VoucherService, reply_id
+from .watch import LeadWatch
 
 if TYPE_CHECKING:
     from ..handlers import AppContext
@@ -183,6 +185,8 @@ class ReportService:
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
         self.vouchers = VoucherService(self)  # v1.14: «Vaucherlar» guruhi — AI ro'yxat
         self.advisor = AdvisorService(self)  # v1.15: kunlik AI tavsiya (egasiga)
+        self.ads = AdsService(self)  # v1.16: Meta Ads — sarf, natija, muammolar (egasiga)
+        self.watch = LeadWatch(self)  # v1.16: lid oqimi to'xtasa — ogohlantirish
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
         self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
@@ -929,6 +933,8 @@ class ReportService:
             ("yozishmalar", lambda: self.prune_chat(now)),
             ("vaucherlar", lambda: self.vouchers.tick(bot, now)),
             ("tavsiya", lambda: self.advisor.check(bot, now)),
+            ("lid oqimi", lambda: self.watch.check(bot, now)),
+            ("reklama", lambda: self.ads.check(bot, now)),
         )
         for name, step in steps:  # bittasidagi xato qolganlarini (ayniqsa kunlik hisobotni) to'xtatmasin
             try:

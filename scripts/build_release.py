@@ -40,6 +40,7 @@ SECRET_PATTERNS = [
     re.compile(rb"\b\d{8,11}:[A-Za-z0-9_-]{30,}\b"),  # Telegram bot tokeni
     re.compile(rb"sk-[A-Za-z0-9]{40,}"),  # OpenAI va o'xshash kalitlar
     re.compile(rb"gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}"),  # GitHub tokenlari (PAT, OAuth, App)
+    re.compile(rb"\bEAA[A-Za-z0-9]{60,}"),  # Meta (Facebook) access token
     re.compile(rb"-----BEGIN (RSA |EC )?PRIVATE KEY-----"),
 ]
 API = "https://api.github.com"

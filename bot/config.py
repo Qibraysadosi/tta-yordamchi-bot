@@ -117,11 +117,17 @@ class Settings:
     backup_day: int | None = 0  # avtomatik zaxira kuni: 0 — dushanba … 6 — yakshanba; None — har kuni
     advice_model: str = "claude-fable-5-2"  # v1.15: kunlik tavsiya — hisobot, lidlar va yozishmalarni tahlil qiladi
     advice_effort: str = "high"  # kunlik tavsiya uchun fikrlash darajasi: low | medium | high
+    meta_access_token: str | None = None  # v1.16: Meta Ads (faqat o'qish) — System User token, ads_read ruxsati
+    meta_ad_account_id: str | None = None  # reklama kabineti: act_<raqam>
+    meta_app_secret: str | None = None  # ilovada «Require App Secret» yoqilgan bo'lsa (appsecret_proof uchun)
+    meta_api_version: str = "v26.0"
+    meta_problem: str | None = None  # .env dagi Meta sozlamasidagi xato: bot ishlayveradi, /reklama sababini aytadi
 
 
 OFF_WORDS = ("off", "none", "0", "yoq", "yo'q")
 ADVICE_EFFORTS = ("low", "medium", "high")  # kunlik tavsiya: xhigh / max — bitta tahlil uchun ortiqcha qimmat
 DEFAULT_GITHUB_REPO = "Qibraysadosi/tta-yordamchi-bot"
+META_API_VERSION = "v26.0"  # Graph / Marketing API (2026-07-29); eskirsa — .env da META_API_VERSION
 
 
 def load_settings() -> Settings:
@@ -227,6 +233,8 @@ def load_settings() -> Settings:
     if not re.fullmatch(r"[A-Za-z0-9_./-]{1,100}", github_branch) or ".." in github_branch:
         raise ConfigError("GITHUB_BRANCH tarmoq nomi bo'lsin (masalan main)")
 
+    meta = _meta_settings()
+
     return Settings(
         telegram_token=token,
         anthropic_api_key=api_key,
@@ -269,4 +277,38 @@ def load_settings() -> Settings:
         backup_day=_backup_day(),
         advice_model=advice_model,
         advice_effort=advice_effort,
+        **meta,
     )
+
+
+def _meta_settings() -> dict:
+    """Meta Ads (v1.16) — ixtiyoriy integratsiya: xato yozilsa bot to'xtamaydi, faqat ulanmagan bo'ladi va /reklama
+    sababini aytadi (ConfigError bot ishga tushishiga to'sqinlik qilardi)."""
+    token, raw_account = _env("META_ACCESS_TOKEN"), _env("META_AD_ACCOUNT_ID")
+    problems: list[str] = []
+    account = None
+    if raw_account:
+        digits = raw_account.lower().removeprefix("act_").strip()
+        if digits.isdigit():
+            account = f"act_{digits}"
+        else:
+            problems.append("META_AD_ACCOUNT_ID — reklama kabineti raqami bo'lsin (masalan act_1234567890)")
+    if token and not re.fullmatch(r"[A-Za-z0-9_.|-]{20,}", token):
+        problems.append("META_ACCESS_TOKEN ko'rinishi noto'g'ri — Meta bergan tokenni to'liq, bo'shliqsiz yozing")
+        token = None
+    if token and not raw_account:
+        problems.append("META_AD_ACCOUNT_ID yozilmagan")
+    if raw_account and not _env("META_ACCESS_TOKEN"):
+        problems.append("META_ACCESS_TOKEN yozilmagan")
+    version = _env("META_API_VERSION", META_API_VERSION)
+    if not re.fullmatch(r"v\d{1,3}\.\d{1,2}", version):
+        problems.append(f"META_API_VERSION — masalan {META_API_VERSION}")
+        version = META_API_VERSION
+    connected = bool(token and account)
+    return {
+        "meta_access_token": token if connected else None,
+        "meta_ad_account_id": account if connected else None,
+        "meta_app_secret": _env("META_APP_SECRET") if connected else None,
+        "meta_api_version": version,
+        "meta_problem": "; ".join(problems) or None,
+    }

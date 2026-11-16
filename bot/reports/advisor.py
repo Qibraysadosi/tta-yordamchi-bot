@@ -7,8 +7,9 @@ Qoidalar:
 - Faqat egasiga (lichkada), ish kunlari advice_time da (standart 20:30) — o'sha paytgacha tugagan so'nggi hisobot
   kuni bo'yicha; bot o'chiq bo'lsa 4 soatgacha kechikib yuboradi. Bir hisobot kuniga bitta tavsiya (rp_advice);
   /tavsiya — saqlanganini ko'rsatadi yoki qayta tahlil qiladi; «/tavsiya bugun» — kun tugamasdan (oraliq).
-- Modelga telefon raqamlar, JSHSHIR va pasport yuborilmaydi (rahbar ko'rinishi — masked). Reklama xarajati botda
-  yo'q: model faqat lidlar oqimidan xulosa qiladi.
+- Modelga telefon raqamlar, JSHSHIR va pasport yuborilmaydi (rahbar ko'rinishi — masked). Meta Ads ulangan bo'lsa
+  (v1.16, «ads» bo'limi) — reklama sarfi, lid / «keladi» / vaucher narxi, kampaniyalar; aks holda model faqat lidlar
+  oqimidan xulosa qiladi.
 - Xarajat usage_log'da ADVICE_UID («💡 Kunlik tavsiya») bilan; kesh ishlatilmaydi (bir martalik so'rov).
 - Model ishlamasa (ruxsat yo'q, rad etdi) — botning asosiy modeli bilan; kredit tejamkor rejimga yetgan bo'lsa —
   tejamkor model. Tahlil fon vazifasida ketadi (30 soniyalik sikl — eslatmalar, vazifalar — to'xtab qolmaydi)."""
@@ -80,13 +81,14 @@ Ma'lumot bo'limlari:
 - chats — ulangan guruhlardagi shu kungi yozishmalar (rahbarlar, vazifalar, vaucher guruhlari va lidlar ostidagi izohlar).
 - vouchers, vouchers_month — vaucherga yuborilganlar: kim yubordi, holatlari.
 - tasks — ochiq va yaqinda bajarilgan vazifalar.
+- ads — reklama (Meta Ads, ulangan bo'lsa): kabinet; so'nggi 14 kun — har kungi sarf, Meta lidlari, guruhga tushgan lidlar va asosiy natija; 7 va 30 kun jami (sarf, lidlar, asosiy natija, vaucher va har birining narxi); kampaniya, ad set va reklamalar (sarf, CTR, CPM, chastota, Meta lid narxi); faol byudjetlar; rad etilgan yoki muammoli reklamalar.
 - staff, groups, schedule — xodimlar, guruhlar (bot adminmi) va ish tartibi.
 - previous_advice — oldingi kunlarda o'zing bergan tavsiyalar.
 Bo'lim yo'q bo'lsa — u bo'yicha ma'lumot yo'q; «unavailable» — sababi yozilgan.
 
 Qoidalar:
 1. Faqat berilgan ma'lumotga tayan, raqam o'ylab topma. Har tavsiyada asos bo'lgan raqamni ko'rsat.
-2. Reklama xarajati, lid narxi, ko'rishlar va reklama kabinetidagi boshqa ko'rsatkichlar senda yo'q (hali ulanmagan) — ular haqida taxmin qilma. Reklama bo'yicha lidlar oqimi va natijasidan xulosa qil: qaysi kurs, hudud, yosh, kun va soatda lid ko'p yoki kam, qaysilari asosiy natijaga aylanyapti, odamlar nimani so'rayapti va nega rad etyapti.
+2. Reklama: ads bo'limi bo'lsa — tavsiyani raqamga bog'la: qaysi kampaniya, ad set yoki reklamaga byudjet qo'shish, qaysini kamaytirish yoki to'xtatish (nomi bilan, hozirgi byudjeti va natijasi bilan); kampaniya nomlarini kurslar bilan solishtir. Asosiy o'lchov — «keladi» va vaucher narxi, faqat Meta lid narxi emas: lid arzon, lekin asosiy natija kam bo'lsa — sifatsiz lid. Meta lidlari guruhga tushganlardan ancha ko'p bo'lsa — forma → Telegram ulanishini tekshirishni ayt. Chastota 3 dan oshib, CTR tushsa — kreativ charchagan, yangisi kerak. Rad etilgan reklama yoki kabinet muammosi — ⚠️ bo'limida birinchi. ads bo'lmasa — reklama xarajati senda yo'q, taxmin qilma: lidlar oqimi va natijasidan xulosa qil (qaysi kurs, hudud, yosh, kun va soatda lid ko'p yoki kam, qaysilari asosiy natijaga aylanyapti, odamlar nimani so'rayapti va nega rad etyapti).
 3. Kichik sonlardan katta xulosa chiqarma (3 ta liddan 2 tasi — hali trend emas). Ma'lumot kam bo'lsa, shuni ochiq ayt va nimani kuzatish kerakligini yoz.
 4. Eng muhim 3–6 ta tavsiya ber. Har biri: nima qilish kerak (aniq harakat), nega (raqam), kim qiladi. «Sifatni oshiring» kabi umumiy gap yozma.
 5. previous_advice'dagi gaplarni takrorlama. Oldingi tavsiya bo'yicha o'zgarish ko'rinsa, bir qatorda ayt («Kecha: … → bugun: …»); muhimi bajarilmagan bo'lsa, qisqa eslat.
@@ -361,8 +363,11 @@ class AdvisorService:
             return [{"report_day": a.day.isoformat(), "advice": a.text[:HISTORY_TEXT]}
                     for a in await self.store.before(day.isoformat(), HISTORY)] or None
 
+        async def ads() -> dict | None:
+            return await reports.ads.digest(day, now)
+
         for name, build in (("day", day_stats), ("day_response", day_response), ("leads", leads),
-                            ("two_weeks", two_weeks), ("month", month), ("chats", chats),
+                            ("two_weeks", two_weeks), ("month", month), ("ads", ads), ("chats", chats),
                             ("vouchers", vouchers_day), ("vouchers_month", vouchers_month), ("tasks", tasks),
                             ("staff", staff), ("groups", groups), ("schedule", schedule),
                             ("previous_advice", previous)):

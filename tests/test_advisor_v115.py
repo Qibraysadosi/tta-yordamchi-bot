@@ -198,8 +198,9 @@ def test_scheduled_advice_once_per_working_day(tmp_path):
             req = env.api.requests[-1]
             assert req["model"] == "claude-fable-5-2" and req["output_config"] == {"effort": "high"}
             assert "cache_control" not in req and "thinking" not in req and "tools" not in req  # bir martalik so'rov
-            assert "OPERATORLARGA" in req["system"] and "Reklama xarajati" in req["system"]
+            assert "OPERATORLARGA" in req["system"] and "ads bo'lmasa — reklama xarajati senda yo'q" in req["system"]
             content = req["messages"][0]["content"]
+            assert '"ads"' not in content  # Meta ulanmagan — reklama bo'limi yo'q
             assert "Hisobot kuni: 21.10.2026 (chorshanba)" in content and '"report_day":"2026-10-21"' in content
             assert "998" not in content
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
+from ..meta_ads import MetaAdsError
 from ..prompt import WEEKDAYS, uz_date
 from . import insights, vouchers
 from .excel import format_phone, hide_numbers, mask_phone
@@ -43,10 +44,11 @@ if TYPE_CHECKING:
 
 BASE_TOOLS = ("report_stats", "report_leads", "task_status")
 SHARED_TOOLS = BASE_TOOLS + ("report_breakdown", "report_send", "voucher_list")  # egasi va rahbar
-OWNER_TOOLS = ("bot_status", "group_messages")  # v1.13: faqat egasi
+OWNER_TOOLS = ("bot_status", "group_messages", "ads_stats")  # v1.13–1.16: faqat egasi
 TOOL_NAMES = SHARED_TOOLS + OWNER_TOOLS
 STATUS_TEXT = {"report_send": "📤 Hisobot tayyorlanmoqda…", "bot_status": "⚙️ Bot holati tekshirilmoqda…",
-               "group_messages": "💬 Guruh yozishmalari o'qilmoqda…", "voucher_list": "📄 Vaucherlar o'qilmoqda…"}
+               "group_messages": "💬 Guruh yozishmalari o'qilmoqda…", "voucher_list": "📄 Vaucherlar o'qilmoqda…",
+               "ads_stats": "📣 Reklama ma'lumoti olinmoqda…"}
 PERIODS = ("today", "yesterday", "this_week", "last_week", "this_month", "last_month", "day", "range")
 LEADS_LIMIT, LEADS_MAX = 30, 100
 TASKS_LIMIT, TASKS_MAX = 20, 100
@@ -74,7 +76,8 @@ REPORT_GUIDE = """Call center va vazifalar (ma'lumot botning bazasida, vositalar
 OWNER_GUIDE = """Bot va guruhlar (faqat egasi uchun):
 - Xarajat, foydalanuvchilar, xodimlar ro'yxati, guruhlar (bot admini, oxirgi faollik), sozlamalar (hisobot vaqti, modellar, zaxira), yuborilgan hisobotlar, bugungi faollik — bot_status (kerakli section bilan).
 - Guruhlarda kim nima yozgani («rahbarlar guruhida bugun nima deyishdi?», «Malika kecha nima yozdi?», «kim narx haqida so'radi?») — group_messages. Avval qisqa xulosa, keyin muhim xabarlar vaqti va muallifi bilan. Botning o'z sozlamalarini o'zgartira olmaysan — buning uchun buyruqlar va Mini App bor.
-- Kunlik tavsiya: bot har ish kuni kechqurun egasiga «💡 Kunlik tavsiya» yuboradi (kuchli model kun ma'lumotlarini alohida tahlil qiladi; /tavsiya). Egasi unga javob (reply) yozsa, matni [Iqtibos] ichida keladi — shu asosda davom et, raqamlarni vositalar bilan tekshir. Oldingi tavsiyalar matni — bot_status (section=advice)."""
+- Kunlik tavsiya: bot har ish kuni kechqurun egasiga «💡 Kunlik tavsiya» yuboradi (kuchli model kun ma'lumotlarini alohida tahlil qiladi; /tavsiya). Egasi unga javob (reply) yozsa, matni [Iqtibos] ichida keladi — shu asosda davom et, raqamlarni vositalar bilan tekshir. Oldingi tavsiyalar matni — bot_status (section=advice).
+- Reklama (Meta Ads): sarf, lid narxi, «keladi» va vaucher narxi, kampaniya / ad set / reklama bo'yicha, rad etilgan reklamalar — ads_stats. Narxni Meta lidi bo'yicha emas, asosiy natija va vaucher bo'yicha ham ko'rsat. Meta ulanmagan bo'lsa — xato matnidagi yo'l bilan qanday ulashni qisqa ayt."""
 
 LEADER_PROMPT = """Sen TTA o'quv markazining call center hisobotlari va vazifalari bo'yicha yordamchisan. Rahbar bilan gaplashyapsan.
 Bugungi sana: {sana}.
@@ -313,13 +316,14 @@ class ReportTools:
     async def run(self, name: str, args: dict) -> str:
         handlers = {"report_stats": self.stats, "report_leads": self.leads, "task_status": self.tasks,
                     "report_breakdown": self.breakdown, "report_send": self.send, "bot_status": self.bot_status,
-                    "group_messages": self.group_messages, "voucher_list": self.voucher_list}
+                    "group_messages": self.group_messages, "voucher_list": self.voucher_list,
+                    "ads_stats": self.ads_stats}
         handler = handlers.get(name) if name in self.names else None
         if handler is None:
             raise ReportToolError(f"Noma'lum vosita: {name}")
         try:
             data = await handler(args)
-        except (ReportToolError, InsightError, vouchers.VoucherError) as exc:
+        except (ReportToolError, InsightError, vouchers.VoucherError, MetaAdsError) as exc:
             data = {"error": str(exc)}
         return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
@@ -612,6 +616,10 @@ class ReportTools:
     async def bot_status(self, args: dict) -> dict:
         await self.reports.ensure()
         return await insights.bot_status(self.reports, args, self.clock())
+
+    async def ads_stats(self, args: dict) -> dict:
+        await self.reports.ensure()
+        return await self.reports.ads.stats(args, self.clock())
 
     async def group_messages(self, args: dict) -> dict:
         reports = self.reports

@@ -549,6 +549,11 @@ class ReportStore:
         )
         return [_lead(r) for r in rows]
 
+    async def last_lead_at(self) -> str | None:
+        """Eng so'nggi lid tushgan vaqt (UTC ISO) — lid oqimi nazorati uchun (v1.16)."""
+        row = await self._one("SELECT MAX(created_at) AS at FROM rp_leads WHERE source != 'stub'", ())
+        return row["at"] if row is not None and row["at"] else None
+
     async def leads_by_ids(self, ids: Iterable[int]) -> dict[int, Lead]:
         ids = list(set(ids))
         result: dict[int, Lead] = {}

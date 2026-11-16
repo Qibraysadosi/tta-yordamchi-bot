@@ -35,7 +35,7 @@ ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal", "advice"}
 OWNER_KINDS = {"journal": "Kundalik faqat bot egasiga ko'rinadi.", "advice": "Tavsiyalar faqat bot egasiga ko'rinadi."}
 SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
                    "journal_time", "weekly_enabled", "monthly_enabled", "excel_time", "picture", "advice_enabled",
-                   "advice_time")
+                   "advice_time", "ads_alerts")
 TAG_RE = re.compile(r"<[^>]+>")
 SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
@@ -303,6 +303,8 @@ class ReportAPI:
                     "can_read_all": bool(service.bot_info.get("can_read_all"))},
             "model": label(self.ctx.settings.report_model),
             "advice_model": service.advisor.model_label(),
+            "ads": await service.ads.info(),  # v1.16: Meta Ads holati
+            "watch": await service.watch.status(service.now()),
             "last_report": await store.last_report(),
             "diag": await store.counts_since(since),
             "operators_dm": sum(1 for p in operators if p.dm_ok),

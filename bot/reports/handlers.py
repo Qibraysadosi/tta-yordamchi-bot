@@ -26,7 +26,7 @@ from aiogram.types import (
     MessageReactionUpdated,
 )
 
-from . import staff
+from . import certs, staff
 from .advisor import INTERIM_REUSE, Advice, AdviceError
 from .archive import parse_key
 from .render import split_message
@@ -763,6 +763,73 @@ async def on_voucher_export(message: Message, bot: Bot, ctx) -> None:
     service.vouchers.kick(bot)
 
 
+# ---------------------------------------------------------------------- v1.18: sertifikat.mehnat.uz bilan solishtirish
+async def cmd_compare(message: Message, bot: Bot, ctx) -> None:
+    """/solishtir — keyingi Excel / rasm (15 daqiqa ichida) tizim ro'yxati sifatida solishtiriladi. Fayl yoki rasm
+    izohida /solishtir yozilsa — darrov."""
+    service = _service(ctx)
+    if service is None:
+        return
+    user = message.from_user
+    if user is None or not ctx.is_owner(user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    await service.ensure()
+    service.certs.waiting[user.id] = time.monotonic()  # albomning qolgan rasmlari ham shu yerga kelsin
+    if message.document is not None or message.photo:
+        if certs.accepts(message):
+            await on_cert_upload(message, bot, ctx)
+            return
+        await message.answer("⚠️ Bu fayl ro'yxat emas — tizimdan yuklangan Excel (.xlsx), CSV yoki ro'yxat rasmini yuboring.")
+        return
+    await message.answer(certs.COMPARE_HELP, parse_mode=ParseMode.HTML)
+
+
+async def is_cert_upload(message: Message, ctx) -> bool:
+    """/solishtir'dan keyin 15 daqiqa ichida egasi yuborgan Excel / CSV fayl yoki rasm. Yangilanish kutilayotgan
+    bo'lsa (/yangilash) — tegilmaydi."""
+    service = _service(ctx)
+    user = message.from_user
+    if service is None or user is None or not ctx.is_owner(user.id) or not certs.accepts(message):
+        return False
+    if user.id in getattr(ctx, "awaiting_update", {}) or (message.caption or "").strip().lower().startswith("/yangilash"):
+        return False
+    return service.certs.waits(user.id)
+
+
+async def on_cert_upload(message: Message, bot: Bot, ctx) -> None:
+    service = _service(ctx)
+    if service is None or message.from_user is None:
+        return
+    group = [message]
+    if message.media_group_id:
+        collected = await service.certs.collect(message.media_group_id, message)
+        if collected is None:
+            return
+        group = sorted(collected, key=lambda m: m.message_id)
+    service.certs.waiting.pop(message.from_user.id, None)
+    status = await message.answer("🔎 Ro'yxat o'qilmoqda va solishtirilmoqda…")
+    try:
+        await service.ensure()
+        result = await service.certs.run_upload(bot, group)
+    except certs.CertError as exc:
+        await status.edit_text(f"⚠️ {exc}")
+        return
+    except AiogramError as exc:
+        log.warning("Ro'yxatni yuklab bo'lmadi: %s", exc)
+        await status.edit_text("⚠️ Faylni Telegram'dan yuklab bo'lmadi — qayta yuboring.")
+        return
+    except Exception:  # noqa: BLE001
+        log.exception("Ro'yxatni solishtirishda xato")
+        await status.edit_text("⚠️ Ro'yxatni o'qishda xato. Tizimdan yuklangan Excel'ni o'zgartirmasdan yuboring "
+                               "(yoki .xlsx qilib qayta saqlang).")
+        return
+    await status.edit_text(service.certs.summary_text(result), parse_mode=ParseMode.HTML)
+    await bot.send_document(message.chat.id, BufferedInputFile(result.excel, filename=result.filename),
+                            caption="🔎 Solishtirish natijasi: «Solishtirish» — har qator (Bizniki — Ha / Yo'q), "
+                                    "«Ro'yxatda yo'q» — guruhda yozilgan, tizimda topilmaganlar.")
+
+
 # ---------------------------------------------------------------------- v1.15: kunlik tavsiya
 ADVICE_ON = ("yoq", "yoqish", "on")
 ADVICE_OFF = ("o'chir", "ochir", "o'chirish", "off")
@@ -968,7 +1035,9 @@ def build_router() -> Router:
     router.message.register(cmd_advice, Command("tavsiya", "advice", "maslahat"), private)
     router.message.register(cmd_ads, Command("reklama", "ads"), private)
     router.message.register(cmd_callbacks, Command("qayta", "callbacks"), private)
+    router.message.register(cmd_compare, Command("solishtir", "compare", "sertifikat"), private)
     router.message.register(on_voucher_export, private, is_voucher_export)
+    router.message.register(on_cert_upload, private, is_cert_upload)
     router.message.register(on_contact, private, is_owner_contact)
     router.message.register(on_contact_rename, private, is_contact_rename)
     router.message.register(on_staff_list, private, is_staff_list)

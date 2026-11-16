@@ -65,6 +65,7 @@ from .tasks import TaskService, task_body
 from .vouchers import ROLE as VOUCHER_ROLE
 from .vouchers import VoucherService, reply_id
 from .followups import FollowupService
+from .certs import CertService
 from .watch import LeadWatch
 
 if TYPE_CHECKING:
@@ -185,6 +186,7 @@ class ReportService:
         self.tasks = TaskService(self)
         self.archive = ArchiveService(self)  # v1.9: kundalik va haftalik / oylik Excel
         self.vouchers = VoucherService(self)  # v1.14: «Vaucherlar» guruhi — AI ro'yxat
+        self.certs = CertService(self)  # v1.18: sertifikat.mehnat.uz ro'yxati bilan solishtirish (/solishtir)
         self.advisor = AdvisorService(self)  # v1.15: kunlik AI tavsiya (egasiga)
         self.ads = AdsService(self)  # v1.16: Meta Ads — sarf, natija, muammolar (egasiga)
         self.watch = LeadWatch(self)  # v1.16: lid oqimi to'xtasa — ogohlantirish

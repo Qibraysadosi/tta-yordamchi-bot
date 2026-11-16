@@ -1,7 +1,7 @@
-🔁 v1.17.0 — Qayta qo'ng'iroq navbati va lid → vaucher
-• Operator «ertaga 15:00 da qilaman» deb yozsa yoki 🆒 / 🤔 qo'ysa — lid navbatga tushadi, vaqti kelganda bot o'sha operatorga lichkada eslatadi
-• Kunlik hisobotda «🔁 Qayta qo'ng'iroq: 9/12 bajarildi · qolgan: …», kundalikda — kim qilmagani va ertangi reja; /qayta — hozirgi navbat
-• Mini App → Sozlamalar → Statuslar: har status uchun qayta qo'ng'iroq vaqti (🆒 — 3 soatdan keyin, 🤔 — ertasi kuni); eslatmani o'chirish mumkin
-• Lid → vaucher: vaucherga yuborilgan odam lidi bilan F.I.Sh. bo'yicha bog'lanadi — qaysi lid vaucherga yetdi va lidga kim qo'ng'iroq qilgan edi
-• /vaucher'da «🔗 Shu oy lidlardan: N ta (Malika 4 …)», Excel «Lidlar» varag'ida «Vaucher» ustuni, AI ham biladi
-• Operatorlar eslatma olishi uchun botda /start bosgan bo'lishi kerak
+🔎 v1.18.0 — sertifikat.mehnat.uz bilan solishtirish
+• /solishtir → tizimdan yuklangan Excel'ni (yoki ro'yxat rasmini) yuborasiz — bot «qaysilari biziki?» savoliga javob beradi
+• Har odam vaucher guruhi va lidlar bilan JSHSHIR / F.I.Sh. bo'yicha solishtiriladi (telefonning o'zi yetmaydi)
+• Javobda: nechtasi biziki, kim yubordi, lidga kim qo'ng'iroq qilgan, tizimdagi holati; Excel'da har qator — Ha / Yo'q va izoh
+• Tizimdagi holat (tasdiqlandi, o'qiyapti, tugatdi, rad) bazaga yoziladi; kunlik hisobotda «🔄 tizimdan»
+• «Guruhda yozilgan, ro'yxatda yo'q» — Excel'da alohida varaq
+• Excel bot ichida o'qiladi — shaxsiy ma'lumot AI'ga ketmaydi; buyruq faqat sizga

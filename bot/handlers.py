@@ -98,6 +98,7 @@ OWNER_COMMANDS = COMMANDS + [
     BotCommand(command="tavsiya", description="💡 Kunlik AI tavsiya: nimani yaxshilash kerak"),
     BotCommand(command="reklama", description="📣 Reklama nazorati: Meta Ads, lid oqimi"),
     BotCommand(command="qayta", description="🔁 Qayta qo'ng'iroq navbati"),
+    BotCommand(command="solishtir", description="🔎 sertifikat.mehnat.uz ro'yxati bilan solishtirish"),
 ]
 UPDATE_WAIT_SECONDS = 15 * 60
 # Bot yuborgan, lekin suhbat tarixida yo'q xabarlar: ularga javob (reply) yozilsa, matni iqtibos qilinadi
@@ -190,6 +191,8 @@ ADMIN_HELP = (
     "reklamalar; ish vaqtida lid kelmay qolsa — darrov xabar. «/reklama o'chir» — ogohlantirishlarsiz\n"
     "🔁 /qayta — qayta qo'ng'iroq navbati: operator «ertaga qilaman» deb yozgan yoki 🆒 / 🤔 qo'ygan lidlar; vaqti "
     "kelganda bot operatorga eslatadi, hisobotda «9/12 bajarildi»\n"
+    "🔎 /solishtir — sertifikat.mehnat.uz'dan yuklangan Excel (yoki ro'yxat rasmi) bilan solishtirish: kim biziki "
+    "(vaucher guruhi va lidlar, JSHSHIR / F.I.Sh. bo'yicha), kim yubordi, tizimdagi holati; holatlar bazada yangilanadi\n"
     "💬 Hisobot savollari — chatda oddiy yozing: «bugun nechta qo'ng'iroq bo'ldi?», «5-noyabrda nechta lid "
     "tushdi?», «kechagi hisobotni yubor», «o'tgan hafta Excel'ini tashla», «qaysi kursdan lid ko'p?», «Malika "
     "vazifani bajardimi?» — AI hisobot ma'lumotidan javob beradi, hisobot va Excel'ni shu chatga yuboradi. Rahbarlar "

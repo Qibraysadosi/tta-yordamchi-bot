@@ -436,8 +436,8 @@ class VoucherStore(ReportStore):
         """Davrdagi holatlar (odam yozuvi bilan). counted=True — faqat vaucher deb sanaladiganlar (counts_as_voucher),
         False — ma'lumoti yetarli bo'lmaganlar, None — hammasi."""
         rows = await self._all(
-            "SELECT e.status AS event, e.at AS at, v.* FROM rp_voucher_events e JOIN rp_vouchers v ON v.id = e.voucher_id"
-            " WHERE e.at >= ? AND e.at < ? ORDER BY e.at, e.id",
+            "SELECT e.status AS event, e.at AS at, e.message_id AS event_msg, v.* FROM rp_voucher_events e"
+            " JOIN rp_vouchers v ON v.id = e.voucher_id WHERE e.at >= ? AND e.at < ? ORDER BY e.at, e.id",
             (start, end),
         )
         events = [dict(r) for r in rows]
@@ -1007,8 +1007,11 @@ class VoucherService:
             linked = len(await leads_for_people(self.reports, sent))
             if linked:
                 line += f" · lidlardan {linked}"
-        changes = Counter(e["event"] for e in events if e["event"] != "sent")
+        changes = Counter(e["event"] for e in events if e["event"] != "sent" and e.get("event_msg") != 0)
         parts = [f"{status_text(s)} {changes[s]}" for s in STATUSES if changes.get(s)]
+        system = Counter(e["event"] for e in events if e["event"] != "sent" and e.get("event_msg") == 0)  # v1.18: /solishtir
+        if system:
+            parts.append("🔄 tizimdan: " + ", ".join(f"{status_text(s)} {system[s]}" for s in STATUSES if system.get(s)))
         lines = [line + (" · " + " · ".join(parts) if parts else "")]
         pending = await self.store.pending_count(iso(start), iso(end))
         if pending:

@@ -250,6 +250,16 @@ class ArchiveStore(ReportStore):
 
 
 # ------------------------------------------------------------------ xizmat
+def _voucher_cell(row: dict | None, tz: Any) -> str:
+    """Excel «Vaucher» ustuni: holati va vaucher guruhiga yozilgan sana."""
+    if not row:
+        return ""
+    from .vouchers import status_text  # noqa: PLC0415
+
+    sent = from_iso(row["created_at"], tz)
+    return f"{status_text(row['status'])}" + (f" · {sent:%d.%m.%Y}" if sent else "")
+
+
 class ArchiveService:
     def __init__(self, reports: "ReportService") -> None:
         self.reports = reports
@@ -296,6 +306,11 @@ class ArchiveService:
             await reports.analyze_pending(FLUSH_BATCHES)  # izohlar tahlilsiz qolmasin
             report_day = day if day.weekday() in s.days else current_day(now, s)
             lines += [""] + self._journal_calls(await build_overview(reports.store, s, report_day, now))
+            try:  # v1.17: qayta qo'ng'iroq va'dalari
+                await reports.followups.sync()
+                lines += await reports.followups.journal_lines(day, now)
+            except Exception:  # noqa: BLE001
+                log.exception("Kundalikka qayta qo'ng'iroq bloki qo'shilmadi")
             try:
                 ads = await reports.ads.journal_lines(day, now)  # v1.16: Meta Ads (faqat egasiga — kundalik shunday)
             except Exception:  # noqa: BLE001 — reklama bloki chiqmasa ham kundalik ketsin
@@ -508,6 +523,9 @@ class ArchiveService:
             outcome = ov if ov.live else await overview_between(store, s, period.start, now, now)
             notes = await self.store.lead_notes(lead.id for lead in new)
             names = await self._names()
+            from .funnel import people_for_leads  # noqa: PLC0415 — funnel → vouchers (aylanma import bo'lmasin)
+
+            vouchers_of = await people_for_leads(self.reports, new)  # v1.17: «Vaucher» ustuni
             for lead in new:
                 status = outcome.lead_status.get(lead.id)
                 note = notes.get(lead.id) or {}
@@ -519,6 +537,7 @@ class ArchiveService:
                     people=", ".join(names(uid) for uid in outcome.lead_people.get(lead.id, [])),
                     note=" ".join(str(note.get("text") or "").split()), reason=note.get("reason") or "",
                     callback=note.get("callback") or "", link=message_link(lead.chat_id, lead.message_id),
+                    voucher=_voucher_cell(vouchers_of.get(lead.id), self.tz),
                 ))
 
         task_lines = [

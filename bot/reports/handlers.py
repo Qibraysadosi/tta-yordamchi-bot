@@ -30,7 +30,7 @@ from . import staff
 from .advisor import INTERIM_REUSE, Advice, AdviceError
 from .archive import parse_key
 from .render import split_message
-from .service import ROLE_LABELS, ReportService
+from .service import FLUSH_BATCHES, ROLE_LABELS, ReportService
 from .stats import display_day, latest_due_day, period_bounds
 from .tasks import DONE, OPEN, is_explicit, preset_due, task_body
 from .vouchers import IMPORT_LIMIT, IMPORT_WAIT, VoucherError
@@ -933,6 +933,23 @@ async def cmd_ads(message: Message, command: CommandObject, bot: Bot, ctx) -> No
         await message.answer(part, parse_mode=ParseMode.HTML)
 
 
+# ---------------------------------------------------------------------- v1.17: qayta qo'ng'iroq navbati
+async def cmd_callbacks(message: Message, bot: Bot, ctx) -> None:
+    """/qayta — vaqti o'tgan va bugungi qayta qo'ng'iroqlar (operatorlar bo'yicha)."""
+    service = _service(ctx)
+    if service is None:
+        return
+    user = message.from_user
+    if user is None or not ctx.is_owner(user.id):
+        await message.answer("Bu buyruq faqat bot egasi uchun.")
+        return
+    await service.ensure()
+    await service.analyze_pending(FLUSH_BATCHES)
+    await service.followups.sync()
+    for part in split_message(await service.followups.queue_text(service.now())):
+        await message.answer(part, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 def build_router() -> Router:
     router = Router(name="reports")
     router.my_chat_member.register(on_my_chat_member)
@@ -950,6 +967,7 @@ def build_router() -> Router:
     router.message.register(cmd_voucher, Command("vaucher", "voucher", "vaucherlar"), private)
     router.message.register(cmd_advice, Command("tavsiya", "advice", "maslahat"), private)
     router.message.register(cmd_ads, Command("reklama", "ads"), private)
+    router.message.register(cmd_callbacks, Command("qayta", "callbacks"), private)
     router.message.register(on_voucher_export, private, is_voucher_export)
     router.message.register(on_contact, private, is_owner_contact)
     router.message.register(on_contact_rename, private, is_contact_rename)

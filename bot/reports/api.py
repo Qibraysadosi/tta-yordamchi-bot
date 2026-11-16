@@ -19,6 +19,7 @@ from ..prompt import MONTHS, WEEKDAYS
 from .advisor import plain_text
 from .archive import MONTH, WEEK, parse_key
 from .excel import hide_numbers
+from .followups import RETRY_CHOICES, RETRY_MAX, retry_label
 from .service import ROLE_LABELS, ReportService
 from .stats import OTHER, Overview, Row, current_day, display_day, neighbour_day, period_bounds
 from .store import PEOPLE_KINDS, ROLES, TITLES, clean_dept, clean_username, iso
@@ -35,7 +36,7 @@ ARCHIVE_KINDS = {"daily", "weekly", "monthly", "journal", "advice"}
 OWNER_KINDS = {"journal": "Kundalik faqat bot egasiga ko'rinadi.", "advice": "Tavsiyalar faqat bot egasiga ko'rinadi."}
 SCHEDULE_FIELDS = ("time", "days", "enabled", "remind_minutes", "work_start", "work_end", "journal_enabled",
                    "journal_time", "weekly_enabled", "monthly_enabled", "excel_time", "picture", "advice_enabled",
-                   "advice_time", "ads_alerts")
+                   "advice_time", "ads_alerts", "followups")
 TAG_RE = re.compile(r"<[^>]+>")
 SEND_COOLDOWN = 15.0  # soniya: bir odam Excel'ni shuncha vaqtda bir marta oladi (har so'rov faylni qaytadan yasaydi)
 STATUS_EMOJI_LIMIT = 8
@@ -88,6 +89,17 @@ def _title(body: dict, kind: str) -> str | None | bool:
         return clean_dept(value) or False
     value = value.lower()
     return value if value in TITLES else False
+
+
+def _retry(body: dict) -> int | None | bool:
+    """v1.17: statusdan keyin qayta qo'ng'iroq (daqiqa): berilmagan — None, noto'g'ri — False."""
+    if "retry_minutes" not in body:
+        return None
+    try:
+        value = int(body["retry_minutes"] or 0)
+    except (TypeError, ValueError):
+        return False
+    return value if 0 <= value <= RETRY_MAX else False
 
 
 def _row(ov: Overview, row: Row, show: Callable[[str], str] = _same) -> dict:
@@ -295,8 +307,10 @@ class ReportAPI:
                 for g in await store.groups()
             ],
             "role_labels": {k: v.split(" ", 1)[1] for k, v in ROLE_LABELS.items()},
-            "statuses": [{"id": s.id, "emoji": s.emoji, "label": s.label, "positive": s.positive}
+            "statuses": [{"id": s.id, "emoji": s.emoji, "label": s.label, "positive": s.positive,
+                          "retry_minutes": s.retry_minutes, "retry_label": retry_label(s.retry_minutes)}
                          for s in await store.statuses()],
+            "retry_choices": [{"minutes": m, "label": retry_label(m)} for m in RETRY_CHOICES],
             "schedule": _schedule(schedule),
             "bot": {"username": service.bot_info.get("username"),
                     "has_main_web_app": bool(service.bot_info.get("has_main_web_app")),
@@ -344,7 +358,10 @@ class ReportAPI:
             return _error(f"Ma'nosini yozing ({STATUS_LABEL_LIMIT} belgigacha)")
         if any(s.emoji == emoji for s in await self.service.store.statuses()):
             return _error("Bu emoji allaqachon bor", 409, "exists")
-        status = await self.service.store.add_status(emoji, text, bool(body.get("positive")))
+        retry = _retry(body)
+        if retry is False:
+            return _error("Qayta qo'ng'iroq vaqti noto'g'ri")
+        status = await self.service.store.add_status(emoji, text, bool(body.get("positive")), retry or 0)
         self.service.statuses_changed()
         return _json({"ok": True, "status": {"id": status.id, "emoji": status.emoji}})
 
@@ -366,7 +383,11 @@ class ReportAPI:
             except (TypeError, ValueError):
                 return _error("Tartib raqami noto'g'ri")
         positive = bool(body["positive"]) if "positive" in body else None
-        if not await self.service.store.update_status(status_id, label=text, positive=positive, position=position):
+        retry = _retry(body)
+        if retry is False:
+            return _error("Qayta qo'ng'iroq vaqti noto'g'ri")
+        if not await self.service.store.update_status(status_id, label=text, positive=positive, position=position,
+                                                      retry_minutes=retry):
             return _error("Status topilmadi", 404, "not_found")
         self.service.statuses_changed()
         return _json({"ok": True})

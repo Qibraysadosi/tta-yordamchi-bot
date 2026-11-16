@@ -73,13 +73,13 @@ Markaz haqida:
 
 Ma'lumot bo'limlari:
 - meta — hisobot kuni va davri; interim=true bo'lsa kun hali tugamagan (hozirgi holat).
-- day — shu kun natijalari: jami qo'ng'iroqlar, har operator (ismi bilan) va status bo'yicha, yangi va hech kim belgilamagan lidlar, kurslar, rad sabablari, qayta qo'ng'iroq so'raganlar.
+- day — shu kun natijalari: jami qo'ng'iroqlar, har operator (ismi bilan) va status bo'yicha, yangi va hech kim belgilamagan lidlar, kurslar, rad sabablari, qayta qo'ng'iroq so'raganlar; callbacks — qayta qo'ng'iroq va'dalari (due — vaqti kelgan, done — qilingan, missed — vaqti o'tib, qilinmagan, by_person — kim bo'yicha).
 - day_response — shu kuni tushgan lidlarga birinchi qo'ng'iroqqacha o'tgan daqiqalar (mediana) va lidni kim birinchi olgani.
 - leads — shu kungi lidlar: kurs, tuman, yosh, natija, kim belgilagani, operator izohi, rad sababi.
 - two_weeks — so'nggi 14 kun: kunlar bo'yicha dinamika (days) va shu davrdagi operatorlar jami.
 - month — so'nggi 30 kunda tushgan lidlar kesimlari: kurs, tuman, yosh, soat, hafta kuni; operator — lidni kim birinchi olgani va necha daqiqada. new_leads — tushgan lidlar, main_result / main_share — asosiy natijaga aylangani, unmarked — belgilanmagani.
 - chats — ulangan guruhlardagi shu kungi yozishmalar (rahbarlar, vazifalar, vaucher guruhlari va lidlar ostidagi izohlar).
-- vouchers, vouchers_month — vaucherga yuborilganlar: kim yubordi, holatlari.
+- vouchers, vouchers_month — vaucherga yuborilganlar: kim yubordi, holatlari; from_leads — ulardan qaysilari lidlar guruhidagi lid edi va lidga kim birinchi qo'ng'iroq qilgan (operatorning haqiqiy natijasi).
 - tasks — ochiq va yaqinda bajarilgan vazifalar.
 - ads — reklama (Meta Ads, ulangan bo'lsa): kabinet; so'nggi 14 kun — har kungi sarf, Meta lidlari, guruhga tushgan lidlar va asosiy natija; 7 va 30 kun jami (sarf, lidlar, asosiy natija, vaucher va har birining narxi); kampaniya, ad set va reklamalar (sarf, CTR, CPM, chastota, Meta lid narxi); faol byudjetlar; rad etilgan yoki muammoli reklamalar.
 - staff, groups, schedule — xodimlar, guruhlar (bot adminmi) va ish tartibi.
@@ -272,7 +272,7 @@ class AdvisorService:
         async def two_weeks() -> dict:
             found = await tools.stats({"_window": trend_w, "by_day": True})
             keep = ("totals", "operators", "leaders", "other_departments", "not_in_operator_list", "leads",
-                    "refusal_reasons", "callback_requests", "days")
+                    "refusal_reasons", "callback_requests", "callbacks", "days")
             return {"label": trend_w.label, **{k: found[k] for k in keep if found.get(k)}}
 
         async def month() -> dict:

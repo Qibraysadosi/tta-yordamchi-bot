@@ -40,6 +40,8 @@ DEFAULT_STATUSES = (  # (emoji, ma'nosi, asosiy natija)
     ("💔", "umuman yo'q", 0),
 )
 SEEDED_KEY = "report:statuses_seeded"
+DEFAULT_RETRY = {"🆒": 180, "🤔": 1440}  # v1.17: ko'tarmadi — 3 soatdan keyin, o'ylayapti — ertasi kuni qayta qo'ng'iroq
+RETRY_SEEDED_KEY = "report:retry_seeded"
 TEXT_LIMIT = 1500
 MESSAGE_LIMIT = 2000  # guruh yozishmasi (rp_messages) — bitta xabar matni
 CHAT_KEEP_DAYS = 120  # guruh yozishmalari shuncha kun saqlanadi
@@ -123,6 +125,7 @@ class Status:
     label: str
     positive: bool
     position: int
+    retry_minutes: int = 0  # v1.17: shu status qo'yilsa — shuncha daqiqadan keyin qayta qo'ng'iroq eslatmasi (0 — yo'q)
 
 
 @dataclass
@@ -449,32 +452,37 @@ class ReportStore:
 
     # ------------------------------------------------------------------ statuslar
     async def seed_statuses(self) -> None:
-        if await self.db.get_config(SEEDED_KEY):
-            return
-        if not await self._all("SELECT id FROM rp_statuses LIMIT 1"):
-            for position, (emoji, label, positive) in enumerate(DEFAULT_STATUSES):
+        if not await self.db.get_config(SEEDED_KEY):
+            if not await self._all("SELECT id FROM rp_statuses LIMIT 1"):
+                for position, (emoji, label, positive) in enumerate(DEFAULT_STATUSES):
+                    await self.conn.execute(
+                        "INSERT OR IGNORE INTO rp_statuses (emoji, label, positive, position) VALUES (?, ?, ?, ?)",
+                        (emoji, label, positive, position),
+                    )
+                await self.conn.commit()
+            await self.db.set_config(SEEDED_KEY, "1")
+        if not await self.db.get_config(RETRY_SEEDED_KEY):  # v1.17: eski o'rnatishlarda ham (bir marta)
+            for emoji, minutes in DEFAULT_RETRY.items():
                 await self.conn.execute(
-                    "INSERT OR IGNORE INTO rp_statuses (emoji, label, positive, position) VALUES (?, ?, ?, ?)",
-                    (emoji, label, positive, position),
-                )
+                    "UPDATE rp_statuses SET retry_minutes = ? WHERE emoji = ? AND retry_minutes = 0", (minutes, emoji))
             await self.conn.commit()
-        await self.db.set_config(SEEDED_KEY, "1")
+            await self.db.set_config(RETRY_SEEDED_KEY, "1")
 
     async def statuses(self) -> list[Status]:
         rows = await self._all("SELECT * FROM rp_statuses ORDER BY position, id")
         return [Status(id=r["id"], emoji=r["emoji"], label=r["label"], positive=bool(r["positive"]),
-                       position=r["position"]) for r in rows]
+                       position=r["position"], retry_minutes=int(r["retry_minutes"] or 0)) for r in rows]
 
-    async def add_status(self, emoji: str, label: str, positive: bool) -> Status:
+    async def add_status(self, emoji: str, label: str, positive: bool, retry_minutes: int = 0) -> Status:
         last = await self._one("SELECT COALESCE(MAX(position), -1) AS p FROM rp_statuses")
         new_id = await self._run(
-            "INSERT INTO rp_statuses (emoji, label, positive, position) VALUES (?, ?, ?, ?)",
-            (emoji, label, int(positive), int(last["p"]) + 1),
+            "INSERT INTO rp_statuses (emoji, label, positive, position, retry_minutes) VALUES (?, ?, ?, ?, ?)",
+            (emoji, label, int(positive), int(last["p"]) + 1, retry_minutes),
         )
         return next(s for s in await self.statuses() if s.id == new_id)
 
     async def update_status(self, status_id: int, *, label: str | None = None, positive: bool | None = None,
-                            position: int | None = None) -> bool:
+                            position: int | None = None, retry_minutes: int | None = None) -> bool:
         fields: dict[str, Any] = {}
         if label is not None:
             fields["label"] = label
@@ -482,6 +490,8 @@ class ReportStore:
             fields["positive"] = int(positive)
         if position is not None:
             fields["position"] = position
+        if retry_minutes is not None:
+            fields["retry_minutes"] = retry_minutes
         if not fields:
             return False
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -655,6 +665,19 @@ class ReportStore:
 
     async def commit(self) -> None:
         await self.conn.commit()
+
+    async def events_after(self, event_id: int, limit: int) -> list[Event]:
+        """v1.17: qayta qo'ng'iroq navbati uchun — shu ID dan keyingi belgilar (yozilish tartibida)."""
+        rows = await self._all("SELECT * FROM rp_events WHERE id > ? ORDER BY id LIMIT ?", (event_id, limit))
+        return [_event(r) for r in rows]
+
+    async def max_event_id(self) -> int:
+        row = await self._one("SELECT COALESCE(MAX(id), 0) AS n FROM rp_events")
+        return int(row["n"])
+
+    async def excluded_ids(self) -> set[int]:
+        rows = await self._all("SELECT user_id FROM rp_people WHERE kind = 'excluded' AND user_id IS NOT NULL")
+        return {r["user_id"] for r in rows}
 
     async def current_reaction(self, lead_id: int, user_id: int) -> str | None:
         row = await self._one(

@@ -64,6 +64,7 @@ from .store import CHAT_KEEP_DAYS, Group, Lead, ReportStore, iso
 from .tasks import TaskService, task_body
 from .vouchers import ROLE as VOUCHER_ROLE
 from .vouchers import VoucherService, reply_id
+from .followups import FollowupService
 from .watch import LeadWatch
 
 if TYPE_CHECKING:
@@ -187,6 +188,7 @@ class ReportService:
         self.advisor = AdvisorService(self)  # v1.15: kunlik AI tavsiya (egasiga)
         self.ads = AdsService(self)  # v1.16: Meta Ads — sarf, natija, muammolar (egasiga)
         self.watch = LeadWatch(self)  # v1.16: lid oqimi to'xtasa — ogohlantirish
+        self.followups = FollowupService(self)  # v1.17: qayta qo'ng'iroq navbati
         self.leader_memory = LeaderMemory()  # v1.10: rahbarlarning AI'ga savollari (qisqa xotira, kunlik chegara)
         self.staff_waiting: dict[int, float] = {}  # v1.11: /xodimlar'dan keyin ro'yxat kutilayotgan egalar (monotonic)
         self.contact_choices: dict[int, Any] = {}  # ulashilgan kontakt / uzatilgan xabar egasi → staff.ContactChoices
@@ -731,6 +733,11 @@ class ReportService:
             overview.notes = await self.vouchers.report_lines(overview.start, min(overview.end, now))
         except Exception:  # noqa: BLE001 — vaucher qismi chiqmasa ham hisobot ketsin
             log.exception("Hisobotning vaucher qismi tayyorlanmadi")
+        try:  # v1.17: qayta qo'ng'iroq va'dalari
+            await self.followups.sync()
+            overview.notes += await self.followups.report_lines(overview.start, overview.end, now)
+        except Exception:  # noqa: BLE001
+            log.exception("Hisobotning qayta qo'ng'iroq qismi tayyorlanmadi")
         text = render_report(overview, reasons, interim_at=now if interim else None, late=late)
         return overview, text, reasons
 
@@ -929,6 +936,7 @@ class ReportService:
         now = now or self.now()
         steps = (
             ("izohlar tahlili", lambda: self.analyze_pending(max_batches=2, bot=bot, now=now)),
+            ("qayta qo'ng'iroq", lambda: self.followups.check(bot, now)),
             ("eslatmalar", lambda: self.check_reminders(bot, now)),
             ("kunlik hisobot", lambda: self.check_daily(bot, now)),
             ("vazifalar", lambda: self.tasks.tick(bot, now)),

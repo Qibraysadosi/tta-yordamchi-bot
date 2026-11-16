@@ -37,7 +37,7 @@ from .stats import (
     week_of,
 )
 from .store import iso
-from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, Task, due_label, repeat_label
+from .tasks import CANCELLED, DONE, EVENT_LABELS, OPEN, Task, due_label, from_iso, repeat_label
 
 if TYPE_CHECKING:
     from .service import ReportService
@@ -107,6 +107,14 @@ _PERIOD_PROPS: dict[str, Any] = {
 
 class ReportToolError(Exception):
     """Model'ga «error» sifatida qaytadi — u foydalanuvchiga tushuntiradi."""
+
+
+def _voucher_text(row: dict | None, tz: Any) -> str | None:
+    """v1.17: lid vaucherga yetgan bo'lsa — «📤 yuborildi 23.10» (holati va yozilgan sana)."""
+    if not row:
+        return None
+    sent = from_iso(row["created_at"], tz)
+    return f"{vouchers.status_text(row['status'])} (vaucher guruhida {sent:%d.%m})" if sent else vouchers.status_text(row["status"])
 
 
 def _norm(text: str | None) -> str:
@@ -396,6 +404,9 @@ class ReportTools:
             "callback_requests": ov.callbacks, "conflicts": ov.conflicts, "call_comments": ov.comments,
             "comments_waiting_analysis": ov.pending,
         }
+        followups = self.reports.followups  # v1.17: qayta qo'ng'iroq va'dalari (vaqti shu davrga to'g'ri kelganlar)
+        await followups.sync()
+        data["callbacks"] = await followups.stats(window.start, window.end, now, hide=self._hide)
         operator = str(args.get("operator") or "").strip()
         if operator:
             ranked = sorted(everyone, key=lambda r: (-r.total, r.name.lower()))
@@ -472,6 +483,9 @@ class ReportTools:
                 raise ReportToolError(f"«{operator}» bu davrda lid belgilamagan. Belgilaganlar: "
                                       + (", ".join(known[:30]) or "yo'q"))
         rows = []
+        from .funnel import people_for_leads  # noqa: PLC0415 — funnel → vouchers (aylanma import bo'lmasin)
+
+        vouchers_of = await people_for_leads(reports, leads.values())  # v1.17: lid vaucherga yetganmi
         for lead in sorted(leads.values(), key=lambda item: (item.created_at or "", item.id)):
             status = outcome.lead_status.get(lead.id)
             if wanted and status not in wanted:
@@ -499,13 +513,15 @@ class ReportTools:
                 "last_comment": self._hide(" ".join(str(note.get("text") or "").split()))[:COMMENT_LIMIT] or None,
                 "callback": self._hide(note.get("callback") or "") or None,
                 "reason": self._hide(note.get("reason") or "") or None,
+                "voucher": _voucher_text(vouchers_of.get(lead.id), reports.tz),
                 "link": message_link(lead.chat_id, lead.message_id),
             }
             rows.append({k: v for k, v in item.items() if v is not None})
         limit = _limit(args.get("limit"), LEADS_LIMIT, LEADS_MAX)
         shown = rows[-limit:]  # ko'p bo'lsa — eng so'nggilari (vaqt tartibida)
         data = {"period": window.as_dict(now), "total": len(rows), "shown": len(shown), "leads": shown,
-                "note": "status — lidning hozirgi (so'nggi) natijasi; marked_by — uni belgilagan operatorlar"
+                "note": "status — lidning hozirgi (so'nggi) natijasi; marked_by — uni belgilagan operatorlar; "
+                        "voucher — lid vaucher guruhida bo'lsa (F.I.Sh. bo'yicha bog'langan)"
                         + ("; ro'yxat uzun — eng so'nggi lidlar ko'rsatildi" if len(rows) > limit else "")}
         if self.masked:
             data["phones"] = "yashirilgan (rahbar uchun)"

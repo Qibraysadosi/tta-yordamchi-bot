@@ -400,7 +400,8 @@
 
       html += '<div class="section"><div class="section-h">Statuslar<button data-action="r-status-add">+ Qo\'shish</button></div><div class="group">' +
         s.statuses.map((st) => '<button class="row" data-action="r-status" data-id="' + st.id + '"><span class="tile emoji">' + esc(st.emoji) + '</span>' +
-          '<span class="body"><div class="label">' + esc(st.label) + '</div>' + (st.positive ? '<div class="sub">asosiy natija — ulush va kurslar kesimida</div>' : '') + '</span>' + chev() + '</button>').join('') +
+          '<span class="body"><div class="label">' + esc(st.label) + '</div>' + (st.positive ? '<div class="sub">asosiy natija — ulush va kurslar kesimida</div>'
+            : st.retry_minutes ? '<div class="sub">🔁 qayta qo\'ng\'iroq: ' + esc(st.retry_label) + '</div>' : '') + '</span>' + chev() + '</button>').join('') +
         '</div><p class="note">Operator lid postiga shu emojini bossa, natija shunday hisoblanadi. Izohlarni AI ham shu ro\'yxat bo\'yicha tushunadi.</p></div>';
 
       const remind = REMIND.find((x) => x[0] === sc.remind_minutes);
@@ -410,6 +411,7 @@
         row('clock', 'clock', 'Yuborish vaqti', 'davr shu vaqtda yopiladi', value(esc(sc.time)) + chev(), 'r-time') +
         row('history', 'calendar', 'Kunlar', 'dam kuni — keyingi kunga', value(esc(sc.days_label)) + chev(), 'r-days') +
         row('bell', 'bell', 'Belgilanmagan lid eslatmasi', 'operatorlarga lichkada', value(esc(remind ? remind[1] : sc.remind_minutes + ' daqiqa')) + chev(), 'r-remind') +
+        A.toggleRow('bell', 'history', 'Qayta qo\'ng\'iroq eslatmasi', '«ertaga qilaman», 🆒 — vaqtida operatorga', 'r-followups', sc.followups !== false).replace('data-toggle=', 'data-rtoggle=') +
         row('clock', 'clock', 'Ish vaqti', 'eslatmalar shu oraliqda', value(esc(sc.work_start + '–' + sc.work_end)) + chev(), 'r-work') +
         '</div>' + (leadersGroup ? '' : '<p class="note">Rahbarlar guruhi belgilanmagan — hisobot sizga keladi. Guruhni «Guruhlar»da belgilang.</p>') +
         '<div class="btn-row"><button class="btn secondary" data-action="r-send">' + icon('send') + 'Hozirgi holatni yuborish</button></div></div>';
@@ -539,6 +541,10 @@
         '<div class="field"><label>Ma\'nosi</label><input name="label" required maxlength="30" value="' + esc(edit ? st.label : '') + '" placeholder="Masalan: keladi"></div>' +
         '<label class="row" style="padding-left:4px"><span class="body"><div class="label">Asosiy natija</div><div class="sub">ulush va kurslar kesimida</div></span>' +
         '<span class="switch"><input type="checkbox" name="positive"' + (edit && st.positive ? ' checked' : '') + '><span></span></span></label>' +
+        '<div class="field"><label>Qayta qo\'ng\'iroq eslatmasi</label><select name="retry">' +
+        ((cache.settings && cache.settings.retry_choices) || [{ minutes: 0, label: 'yo\'q' }]).map((c) => '<option value="' + c.minutes + '"' +
+          ((edit ? st.retry_minutes : 0) === c.minutes ? ' selected' : '') + '>' + esc(c.label) + '</option>').join('') + '</select>' +
+        '<div class="hint">Operator shu emojini qo\'ysa, bot shuncha vaqtdan keyin unga «qayta qo\'ng\'iroq qiling» deb eslatadi (asosiy natijada — yo\'q)</div></div>' +
         '<button class="btn" type="submit">Saqlash</button></form>' +
         (edit ? '<div class="btn-row"><button class="btn danger" data-action="r-status-delete" data-id="' + st.id + '">' + icon('trash') + 'Statusni o\'chirish</button></div>' +
           '<p class="note">O\'chirilsa, shu emoji bo\'yicha eski natijalar «❔ aniqlanmagan» ustuniga o\'tadi.</p>' : ''));
@@ -775,11 +781,11 @@
         closeSheet(); toast('Saqlandi'); rerender();
       }),
       'r-status-add': (fd) => guard(async () => {
-        await api('api/report/statuses', { method: 'POST', body: { emoji: fd.get('emoji'), label: fd.get('label'), positive: fd.get('positive') === 'on' } });
+        await api('api/report/statuses', { method: 'POST', body: { emoji: fd.get('emoji'), label: fd.get('label'), positive: fd.get('positive') === 'on', retry_minutes: Number(fd.get('retry') || 0) } });
         closeSheet(); notify('success'); toast('Status qo\'shildi'); rerender();
       }),
       'r-status-edit': (fd) => guard(async () => {
-        await api('api/report/statuses/' + fd.get('id'), { method: 'PATCH', body: { label: fd.get('label'), positive: fd.get('positive') === 'on' } });
+        await api('api/report/statuses/' + fd.get('id'), { method: 'PATCH', body: { label: fd.get('label'), positive: fd.get('positive') === 'on', retry_minutes: Number(fd.get('retry') || 0) } });
         closeSheet(); toast('Saqlandi'); rerender();
       }),
       'r-schedule': (fd) => guard(() => {
@@ -797,6 +803,7 @@
       'r-journal': ['journal_enabled', 'Kundalik yoqildi', 'Kundalik o\'chirildi'],
       'r-advice': ['advice_enabled', 'Kunlik tavsiya yoqildi', 'Kunlik tavsiya o\'chirildi'],
       'r-ads': ['ads_alerts', 'Ogohlantirishlar yoqildi', 'Ogohlantirishlar o\'chirildi'],
+      'r-followups': ['followups', 'Qayta qo\'ng\'iroq eslatmasi yoqildi', 'Qayta qo\'ng\'iroq eslatmasi o\'chirildi'],
       'r-weekly': ['weekly_enabled', 'Haftalik Excel yoqildi', 'Haftalik Excel o\'chirildi'],
       'r-monthly': ['monthly_enabled', 'Oylik Excel yoqildi', 'Oylik Excel o\'chirildi'],
       'r-picture': ['picture', 'Hisobot rasm bo\'lib keladi', 'Hisobot matn bo\'lib keladi'],

@@ -296,6 +296,23 @@ CREATE TABLE IF NOT EXISTS rp_advice (          -- v1.15: kunlik AI tavsiyalar (
     cost       REAL NOT NULL DEFAULT 0,    -- USD
     interim    INTEGER NOT NULL DEFAULT 0  -- davr tugamasdan so'ralgan (/tavsiya bugun)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS rp_followups (       -- v1.17: qayta qo'ng'iroq navbati
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id     INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,           -- va'da bergan / belgilagan odam (eslatma unga)
+    event_id    INTEGER,                    -- sababchi reaksiya yoki izoh
+    kind        TEXT    NOT NULL,           -- callback (izohda vaqt aytilgan) | retry (status sozlamasi bo'yicha)
+    note        TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,           -- UTC
+    due_at      TEXT    NOT NULL,           -- UTC, ish vaqtiga surilgan
+    reminded_at TEXT,
+    notified    INTEGER NOT NULL DEFAULT 0, -- eslatma yetdimi (operator botni ochmagan bo'lsa — 0)
+    done_at     TEXT,                       -- lidga yangi belgi qo'yilgan vaqt
+    done_by     INTEGER,
+    cancelled   INTEGER NOT NULL DEFAULT 0  -- shu odamning 15 daqiqa ichidagi keyingi belgisi almashtirdi
+);
+CREATE INDEX IF NOT EXISTS idx_rp_followups_due ON rp_followups (due_at);
+CREATE INDEX IF NOT EXISTS idx_rp_followups_lead ON rp_followups (lead_id);
 CREATE TABLE IF NOT EXISTS rp_exports (
     key       TEXT PRIMARY KEY,        -- week:YYYY-MM-DD (dushanba) | month:YYYY-MM
     kind      TEXT NOT NULL,           -- week | month
@@ -314,6 +331,7 @@ MIGRATIONS = {
     "rp_exports": {"sent_to": "TEXT NOT NULL DEFAULT ''"},
     "rp_people": {"title": "TEXT NOT NULL DEFAULT ''"},  # v1.11: lavozim («admin» — administrator, operatorlar bilan)
     "rp_vouchers": {"voucher_no": "TEXT NOT NULL DEFAULT ''"},  # v1.16.1: vaucher raqami (masalan, 261-190757)
+    "rp_statuses": {"retry_minutes": "INTEGER NOT NULL DEFAULT 0"},  # v1.17: shu statusdan keyin qayta qo'ng'iroq (daqiqa)
 }
 TITLE_LIMIT = 48
 

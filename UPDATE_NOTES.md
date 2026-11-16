@@ -1,6 +1,7 @@
-🛠 v1.16.1 — Vaucher hisobi tuzatildi
-• Vaucher deb faqat ismdan tashqari telefon, JSHSHIR, pasport yoki vaucher raqami bor yozuv sanaladi
-• Faqat ism (masalan, «qaysilari biziki?» deb tashlangan ro'yxat rasmi) — hisobot, /vaucher, AI, tavsiya va reklamadagi vaucher narxida sanalmaydi
-• Bunday yozuvlar o'chirilmaydi: /vaucher'da «⚠️ ma'lumot yetarli emas: N ta»; telefon yoki JSHSHIR qo'shilsa — o'zi sanaladi
-• AI endi vaucher raqamini (261-190757) alohida o'qiydi; eski yozuvlarda izohdagi raqam avtomatik ko'chiriladi
-• «-», «yo'q», «null» kabi qiymatlar bo'sh hisoblanadi
+🔁 v1.17.0 — Qayta qo'ng'iroq navbati va lid → vaucher
+• Operator «ertaga 15:00 da qilaman» deb yozsa yoki 🆒 / 🤔 qo'ysa — lid navbatga tushadi, vaqti kelganda bot o'sha operatorga lichkada eslatadi
+• Kunlik hisobotda «🔁 Qayta qo'ng'iroq: 9/12 bajarildi · qolgan: …», kundalikda — kim qilmagani va ertangi reja; /qayta — hozirgi navbat
+• Mini App → Sozlamalar → Statuslar: har status uchun qayta qo'ng'iroq vaqti (🆒 — 3 soatdan keyin, 🤔 — ertasi kuni); eslatmani o'chirish mumkin
+• Lid → vaucher: vaucherga yuborilgan odam lidi bilan F.I.Sh. bo'yicha bog'lanadi — qaysi lid vaucherga yetdi va lidga kim qo'ng'iroq qilgan edi
+• /vaucher'da «🔗 Shu oy lidlardan: N ta (Malika 4 …)», Excel «Lidlar» varag'ida «Vaucher» ustuni, AI ham biladi
+• Operatorlar eslatma olishi uchun botda /start bosgan bo'lishi kerak

@@ -56,6 +56,7 @@ class Schedule:
     advice_enabled: bool = True  # v1.15: kunlik AI tavsiya — egasiga lichkada (ish kunlari)
     advice_time: str = "20:30"  # kunlik hisobot (19:00) va kundalikdan (20:00) keyin
     ads_alerts: bool = True  # v1.16: reklama nazorati — lid kelmay qolsa, Meta reklamasida muammo bo'lsa (egasiga)
+    followups: bool = True  # v1.17: qayta qo'ng'iroq vaqti kelganda operatorga lichkada eslatma
 
     @classmethod
     def from_json(cls, raw: str | None) -> "Schedule":
@@ -95,6 +96,7 @@ class Schedule:
             advice_enabled=bool(data.get("advice_enabled", self.advice_enabled)),
             advice_time=_hhmm(data.get("advice_time", self.advice_time), self.advice_time),
             ads_alerts=bool(data.get("ads_alerts", self.ads_alerts)),
+            followups=bool(data.get("followups", self.followups)),
         )
 
     def to_json(self) -> str:
@@ -107,7 +109,7 @@ class Schedule:
             "journal_enabled": self.journal_enabled, "journal_time": self.journal_time,
             "weekly_enabled": self.weekly_enabled, "monthly_enabled": self.monthly_enabled, "excel_time": self.excel_time,
             "picture": self.picture, "advice_enabled": self.advice_enabled, "advice_time": self.advice_time,
-            "ads_alerts": self.ads_alerts,
+            "ads_alerts": self.ads_alerts, "followups": self.followups,
         }
 
     def days_label(self) -> str:

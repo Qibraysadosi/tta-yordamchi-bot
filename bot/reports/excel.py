@@ -87,6 +87,7 @@ class LeadLine:
     reason: str
     callback: str
     link: str | None
+    voucher: str = ""  # v1.17: lid vaucherga yetgan bo'lsa — holati va sanasi
 
 
 @dataclass
@@ -377,9 +378,9 @@ def _days_sheet(book: _Book, report: ExcelReport) -> None:
 
 
 def _leads_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
-    ws = book.sheet("Lidlar", [5, 17, 22, 20, 7, 16, 24, 18, 20, 40, 16, 16, 12])
+    ws = book.sheet("Lidlar", [5, 17, 22, 20, 7, 16, 24, 18, 20, 40, 16, 16, 12, 22])
     titles = ["№", "Sana", "Ism", "Telefon", "Yosh", "Tuman", "Kurs", "Natija", "Kim belgiladi", "So'nggi izoh",
-              "Sabab", "Qayta qo'ng'iroq", "Havola"]
+              "Sabab", "Qayta qo'ng'iroq", "Havola", "Vaucher"]
     book.header(ws, 1, titles)
     ws.freeze_panes = "A2"
     if not report.leads:
@@ -389,7 +390,8 @@ def _leads_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
         row = index + 1
         phones = ", ".join((mask_phone if masked else format_phone)(p) for p in lead.phones if p)
         values = [index, lead.created, lead.name, phones, lead.age, lead.district, lead.course, lead.status,
-                  lead.people, lead.note[:NOTE_LIMIT], lead.reason, lead.callback, "ochish" if lead.link else ""]
+                  lead.people, lead.note[:NOTE_LIMIT], lead.reason, lead.callback, "ochish" if lead.link else "",
+                  lead.voucher]
         book.values(ws, row, values, fmts={2: "DD.MM.YYYY HH:MM"}, wrap=True)
         status_cell = ws.cell(row=row, column=8)
         if lead.positive:
@@ -400,7 +402,9 @@ def _leads_sheet(book: _Book, report: ExcelReport, masked: bool) -> None:
             link = ws.cell(row=row, column=13)
             link.hyperlink = lead.link
             link.font = book.link_font
-    ws.auto_filter.ref = f"A1:M{len(report.leads) + 1}"
+        if lead.voucher:
+            ws.cell(row=row, column=14).fill = book.good_fill
+    ws.auto_filter.ref = f"A1:N{len(report.leads) + 1}"
 
 
 def _tasks_sheet(book: _Book, report: ExcelReport) -> None:

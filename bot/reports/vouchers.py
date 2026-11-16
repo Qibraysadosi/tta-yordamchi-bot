@@ -467,6 +467,14 @@ class VoucherStore(ReportStore):
             log.info("Vaucher raqami izohdan to'ldirildi: %d ta yozuv", filled)
         return filled
 
+    async def people_between(self, start: str, end: str, *, counted: bool | None = True) -> list[dict]:
+        """v1.17: shu davrda birinchi yozilgan odamlar (lid bilan bog'lash uchun); counted — events_between'dagi kabi
+        (standart: faqat vaucher deb sanaladiganlar)."""
+        rows = await self._all("SELECT * FROM rp_vouchers WHERE created_at >= ? AND created_at < ? ORDER BY created_at",
+                               (start, end))
+        people = [dict(r) for r in rows]
+        return people if counted is None else [p for p in people if counts_as_voucher(p) is counted]
+
 
 # ---------------------------------------------------------------------- Telegram Desktop eksporti
 @dataclass
@@ -993,6 +1001,12 @@ class VoucherService:
         if who:
             shown = who.most_common(SENDERS_SHOWN)
             line += " — " + ", ".join(f"{html.escape(n)} {c}" for n, c in shown) + (" …" if len(who) > SENDERS_SHOWN else "")
+        if sent:
+            from .funnel import leads_for_people  # noqa: PLC0415 — funnel bu modulni import qiladi
+
+            linked = len(await leads_for_people(self.reports, sent))
+            if linked:
+                line += f" · lidlardan {linked}"
         changes = Counter(e["event"] for e in events if e["event"] != "sent")
         parts = [f"{status_text(s)} {changes[s]}" for s in STATUSES if changes.get(s)]
         lines = [line + (" · " + " · ".join(parts) if parts else "")]
@@ -1026,6 +1040,15 @@ class VoucherService:
         who = Counter(sender_of(names, e) for e in events if e["event"] == "sent")
         if who:
             lines.append("🏆 Shu oy: " + " · ".join(f"{html.escape(n)} {c}" for n, c in who.most_common(5)))
+        sent_month = [e for e in events if e["event"] == "sent"]
+        if sent_month:
+            from .funnel import from_leads  # noqa: PLC0415
+
+            found = await from_leads(self.reports, sent_month)
+            line = f"🔗 Shu oy lidlardan: <b>{found['count']}</b> ta"
+            if found["by_operator"]:
+                line += " (" + ", ".join(f"{html.escape(n)} {c}" for n, c in found["by_operator"].most_common(5)) + ")"
+            lines.append(line + f" · boshqa manbadan: {len(sent_month) - found['count']}")
         weak_total = await self.store.voucher_total(counted=False)
         lines.append(f"Jami ro'yxatda: {await self.store.voucher_total(counted=True)} ta odam"
                      + (f" · {WEAK_LABEL}: {weak_total} ta" if weak_total else ""))
@@ -1123,6 +1146,21 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
     except (TypeError, ValueError):
         limit = LIST_LIMIT
     shown = rows[-limit:]
+    from .funnel import from_leads  # noqa: PLC0415 — funnel bu modulni import qiladi
+
+    linked = await from_leads(service.reports, [item["row"] for item in rows if "sent" in item["events"]], hide=hide)
+    lead_names = await service._names()
+
+    def lead_info(row: dict) -> dict | None:
+        lead = linked["links"].get(row["id"])
+        if lead is None:
+            return None
+        created = _local(lead.created_at, tz)
+        mark = linked["marks"].get(lead.id)
+        info = {"lead_at": f"{created:%d.%m.%Y %H:%M}" if created else None, "lead_course": hide(lead.course) or None,
+                "first_called_by": hide(lead_names(mark[1])) if mark else "belgilanmagan",
+                "lead_link": message_link(lead.chat_id, lead.message_id)}
+        return {k: v for k, v in info.items() if v}
 
     def entry(item: dict) -> dict:
         row = item["row"]
@@ -1137,6 +1175,7 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
             "sent_by": hide(sender(row)), "note": hide(row["note"]) or None,
             "in_period": ", ".join(STATUSES.get(e, STATUSES["other"])[1] for e in item["events"]),
             "link": message_link(row["chat_id"], row["message_id"]),
+            "lead": lead_info(row),
         }
         if not masked:
             data.update(pinfl=row["pinfl"] or None, passport=row["passport"] or None,
@@ -1155,6 +1194,10 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
         "by_sender": [{"name": n, "sent": c} for n, c in by_sender.most_common(15)],
         "by_course": [{"course": hide(c), "sent": n} for c, n in by_course.most_common(10)],
         "people": [entry(item) for item in shown],
+        "from_leads": {"count": linked["count"], "of_sent": sum(1 for item in rows if "sent" in item["events"]),
+                       "by_first_caller": [{"name": n, "vouchers": c} for n, c in linked["by_operator"].most_common(15)],
+                       "rule": ("Lid bilan F.I.Sh. bo'yicha bog'langan (faqat ism bo'lsa — telefon mos yoki shu ismli "
+                                "odam bitta); first_called_by — lidga birinchi qo'ng'iroq qilgan xodim")},
         "note": ("Davrda vaucherga yuborilgan yoki holati o'zgargan odamlar (guruh xabarlaridan AI ajratgan). sent_by — "
                  "yuborgan xodim; in_period — shu davrdagi o'zgarishlar. Faqat vaucher deb sanaladiganlar (ismdan "
                  "tashqari telefon, JSHSHIR, pasport yoki vaucher raqami bor); not_counted — ma'lumoti yetarli "

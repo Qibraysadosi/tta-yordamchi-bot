@@ -180,6 +180,7 @@ ADMIN_HELP = (
     "nomi: Marketing, Menejer…) — hisobotlarda ismi bilan chiqadi; ikki akkaunt — bir xil ism. Username'i yo'q "
     "xodim — kontaktini shu botga ulashing yoki /xodimlar'dan keyin xabarini uzating, bot rolini so'raydi\n"
     "📄 /vaucher — vaucherga yuborilganlar (bugun, hafta, oy): «📄 Vaucherlar» guruhidagi xabar va rasmlarni AI o'qiydi; "
+    "faqat ism yozilganlar (telefon, JSHSHIR, pasport, vaucher raqami yo'q) sanalmaydi; "
     "eski xabarlar — Telegram Desktop eksporti (ZIP) shu chatga\n"
     "💡 /tavsiya — kunlik AI tavsiya: har ish kuni 20:30 da kuchli model (standart Fable 5.2) kun natijalari, lidlar, "
     "yozishmalar, vaucher va vazifalarni ko'rib, nimani yaxshilashni yozadi (reklama, call center). «/tavsiya bugun» — "

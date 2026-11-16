@@ -205,6 +205,10 @@ class ReportService:
         if self._ready:
             return
         await self.store.seed_statuses()
+        try:  # v1.16.1: eski vaucher yozuvlari — izohdagi raqam («Vaucher № 261-190757») alohida maydonga
+            await self.vouchers.store.fill_numbers()
+        except Exception:  # noqa: BLE001 — to'ldirilmasa ham bot ishlayversin
+            log.exception("Vaucher raqamlarini izohdan to'ldirib bo'lmadi")
         for key in (SINCE_KEY, ARCHIVE_SINCE_KEY):
             if not await self.ctx.db.get_config(key):
                 await self.ctx.db.set_config(key, iso(datetime.now(timezone.utc)))

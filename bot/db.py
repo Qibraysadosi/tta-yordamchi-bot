@@ -313,6 +313,7 @@ MIGRATIONS = {
     "rp_tasks": {"poll_thread": "INTEGER"},
     "rp_exports": {"sent_to": "TEXT NOT NULL DEFAULT ''"},
     "rp_people": {"title": "TEXT NOT NULL DEFAULT ''"},  # v1.11: lavozim («admin» — administrator, operatorlar bilan)
+    "rp_vouchers": {"voucher_no": "TEXT NOT NULL DEFAULT ''"},  # v1.16.1: vaucher raqami (masalan, 261-190757)
 }
 TITLE_LIMIT = 48
 

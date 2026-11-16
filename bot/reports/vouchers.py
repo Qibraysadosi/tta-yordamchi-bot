@@ -9,6 +9,9 @@ Qoidalar:
   Qayta yozilsa — yangi odam emas (bo'sh maydonlari to'ldiriladi).
 - Holat (yuborildi → tasdiqlandi / rad etildi / o'qiyapti / tugatdi) — post ostidagi javobdan yoki ism bilan
   yozilgan keyingi xabardan. Har o'zgarish rp_voucher_events'da: kunlik hisobot shu davrdagilarni sanaydi.
+- Vaucher deb sanaladi (v1.16.1, counts_as_voucher): ismdan tashqari telefon, JSHSHIR, pasport yoki vaucher raqami
+  bo'lsa. Faqat ism (masalan, savol bilan tashlangan ro'yxat rasmidan) — bazada qoladi, lekin hech qayerda sanalmaydi;
+  keyin ma'lumoti qo'shilsa — o'zi sanala boshlaydi. Sanash hamma joyda VoucherStore.events_between orqali.
 - Albom (bir nechta rasm) — bitta post. Jonli xabar ALBUM_WAIT kutib tahlil qilinadi (albom to'liq kelsin).
 - Claude'ga post matni va rasmlari ketadi (ish shu); xarajat usage_log'da USAGE_UID («📊 Guruh tahlili») bilan."""
 from __future__ import annotations
@@ -75,8 +78,17 @@ NOTE = 200
 REPLY_SHOWN = 400
 LIST_LIMIT, LIST_MAX = 50, 200
 SENDERS_SHOWN = 6
+WEAK_SHOWN = 20  # voucher_list: ma'lumoti yetarli bo'lmaganlardan shuncha ism
+BLANK = {"", "-", "—", "–", "yo'q", "yoq", "йўқ", "йук", "нет", "null", "none", "nan", "n/a"}  # bo'sh qiymatlar
+WEAK_LABEL = "⚠️ ma'lumot yetarli emas"
+WEAK_WHY = ("faqat ism yozilgan (telefon, JSHSHIR, pasport yoki vaucher raqami yo'q) — vaucher deb sanalmaydi, bazada "
+            "turadi; ma'lumoti qo'shilsa, o'zi sanaladi")
 NOT_INCLUDED = "(File not included"
 _APOS = str.maketrans({c: "" for c in "'ʻʼ‘’`´"})
+_QUOTES = str.maketrans({c: "'" for c in "ʻʼ‘’`´"})
+_VOUCHER_NO = re.compile(r"(?<![\d-])(\d{2,4})\s?[-–—]\s?(\d{5,8})(?![\d-])")  # 261-190757
+_VOUCHER_NO_NOTE = re.compile(  # izohda: «Vaucher № 261-190757», «vaucher raqami: 261190757»
+    r"(?:vau?cher|ваучер|voucher|№)[^\d\n]{0,20}?(\d{2,4}\s?[-–—]\s?\d{5,8}|\d{6,12})(?![\d-])", re.IGNORECASE)
 _PATRONYM = {"ogli", "ugli", "qizi", "kizi", "o", "q"}
 _TRANSLIT = (("kh", "x"), ("dj", "j"), ("yo", "e"), ("ye", "e"), ("iy", "i"), ("yy", "y"))
 
@@ -85,10 +97,10 @@ SYSTEM = """Sen o'quv markazining «Vaucher» guruhidagi xabarlarni o'qiysan. Xo
 Senga bitta post beriladi: muallif, vaqt, matn, rasmlar va (bo'lsa) u javob bergan avvalgi post. Matndan va rasmlardan har bir odam uchun yozuv chiqar. Faqat aniq ko'ringan ma'lumotni yoz — taxmin qilma, yo'q bo'lsa bo'sh qoldir.
 
 Faqat JSON qaytar (izohsiz, kod blokisiz):
-{"kind": "voucher" | "update" | "other", "people": [{"name": "", "phone": "", "course": "", "district": "", "mahalla": "", "pinfl": "", "passport": "", "status": "sent" | "approved" | "rejected" | "studying" | "finished" | "other", "note": ""}]}
+{"kind": "voucher" | "update" | "other", "people": [{"name": "", "phone": "", "course": "", "district": "", "mahalla": "", "pinfl": "", "passport": "", "voucher_no": "", "status": "sent" | "approved" | "rejected" | "studying" | "finished" | "other", "note": ""}]}
 
 - kind: voucher — yangi odam(lar) vaucherga yuborildi / ariza berildi / ro'yxatga olindi; update — avval yozilgan odamning holati yoki ma'lumoti (postga javob tarzida yoki ismi bilan); other — vaucherga aloqasi yo'q (salomlashish, savol, e'lon, «ok») — people bo'sh.
-- name — familiya, ism, otasining ismi (qanday yozilgan bo'lsa — lotin yoki kirill); phone — telefon raqami; course — kurs yoki kasb yo'nalishi; district — tuman yoki shahar; mahalla — MFY nomi; pinfl — 14 xonali JSHSHIR; passport — seriya va raqam (masalan AB1234567).
+- name — familiya, ism, otasining ismi (qanday yozilgan bo'lsa — lotin yoki kirill); phone — telefon raqami; course — kurs yoki kasb yo'nalishi; district — tuman yoki shahar; mahalla — MFY nomi; pinfl — 14 xonali JSHSHIR; passport — seriya va raqam (masalan AB1234567); voucher_no — vaucher raqami (masalan, «Vaucher № 261-190757» → 261-190757) — note'ga emas, shu maydonga.
 - status: sent — yuborildi / ariza topshirildi; approved — tasdiqlandi / vaucher berildi; rejected — rad etildi / bekor qilindi; studying — o'qishni boshladi; finished — o'qishni tugatdi / sertifikat oldi; other — boshqa (note'da yoz).
 - update'da ism yozilmagan bo'lsa (masalan, avvalgi postga javob «tasdiqlandi»), name'ni bo'sh qoldir — u javob berilgan postdagi odamga tegishli.
 - note — muhim qo'shimcha, bitta qisqa jumla (masalan, rad sababi); bo'lmasa bo'sh.
@@ -127,6 +139,51 @@ def pinfl_digits(value: str) -> str:
 def passport_code(value: str) -> str:
     text = re.sub(r"[\s\-№]", "", (value or "").upper())
     return text if re.fullmatch(r"[A-Z]{2}\d{7}", text) else ""
+
+
+def blank(value: Any) -> bool:
+    """«», «-», «yo'q», «null» kabi qiymatlar — bo'sh."""
+    return " ".join(str(value if value is not None else "").split()).lower().translate(_QUOTES).strip(" .") in BLANK
+
+
+def voucher_number(value: Any) -> str:
+    """Vaucher raqami: «261-190757» ko'rinishi yoki 6–12 xonali raqam; bo'lmasa — «»."""
+    text = str(value if value is not None else "").strip()
+    if blank(text):
+        return ""
+    found = _VOUCHER_NO.search(text)
+    if found:
+        return f"{found.group(1)}-{found.group(2)}"
+    digits = re.sub(r"[\s№#]", "", text)
+    return digits if re.fullmatch(r"\d{6,12}", digits) else ""
+
+
+def number_in_note(note: Any) -> str:
+    """Izohga yozilib qolgan vaucher raqami («Vaucher № 261-190757» → 261-190757)."""
+    found = _VOUCHER_NO_NOTE.search(str(note or ""))
+    return voucher_number(found.group(1)) if found else ""
+
+
+def _value(row: Any, name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(name)
+    if hasattr(row, "keys"):  # sqlite3.Row / aiosqlite.Row
+        return row[name] if name in row.keys() else None
+    return getattr(row, name, None)
+
+
+def counts_as_voucher(row: Any) -> bool:
+    """Yozuv vaucher deb sanaladimi (yagona tekshiruv, v1.16.1): ismdan tashqari kamida bittasi bor — telefon (kamida
+    9 raqam), JSHSHIR (14 raqam), pasport (AD1234567) yoki vaucher raqami (261-190757). «», «-», «yo'q», «null» —
+    bo'sh. Faqat ism — sanalmaydi (bazada qoladi); keyin telefon yoki JSHSHIR qo'shilsa — o'zi sanala boshlaydi.
+    row — rp_vouchers qatori (dict, sqlite Row) yoki Voucher."""
+    phone, pinfl, passport = (_value(row, k) for k in ("phone", "pinfl", "passport"))
+    return bool(
+        (not blank(phone) and len(re.sub(r"\D", "", str(phone))) >= 9)
+        or (not blank(pinfl) and pinfl_digits(str(pinfl)))
+        or (not blank(passport) and passport_code(str(passport)))
+        or voucher_number(_value(row, "voucher_no"))
+    )
 
 
 def same_person(key_a: str, key_b: str, phone_a: str = "", phone_b: str = "") -> bool:
@@ -212,6 +269,7 @@ class Voucher:
     status: str
     status_at: str
     note: str
+    voucher_no: str = ""  # v1.16.1
 
     def brief(self) -> dict:
         data = {"name": self.name, "phone": format_phone(self.phone) if self.phone else "", "course": self.course,
@@ -348,11 +406,11 @@ class VoucherStore(ReportStore):
                           sender_name: str, fields: dict, status: str, status_msg: int | None) -> int:
         cur = await self.conn.execute(
             "INSERT INTO rp_vouchers (chat_id, message_id, created_at, sender_id, sender_name, name, name_key, phone,"
-            " course, district, mahalla, pinfl, passport, status, status_at, status_msg, note, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " course, district, mahalla, pinfl, passport, voucher_no, status, status_at, status_msg, note, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (chat_id, message_id, created_at, sender_id, sender_name[:60], fields["name"], person_key(fields["name"]),
              fields["phone"], fields["course"], fields["district"], fields["mahalla"], fields["pinfl"],
-             fields["passport"], status, created_at, status_msg, fields["note"], now_iso()),
+             fields["passport"], fields.get("voucher_no", ""), status, created_at, status_msg, fields["note"], now_iso()),
         )
         await self.conn.commit()
         return int(cur.lastrowid or 0)
@@ -374,17 +432,40 @@ class VoucherStore(ReportStore):
         )
         await self.conn.commit()
 
-    async def events_between(self, start: str, end: str) -> list[dict]:
+    async def events_between(self, start: str, end: str, *, counted: bool | None = True) -> list[dict]:
+        """Davrdagi holatlar (odam yozuvi bilan). counted=True — faqat vaucher deb sanaladiganlar (counts_as_voucher),
+        False — ma'lumoti yetarli bo'lmaganlar, None — hammasi."""
         rows = await self._all(
             "SELECT e.status AS event, e.at AS at, v.* FROM rp_voucher_events e JOIN rp_vouchers v ON v.id = e.voucher_id"
             " WHERE e.at >= ? AND e.at < ? ORDER BY e.at, e.id",
             (start, end),
         )
-        return [dict(r) for r in rows]
+        events = [dict(r) for r in rows]
+        return events if counted is None else [e for e in events if counts_as_voucher(e) is counted]
 
-    async def voucher_total(self) -> int:
-        row = await self._one("SELECT COUNT(*) AS n FROM rp_vouchers")
-        return int(row["n"])
+    async def voucher_total(self, counted: bool | None = None) -> int:
+        """Ro'yxatdagi odamlar: None — hammasi (guruh ishlatilyaptimi), True — vaucher deb sanaladiganlar,
+        False — ma'lumoti yetarli bo'lmaganlar."""
+        if counted is None:
+            row = await self._one("SELECT COUNT(*) AS n FROM rp_vouchers")
+            return int(row["n"])
+        rows = await self._all("SELECT phone, pinfl, passport, voucher_no FROM rp_vouchers")
+        return sum(1 for r in rows if counts_as_voucher(r) is counted)
+
+    async def fill_numbers(self) -> int:
+        """v1.16.1: eski yozuvlar — izohda qolgan vaucher raqami («Vaucher № 261-190757») alohida maydonga.
+        Faqat bo'sh voucher_no to'ldiriladi; boshqa hech narsa o'zgarmaydi."""
+        rows = await self._all("SELECT id, note FROM rp_vouchers WHERE voucher_no = '' AND note != ''")
+        filled = 0
+        for row in rows:
+            number = number_in_note(row["note"])
+            if number:
+                await self.conn.execute("UPDATE rp_vouchers SET voucher_no = ? WHERE id = ?", (number, row["id"]))
+                filled += 1
+        if filled:
+            await self.conn.commit()
+            log.info("Vaucher raqami izohdan to'ldirildi: %d ta yozuv", filled)
+        return filled
 
 
 # ---------------------------------------------------------------------- Telegram Desktop eksporti
@@ -774,6 +855,7 @@ class VoucherService:
             "course": _clip(raw.get("course")), "district": _clip(raw.get("district"), 60),
             "mahalla": _clip(raw.get("mahalla"), 60), "pinfl": pinfl_digits(str(raw.get("pinfl") or "")),
             "passport": passport_code(str(raw.get("passport") or "")), "note": _clip(raw.get("note"), NOTE),
+            "voucher_no": voucher_number(raw.get("voucher_no")) or number_in_note(raw.get("note")),
         }
 
     async def _apply(self, head: Post, parsed: dict, context: list[Voucher]) -> dict[str, int]:
@@ -929,18 +1011,26 @@ class VoucherService:
         if not groups:
             lines.append("Vaucher guruhi hali ulanmagan: botni guruhga qo'shing (admin qiling) va «📄 Vaucherlar» deb "
                          "belgilang — /guruhlar.")
+        end = iso(now + timedelta(seconds=1))
         for title, start in (("Bugun", day), ("Shu hafta", week), ("Shu oy", month)):
-            events = await self.store.events_between(iso(start), iso(now + timedelta(seconds=1)))
+            events = await self.store.events_between(iso(start), end)
             sent = sum(1 for e in events if e["event"] == "sent")
             changes = Counter(e["event"] for e in events if e["event"] != "sent")
             extra = "".join(f" · {status_text(s)} {changes[s]}" for s in STATUSES if changes.get(s))
+            weak = sum(1 for e in await self.store.events_between(iso(start), end, counted=False) if e["event"] == "sent")
+            if weak:
+                extra += f" · {WEAK_LABEL}: {weak} ta"
             lines.append(f"{title}: <b>{sent}</b> ta yuborildi{extra}")
-        events = await self.store.events_between(iso(month), iso(now + timedelta(seconds=1)))
+        events = await self.store.events_between(iso(month), end)
         names = await self._names()
         who = Counter(sender_of(names, e) for e in events if e["event"] == "sent")
         if who:
             lines.append("🏆 Shu oy: " + " · ".join(f"{html.escape(n)} {c}" for n, c in who.most_common(5)))
-        lines.append(f"Jami ro'yxatda: {await self.store.voucher_total()} ta odam")
+        weak_total = await self.store.voucher_total(counted=False)
+        lines.append(f"Jami ro'yxatda: {await self.store.voucher_total(counted=True)} ta odam"
+                     + (f" · {WEAK_LABEL}: {weak_total} ta" if weak_total else ""))
+        if weak_total:
+            lines.append(f"<i>{WEAK_LABEL} — {WEAK_WHY}.</i>")
         pending = await self.store.pending_count()
         if pending:
             lines.append(f"⏳ Tahlil navbatida: {pending} ta xabar")
@@ -968,7 +1058,8 @@ def voucher_spec(period_props: dict, *, masked: bool) -> dict:
             f"Vaucherga yuborilganlar — «Vaucher» guruhidagi xabar va rasmlardan AI ajratgan ro'yxat: {fields}, qachon "
             "va qaysi xodim yubordi, holati (yuborildi, tasdiqlandi, rad etildi, o'qiyapti, tugatdi). Davrda yuborilgan "
             "yoki holati o'zgarganlar; xodim, holat, kurs yoki ism bo'yicha saralash. «Bu hafta kimlarni vaucherga "
-            "yubordik?», «Malika nechta odam yubordi?», «kimlar rad etildi?» kabi savollar uchun."
+            "yubordik?», «Malika nechta odam yubordi?», «kimlar rad etildi?» kabi savollar uchun. Faqat ism "
+            "yozilganlar (telefon, JSHSHIR, pasport, vaucher raqami yo'q) sanalmaydi — not_counted'da alohida."
             + (" Telefonlar yashirilgan, JSHSHIR va pasport ko'rsatilmaydi." if masked else "")
         ),
         "input_schema": {"type": "object", "properties": {
@@ -992,7 +1083,7 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
     store = service.store
     tz = service.tz
     hide: Callable[[str], str] = hide_numbers if masked else str
-    events = await store.events_between(iso(window.start), iso(min(window.end, now)))
+    events = await store.events_between(iso(window.start), iso(min(window.end, now)), counted=None)
     names = await service._names()
     users = await service.reports.store.users()
 
@@ -1007,7 +1098,8 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
     wanted_status = str(args.get("status") or "")
     who, course, search = _norm(args.get("sender")), _norm(args.get("course")), _norm(args.get("search"))
     digits = "" if masked else re.sub(r"\D", "", search)
-    rows = []
+    rows: list[dict] = []
+    weak_rows: list[dict] = []  # ma'lumoti yetarli emas — sanalmaydi (counts_as_voucher)
     for item in people.values():
         row = item["row"]
         if wanted_status and wanted_status not in item["events"] and row["status"] != wanted_status:
@@ -1019,9 +1111,10 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
             continue
         if search and not (search in _norm(hide(row["name"])) or person_key(search) and set(person_key(search).split())
                            <= set(row["name_key"].split())
-                           or (len(digits) >= 5 and (digits in row["phone"] or digits in row["pinfl"]))):
+                           or (len(digits) >= 5 and (digits in row["phone"] or digits in row["pinfl"]
+                                                     or digits in (row.get("voucher_no") or "").replace("-", "")))):
             continue
-        rows.append(item)
+        (rows if counts_as_voucher(row) else weak_rows).append(item)
     totals = Counter(e for item in rows for e in item["events"])
     by_sender = Counter(hide(sender(item["row"])) for item in rows if "sent" in item["events"])
     by_course = Counter(course_key(item["row"]["course"]) for item in rows if "sent" in item["events"])
@@ -1046,8 +1139,15 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
             "link": message_link(row["chat_id"], row["message_id"]),
         }
         if not masked:
-            data.update(pinfl=row["pinfl"] or None, passport=row["passport"] or None)
+            data.update(pinfl=row["pinfl"] or None, passport=row["passport"] or None,
+                        voucher_no=row.get("voucher_no") or None)
         return {k: v for k, v in data.items() if v is not None}
+
+    def weak_entry(item: dict) -> dict:
+        row = item["row"]
+        sent = _local(row["created_at"], tz)
+        return {"sent_at": f"{sent:%d.%m.%Y %H:%M}" if sent else "", "name": hide(row["name"]) or "(ismsiz)",
+                "sent_by": hide(sender(row)), "link": message_link(row["chat_id"], row["message_id"])}
 
     data: dict[str, Any] = {
         "period": window.as_dict(now), "total": len(rows), "shown": len(shown),
@@ -1056,8 +1156,13 @@ async def voucher_list(service: "VoucherService", window: "Window", args: dict, 
         "by_course": [{"course": hide(c), "sent": n} for c, n in by_course.most_common(10)],
         "people": [entry(item) for item in shown],
         "note": ("Davrda vaucherga yuborilgan yoki holati o'zgargan odamlar (guruh xabarlaridan AI ajratgan). sent_by — "
-                 "yuborgan xodim; in_period — shu davrdagi o'zgarishlar."),
+                 "yuborgan xodim; in_period — shu davrdagi o'zgarishlar. Faqat vaucher deb sanaladiganlar (ismdan "
+                 "tashqari telefon, JSHSHIR, pasport yoki vaucher raqami bor); not_counted — ma'lumoti yetarli "
+                 "bo'lmaganlar: ularni vaucher deb sanama, so'ralsa alohida ayt."),
     }
+    if weak_rows:
+        data["not_counted"] = {"count": len(weak_rows), "label": f"{WEAK_LABEL}: {len(weak_rows)} ta", "why": WEAK_WHY,
+                               "people": [weak_entry(item) for item in weak_rows[-WEAK_SHOWN:]]}
     pending = await store.pending_count()
     if pending:
         data["waiting_analysis"] = f"{pending} ta xabar hali tahlil qilinmoqda — raqamlar biroz o'zgarishi mumkin"

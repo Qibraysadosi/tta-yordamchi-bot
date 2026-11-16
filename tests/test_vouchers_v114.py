@@ -159,9 +159,9 @@ def test_voucher_group_flow_and_daily_report(tmp_path):
                 answer("voucher", {"name": "Karimova Aziza", "phone": "90 123 45 67", "course": "Kompyuter savodxonligi",
                                    "district": "Chilonzor", "pinfl": "12345678901234", "passport": "AB 1234567",
                                    "status": "sent"}),
-                answer("voucher", {"name": "Обидов Бобур", "course": "Massaj", "district": "Yunusobod",
-                                   "mahalla": "Navro'z MFY", "status": "sent"},
-                       {"name": "Nodira Saidova", "course": "Tikuvchilik", "status": "sent"}),
+                answer("voucher", {"name": "Обидов Бобур", "phone": "93 765 43 21", "course": "Massaj",
+                                   "district": "Yunusobod", "mahalla": "Navro'z MFY", "status": "sent"},
+                       {"name": "Nodira Saidova", "passport": "AC 7654321", "course": "Tikuvchilik", "status": "sent"}),
                 answer("update", {"name": "", "status": "approved"}),
                 answer("other"),
             ]
@@ -223,7 +223,7 @@ def test_voucher_list_tool(tmp_path):
             env.api.responses += [
                 answer("voucher", {"name": "Aziza Karimova", "phone": "901234567", "course": "Kompyuter",
                                    "pinfl": "12345678901234", "passport": "AB1234567"}),
-                answer("voucher", {"name": "Обидов Бобур", "course": "Massaj"}),
+                answer("voucher", {"name": "Обидов Бобур", "phone": "937654321", "course": "Massaj"}),
                 answer("update", {"status": "approved"}),
             ]
             await reports.vouchers.drain(env.bot)
@@ -271,7 +271,8 @@ def test_import_from_desktop_export(tmp_path):
                 message(55, ts(MON, "11:00"), photo="(File not included. Change data exporting settings to download.)"),
             ], photos={"photos/a.jpg": jpeg(), "photos/b.jpg": jpeg("gray")})
             env.api.responses += [
-                answer("voucher", {"name": "Valiyev Ali", "course": "Elektrik", "status": "sent"}),
+                answer("voucher", {"name": "Valiyev Ali", "course": "Elektrik", "voucher_no": "261-190757",
+                                   "status": "sent"}),
                 answer("update", {"status": "approved"}),
                 answer("other"),
             ]
